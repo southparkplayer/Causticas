@@ -315,6 +315,101 @@ public final class FfxUpscaleContext implements AutoCloseable {
 		}
 	}
 
+	// FfxApiSurfaceFormat (ffx_api_types.h, by enum position)
+	public static final int FORMAT_R8G8B8A8_UNORM = 10;
+	public static final int FORMAT_R16G16_FLOAT = 18;
+	public static final int FORMAT_R32_FLOAT = 28;
+
+	// FfxApiResourceState
+	public static final int STATE_COMMON = 1 << 0;
+	public static final int STATE_UNORDERED_ACCESS = 1 << 1;
+
+	// FfxApiResourceUsage
+	public static final int USAGE_READ_ONLY = 0;
+	public static final int USAGE_UAV = 1 << 1;
+	public static final int USAGE_DEPTHTARGET = 1 << 2;
+
+	// FfxApiDispatchFsrUpscaleFlags
+	public static final int DISPATCH_FLAG_NON_LINEAR_COLOR_SRGB = 1 << 1;
+
+	private static final long TYPE_DISPATCH_UPSCALE = 0x00010001L;
+	private static final int RESOURCE_TYPE_TEXTURE2D = 2; // FfxApiResourceType
+
+	/** One input/output image for {@link #dispatchUpscale}. */
+	public record Resource(long vkImage, int format, int width, int height, int usage, int state) { }
+
+	public record DispatchParams(
+			long vkCommandBuffer,
+			Resource color, Resource depth, Resource motionVectors, Resource output,
+			float jitterX, float jitterY,
+			float motionVectorScaleX, float motionVectorScaleY,
+			int renderWidth, int renderHeight,
+			int upscaleWidth, int upscaleHeight,
+			float frameTimeDeltaMs, boolean reset,
+			float cameraNear, float cameraFar, float cameraFovAngleVertical,
+			int flags) { }
+
+	/**
+	 * Records the FSR upscale dispatch into the given command buffer.
+	 * struct ffxDispatchDescUpscale (432 bytes, offsets per SDK 1.1.4 headers).
+	 */
+	public void dispatchUpscale(DispatchParams p) {
+		try (Arena local = Arena.ofConfined()) {
+			MemorySegment desc = local.allocate(432, 8);
+			desc.set(ValueLayout.JAVA_LONG, 0, TYPE_DISPATCH_UPSCALE);
+			desc.set(ValueLayout.ADDRESS, 8, MemorySegment.NULL);
+			desc.set(ValueLayout.JAVA_LONG, 16, p.vkCommandBuffer());          // commandList
+			putResource(desc, 24, p.color());                                  // color
+			putResource(desc, 72, p.depth());                                  // depth
+			putResource(desc, 120, p.motionVectors());                         // motionVectors
+			putEmptyResource(desc, 168);                                       // exposure
+			putEmptyResource(desc, 216);                                       // reactive
+			putEmptyResource(desc, 264);                                       // transparencyAndComposition
+			putResource(desc, 312, p.output());                                // output
+			desc.set(ValueLayout.JAVA_FLOAT, 360, p.jitterX());
+			desc.set(ValueLayout.JAVA_FLOAT, 364, p.jitterY());
+			desc.set(ValueLayout.JAVA_FLOAT, 368, p.motionVectorScaleX());
+			desc.set(ValueLayout.JAVA_FLOAT, 372, p.motionVectorScaleY());
+			desc.set(ValueLayout.JAVA_INT, 376, p.renderWidth());
+			desc.set(ValueLayout.JAVA_INT, 380, p.renderHeight());
+			desc.set(ValueLayout.JAVA_INT, 384, p.upscaleWidth());
+			desc.set(ValueLayout.JAVA_INT, 388, p.upscaleHeight());
+			desc.set(ValueLayout.JAVA_BYTE, 392, (byte) 0);                    // enableSharpening
+			desc.set(ValueLayout.JAVA_FLOAT, 396, 0.0f);                       // sharpness
+			desc.set(ValueLayout.JAVA_FLOAT, 400, p.frameTimeDeltaMs());
+			desc.set(ValueLayout.JAVA_FLOAT, 404, 1.0f);                       // preExposure
+			desc.set(ValueLayout.JAVA_BYTE, 408, (byte) (p.reset() ? 1 : 0));
+			desc.set(ValueLayout.JAVA_FLOAT, 412, p.cameraNear());
+			desc.set(ValueLayout.JAVA_FLOAT, 416, p.cameraFar());
+			desc.set(ValueLayout.JAVA_FLOAT, 420, p.cameraFovAngleVertical());
+			desc.set(ValueLayout.JAVA_FLOAT, 424, 1.0f);                       // viewSpaceToMetersFactor
+			desc.set(ValueLayout.JAVA_INT, 428, p.flags());
+
+			int rc = this.lib.dispatch(this.ctxSlot, desc);
+			if (rc != FfxLibrary.RETURN_OK) {
+				throw new FfxException("ffxDispatch(Upscale)", rc);
+			}
+		}
+	}
+
+	/** struct FfxApiResource (48 bytes): resource(8), description(32: type/format/w/h/depth/mips/flags/usage), state(4), pad(4). */
+	private static void putResource(MemorySegment desc, long offset, Resource r) {
+		desc.set(ValueLayout.JAVA_LONG, offset, r.vkImage());
+		desc.set(ValueLayout.JAVA_INT, offset + 8, RESOURCE_TYPE_TEXTURE2D);
+		desc.set(ValueLayout.JAVA_INT, offset + 12, r.format());
+		desc.set(ValueLayout.JAVA_INT, offset + 16, r.width());
+		desc.set(ValueLayout.JAVA_INT, offset + 20, r.height());
+		desc.set(ValueLayout.JAVA_INT, offset + 24, 1);  // depth
+		desc.set(ValueLayout.JAVA_INT, offset + 28, 1);  // mipCount
+		desc.set(ValueLayout.JAVA_INT, offset + 32, 0);  // flags
+		desc.set(ValueLayout.JAVA_INT, offset + 36, r.usage());
+		desc.set(ValueLayout.JAVA_INT, offset + 40, r.state());
+	}
+
+	private static void putEmptyResource(MemorySegment desc, long offset) {
+		desc.asSlice(offset, 48).fill((byte) 0);
+	}
+
 	@Override
 	public void close() {
 		if (this.destroyed) {

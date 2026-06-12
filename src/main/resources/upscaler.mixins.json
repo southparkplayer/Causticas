@@ -4,10 +4,12 @@
 	"package": "dev.upscaler.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
+		"CommandEncoderAccessor",
 		"GameRendererMixin",
 		"GpuDeviceAccessor",
 		"RenderTargetAccessor",
-		"VulkanBackendMixin"
+		"VulkanBackendMixin",
+		"VulkanGpuTextureAccessor"
 	],
 	"injectors": {
 		"defaultRequire": 1

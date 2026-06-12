@@ -123,7 +123,15 @@ public final class WorldRenderScaler {
 		this.savedDepth = null;
 		this.savedDepthView = null;
 
-		// Bilinear upscale low-res world color -> native main target color.
+		// Preferred path: FSR 3.1 temporal upscale low-res color/depth -> native color.
+		boolean fsrDone = FsrPipeline.INSTANCE.dispatch(
+				this.lowResColor, this.lowResDepth, this.lowResWidth, this.lowResHeight,
+				mainTarget.getColorTexture(), this.savedWidth, this.savedHeight);
+		if (fsrDone) {
+			return;
+		}
+
+		// Fallback: bilinear upscale low-res world color -> native main target color.
 		// Mirrors RenderTarget.blitAndBlendToTexture, but with the non-blending
 		// TRACY_BLIT pipeline and a linear sampler.
 		try (RenderPass pass = RenderSystem.getDevice()
