@@ -3,6 +3,7 @@ package dev.upscaler.client;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import dev.upscaler.UpscalerMod;
+import dev.upscaler.rt.RtDeviceBringup;
 import net.fabricmc.loader.api.FabricLoader;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
@@ -60,6 +61,16 @@ public final class SodiumCompat {
 			}
 			for (String extension : NGX_INSTANCE_EXTENSIONS) {
 				requestInstanceExtension.invoke(registry, extension);
+			}
+
+			// Ray tracing (P0) — optional; the feature structs are added separately in
+			// VulkanBackendMixin (Sodium's registry handles names only).
+			if (RtDeviceBringup.ENABLED_BY_PROPERTY) {
+				for (String extension : RtDeviceBringup.RT_EXTENSIONS) {
+					requestDeviceExtension.invoke(registry, extension, false);
+				}
+				RtDeviceBringup.sodiumExtensionsRegistered = true;
+				UpscalerMod.LOGGER.info("Registered ray-tracing device extensions through Sodium");
 			}
 
 			UpscalerMod.LOGGER.info("Registered FFX + NGX Vulkan extensions through Sodium");
