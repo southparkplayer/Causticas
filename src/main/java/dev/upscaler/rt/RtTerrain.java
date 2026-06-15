@@ -472,7 +472,7 @@ public final class RtTerrain {
         final FloatArrayList verts = new FloatArrayList();
         final IntArrayList idx = new IntArrayList();
         final FloatArrayList uvList = new FloatArrayList(); // 2 floats/vertex: atlas UV
-        final FloatArrayList prim = new FloatArrayList();   // 8 floats/triangle: normal.xyz0, tint.rgb0
+        final FloatArrayList prim = new FloatArrayList();   // 8 floats/triangle: normal.xyz + emission, tint.rgb0
     }
 
     /** Captures the quads vanilla's model renderer emits into the current section's mesh. */
@@ -537,12 +537,16 @@ public final class RtTerrain {
                 }
             }
 
+            // Emissive: vanilla block light level (0..15) -> 0..1, stashed in the free normal.w slot
+            // (no per-prim layout change). The path tracer multiplies it by albedo for colored glow.
+            float emission = state != null ? state.getLightEmission() / 15f : 0f;
+
             FloatArrayList prim = cur.prim;
-            for (int t = 0; t < 2; t++) { // one {normal, tint} record per triangle
+            for (int t = 0; t < 2; t++) { // one {normal+emission, tint} record per triangle
                 prim.add(nx);
                 prim.add(ny);
                 prim.add(nz);
-                prim.add(0f);
+                prim.add(emission);
                 prim.add(tr);
                 prim.add(tg);
                 prim.add(tb);

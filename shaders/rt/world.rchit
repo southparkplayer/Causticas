@@ -35,6 +35,7 @@ struct Payload {
     vec3 albedo;
     vec3 normal;
     float hitT;
+    float emission; // block light level 0..1 (stashed in prim normal.w during extraction)
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 attribs;
@@ -63,4 +64,5 @@ void main() {
     payload.albedo = textureLod(blockAtlas, uv, 0.0).rgb * tint;
     payload.normal = n;
     payload.hitT = gl_HitTEXT;
+    payload.emission = pr.normal.w; // 0..1 light level, written by extraction into the free slot
 }

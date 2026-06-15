@@ -38,9 +38,10 @@ layout(push_constant) uniform Push {
 } pc;
 
 struct Payload {
-    vec3 albedo;   // hit: block albedo (atlas * tint). miss: sky radiance.
-    vec3 normal;   // hit: geometric normal, oriented toward the viewer.
-    float hitT;    // >= 0 on hit (ray length), < 0 on miss.
+    vec3 albedo;    // hit: block albedo (atlas * tint). miss: sky radiance.
+    vec3 normal;    // hit: geometric normal, oriented toward the viewer.
+    float hitT;     // >= 0 on hit (ray length), < 0 on miss.
+    float emission; // hit: block light level 0..1; 0 on miss.
 };
 layout(location = 0) rayPayloadEXT Payload payload;
 layout(location = 1) rayPayloadEXT float shadowVis; // 1.0 if the visibility ray escaped, else 0.0
@@ -51,6 +52,7 @@ const float INV_PI = 0.31830988618;
 const vec3 SUN_DIR = normalize(vec3(0.35, 0.9, 0.25));
 const vec3 SUN_RADIANCE = vec3(4.2, 4.0, 3.6); // directional sun irradiance (HDR; tonemapped later)
 const float SKY_GAIN = 1.0;     // scales the sky radiance returned by world.rmiss
+const float EMISSIVE_STRENGTH = 6.0; // HDR radiance of a full (level-15) emitter, modulated by albedo
 const int SPP = 4;              // paths per pixel per frame (raised effective samples come w/ P3.1b)
 const int MAX_BOUNCES = 4;      // indirect bounces before the path is cut
 const int RR_START = 2;         // begin Russian roulette after this bounce index
@@ -111,6 +113,14 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
         vec3 n = payload.normal;
         vec3 albedo = payload.albedo;
         vec3 p = ro + rd * payload.hitT + n * SURF_BIAS;
+
+        // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
+        // Block lights have no NEE yet, so emission is gathered purely by hitting emitters during the
+        // walk (counted at every vertex, no double counting) — noisy for small emitters until ReSTIR
+        // (P3.3), but temporal accumulation converges static views.
+        if (payload.emission > 0.0) {
+            L += throughput * albedo * payload.emission * EMISSIVE_STRENGTH;
+        }
 
         // NEE: direct sun (delta directional light). f = albedo/PI; contribution = f * E * N·L * vis.
         float ndl = max(0.0, dot(n, SUN_DIR));
