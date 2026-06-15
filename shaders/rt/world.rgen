@@ -33,6 +33,7 @@ layout(binding = 1, set = 0, rgba16f) uniform image2D outImage;
 layout(binding = 3, set = 0, rgba16f) uniform image2D gNormal; // xyz world normal, w roughness
 layout(binding = 4, set = 0, rgba16f) uniform image2D gAlbedo; // rgb diffuse albedo
 layout(binding = 5, set = 0, r32f)    uniform image2D gDepth;  // r linear hit distance (<0 = sky)
+layout(binding = 6, set = 0, rg16f)   uniform image2D gMotion; // xy screen-space motion (render pixels)
 
 layout(push_constant) uniform Push {
     mat4 invViewProj;
@@ -41,8 +42,13 @@ layout(push_constant) uniform Push {
     // Explicit offset 88 leaves the closest-hit/any-hit section-table address at 80 (raygen ignores
     // that field). Drives the temporal running mean below and decorrelates the per-frame RNG.
     layout(offset = 88) uint accumFrame;
-    // Debug guide-buffer view: 0 = normal render, 1 = normals, 2 = albedo, 3 = depth, 4 = roughness.
+    // Debug guide-buffer view: 0=render, 1=normals, 2=albedo, 3=depth, 4=roughness, 5=motion.
     layout(offset = 92) uint debugView;
+    // Motion vectors (P4.0b): previous frame's camera-relative view-projection, and the camera's
+    // per-frame translation (curCam - prevCam). The current screen position of a primary hit is the
+    // pixel centre, so only the previous-frame projection of the same world point is needed.
+    layout(offset = 96)  mat4 prevViewProj;
+    layout(offset = 160) vec3 camDelta;
 } pc;
 
 // First-hit (primary-visibility) guide attributes, captured at bounce 0 of tracePath. The primary ray
@@ -50,7 +56,8 @@ layout(push_constant) uniform Push {
 vec3 gv_normal;
 vec3 gv_albedo;
 float gv_rough;
-float gv_depth; // linear hit distance; < 0 on a primary-ray sky miss
+float gv_depth;     // linear hit distance; < 0 on a primary-ray sky miss
+vec3 gv_hitCamRel;  // hit position relative to the current camera (for motion-vector reprojection)
 
 struct Payload {
     vec3 albedo;    // hit: block albedo (atlas * tint). miss: sky radiance.
@@ -126,6 +133,7 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
                 gv_albedo = payload.albedo;
                 gv_rough = 1.0;
                 gv_depth = -1.0;
+                gv_hitCamRel = rd * 1.0e6; // sky at infinity: only rotation parallax
             }
             L += throughput * payload.albedo * SKY_GAIN; // escaped to sky
             break;
@@ -140,6 +148,7 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
             gv_albedo = albedo;
             gv_rough = 1.0; // Lambertian for now (PBR roughness arrives in P6)
             gv_depth = payload.hitT;
+            gv_hitCamRel = ro + rd * payload.hitT - pc.camOffset; // camera-relative hit position
         }
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
@@ -204,6 +213,13 @@ void main() {
     imageStore(gAlbedo, pix, vec4(gv_albedo, 1.0));
     imageStore(gDepth, pix, vec4(gv_depth, 0.0, 0.0, 0.0));
 
+    // P4.0b motion vector: reproject this surface point through the previous frame's view-projection.
+    // curNdc is the pixel centre (the ray was cast through it), so MV is just prevNdc - curNdc, scaled
+    // from NDC into render-pixel space.
+    vec4 prevClip = pc.prevViewProj * vec4(gv_hitCamRel + pc.camDelta, 1.0);
+    vec2 motion = (prevClip.xy / prevClip.w - ndc) * 0.5 * size;
+    imageStore(gMotion, pix, vec4(motion, 0.0, 0.0));
+
     // Debug guide-buffer visualization: bypass accumulation and show a guide directly.
     if (pc.debugView != 0u) {
         vec3 dbg;
@@ -213,8 +229,10 @@ void main() {
             dbg = gv_albedo;                        // diffuse albedo
         } else if (pc.debugView == 3u) {
             dbg = vec3(gv_depth < 0.0 ? 0.0 : gv_depth / 64.0); // linear depth, 64-block normalize
-        } else {
+        } else if (pc.debugView == 4u) {
             dbg = vec3(gv_rough);                   // roughness
+        } else {
+            dbg = vec3(clamp(0.5 + motion * 0.05, 0.0, 1.0), 0.5); // motion: red=+x, green=+y
         }
         imageStore(outImage, pix, vec4(dbg, 1.0));
         return;

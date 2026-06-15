@@ -37,8 +37,10 @@ public final class RtComposite {
     /** Blend weight of RT over vanilla: 0 = vanilla only, 1 = RT only. {@code -Dupscaler.rt.blend}. */
     public static final float BLEND = parseBlend();
 
-    private static final int WORLD_PUSH_SIZE = 96; // invViewProj(64) + camOffset(@64) + sectionTableAddr(@80) + accumFrame(@88) + debugView(@92)
-    private static final int GUIDE_COUNT = 3; // P4 guide buffers bound at world-pipeline bindings 3..5
+    // invViewProj(64) + camOffset(@64) + sectionTableAddr(@80) + accumFrame(@88) + debugView(@92)
+    // + prevViewProj(@96) + camDelta(@160)
+    private static final int WORLD_PUSH_SIZE = 172;
+    private static final int GUIDE_COUNT = 4; // P4 guide buffers bound at world-pipeline bindings 3..6
 
     /** Debug guide-buffer view: 0 = normal render, 1 = normals, 2 = albedo, 3 = depth, 4 = roughness. */
     public static final int DEBUG_VIEW = Integer.getInteger("upscaler.rt.debugView", 0);
@@ -63,10 +65,25 @@ public final class RtComposite {
     private RtBlendPipeline blendPipeline;
     private RtImage output;
     private RtImage baseCopy;
-    // P4 guide buffers (first-hit attributes for the denoiser/DLSS-RR): normal+roughness, albedo, depth.
+    // P4 guide buffers (first-hit attributes for the denoiser/DLSS-RR): normal+roughness, albedo, depth, motion.
     private RtImage gNormal;
     private RtImage gAlbedo;
     private RtImage gDepth;
+    private RtImage gMotion;
+
+    // Motion-vector reprojection state (P4.0b): the previous frame's camera-relative view-projection
+    // and camera position. Held separately from the accumulation's last* fields (those are overwritten
+    // before recordFrame); these are read into the push constant, then advanced at frame end.
+    private final Matrix4f mvPrevProjView = new Matrix4f();
+    private final Matrix4f mvCurProjView = new Matrix4f();
+    private final Matrix4f mvPushMatrix = new Matrix4f();
+    private double mvPrevCamX;
+    private double mvPrevCamY;
+    private double mvPrevCamZ;
+    private float mvCamDeltaX;
+    private float mvCamDeltaY;
+    private float mvCamDeltaZ;
+    private boolean mvHasPrev;
     private long boundTriangleTlas;
     private long boundWorldTlas;
     private long atlasSampler;
@@ -128,6 +145,7 @@ public final class RtComposite {
             RtPipeline active = useWorld ? ensureWorld(ctx) : ensureTriangle(ctx);
             if (useWorld) {
                 updateAccumulation(); // after ensureWorld so boundWorldTlas reflects this frame
+                updateMotion();
             }
             recordFrame(active, useWorld, nativeColor, width, height);
             if (!loggedActive) {
@@ -185,6 +203,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(0, gNormal.view);
         worldPipeline.setExtraStorageImage(1, gAlbedo.view);
         worldPipeline.setExtraStorageImage(2, gDepth.view);
+        worldPipeline.setExtraStorageImage(3, gMotion.view);
     }
 
     private void destroyGuideImages() {
@@ -199,6 +218,10 @@ public final class RtComposite {
         if (gDepth != null) {
             gDepth.destroy();
             gDepth = null;
+        }
+        if (gMotion != null) {
+            gMotion.destroy();
+            gMotion = null;
         }
     }
 
@@ -224,7 +247,9 @@ public final class RtComposite {
         gNormal = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT);
         gAlbedo = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT);
         gDepth = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32_SFLOAT);
+        gMotion = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16_SFLOAT);
         accumNeedsReset = true; // the recreated HDR target has no valid accumulation history
+        mvHasPrev = false;      // recreated images -> first MV frame is zero
         if (trianglePipeline != null) {
             trianglePipeline.setStorageImage(output.view);
         }
@@ -258,6 +283,31 @@ public final class RtComposite {
         accumNeedsReset = false;
     }
 
+    /**
+     * Compute this frame's motion-vector push data: the matrix that projects a current world point
+     * into the previous frame's clip space, plus the per-frame camera translation. On the first frame
+     * (or after a reset) push the current view-projection with zero delta so MVs come out zero.
+     */
+    private void updateMotion() {
+        mvCurProjView.set(frameProjection).mul(frameViewRotation);
+        if (mvHasPrev) {
+            mvPushMatrix.set(mvPrevProjView);
+            mvCamDeltaX = (float) (camX - mvPrevCamX);
+            mvCamDeltaY = (float) (camY - mvPrevCamY);
+            mvCamDeltaZ = (float) (camZ - mvPrevCamZ);
+        } else {
+            mvPushMatrix.set(mvCurProjView);
+            mvCamDeltaX = 0f;
+            mvCamDeltaY = 0f;
+            mvCamDeltaZ = 0f;
+        }
+        mvPrevProjView.set(mvCurProjView);
+        mvPrevCamX = camX;
+        mvPrevCamY = camY;
+        mvPrevCamZ = camZ;
+        mvHasPrev = true;
+    }
+
     private void recordFrame(RtPipeline active, boolean useWorld, GpuTexture nativeColor, int width, int height) {
         long dstImage = vkImage(nativeColor);
         var encoder = (VulkanCommandEncoder) ((CommandEncoderAccessor) RenderSystem.getDevice().createCommandEncoder()).upscaler$getBackend();
@@ -276,6 +326,10 @@ public final class RtComposite {
                 push.putLong(80, terrain.tableAddress());
                 push.putInt(88, accumFrame);
                 push.putInt(92, DEBUG_VIEW);
+                mvPushMatrix.get(96, push);
+                push.putFloat(160, mvCamDeltaX);
+                push.putFloat(164, mvCamDeltaY);
+                push.putFloat(168, mvCamDeltaZ);
                 active.trace(cmd, width, height, push);
             } else {
                 active.trace(cmd, width, height);
