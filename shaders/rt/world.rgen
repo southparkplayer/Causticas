@@ -75,6 +75,7 @@ struct Payload {
     float hitT;     // >= 0 on hit (ray length), < 0 on miss.
     float emission; // hit: block light level 0..1; 0 on miss.
     vec3 motionPrev; // hit: world displacement since last frame (entity per-object MV); 0 otherwise.
+    float material; // hit: 0 = opaque diffuse, 1 = water (smooth dielectric); 0 on miss.
 };
 layout(location = 0) rayPayloadEXT Payload payload;
 layout(location = 1) rayPayloadEXT float shadowVis; // 1.0 if the visibility ray escaped, else 0.0
@@ -91,6 +92,30 @@ const int RR_START = 2;         // begin Russian roulette after this bounce inde
 const float FIREFLY_MAX = 8.0;  // clamp per-path radiance to tame sampling spikes
 const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
+
+// P5.2 water (smooth dielectric). IOR 1.333; absorption is a per-block Beer–Lambert extinction —
+// red is absorbed fastest, blue slowest, so the transmitted colour shifts toward blue-green with
+// depth (the recognisable deep-water look). Guide albedo/roughness feed DLSS-RR a stable, slightly
+// glossy surface at the primary water hit (RR fine-tuning for specular water is deferred polish).
+const float WATER_IOR = 1.333;
+const vec3 WATER_ABSORB = vec3(0.42, 0.12, 0.08); // extinction per block (linear units)
+const vec3 WATER_GUIDE_ALBEDO = vec3(0.04, 0.10, 0.16);
+const float WATER_GUIDE_ROUGH = 0.08;
+
+// Exact (unpolarized) Fresnel reflectance for a dielectric interface. cosI is the incidence cosine on
+// the incoming side; etaI/etaT are the IORs the ray travels from / into. Returns 1.0 on total internal
+// reflection (sin of the transmitted angle >= 1), which matches GLSL refract() returning the zero
+// vector — so reflect/refract selection and TIR stay consistent.
+float fresnelDielectric(float cosI, float etaI, float etaT) {
+    float sinT2 = (etaI * etaI) / (etaT * etaT) * max(0.0, 1.0 - cosI * cosI);
+    if (sinT2 >= 1.0) {
+        return 1.0;
+    }
+    float cosT = sqrt(1.0 - sinT2);
+    float rs = (etaI * cosI - etaT * cosT) / (etaI * cosI + etaT * cosT);
+    float rp = (etaI * cosT - etaT * cosI) / (etaI * cosT + etaT * cosI);
+    return 0.5 * (rs * rs + rp * rp);
+}
 
 // PCG hash RNG.
 uint pcg(inout uint s) {
@@ -130,6 +155,7 @@ float visibility(vec3 origin, vec3 dir, float tmax) {
 vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
     vec3 L = vec3(0.0);
     vec3 throughput = vec3(1.0);
+    bool inWater = false; // medium tracking for dielectric water (Fresnel + Beer–Lambert absorption)
     for (int bounce = 0; bounce <= MAX_BOUNCES; bounce++) {
         payload.hitT = -1.0;
         // No opaque flag: cutout geometry stays alpha-tested via world.rahit on every path ray, so
@@ -149,9 +175,54 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
             break;
         }
 
-        vec3 n = payload.normal;
+        // Beer–Lambert: attenuate along the segment just travelled if it lay inside water. Applied to
+        // every hit reached while submerged (the water-exit face or the underwater floor), shifting the
+        // transmitted radiance toward blue-green with depth.
+        if (inWater) {
+            throughput *= exp(-WATER_ABSORB * payload.hitT);
+        }
+
+        vec3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
+        vec3 hitPos = ro + rd * payload.hitT;
+
+        // P5.2 water: smooth dielectric interface. Choose reflection or refraction stochastically by the
+        // Fresnel reflectance F — sampling by F leaves the throughput unchanged (lossless interface), so
+        // there is no diffuse albedo multiply and no sun NEE here (the surface is specular). Medium
+        // tracking decides air->water vs water->air from the path state, not the hit geometry, so the
+        // duplicated FluidRenderer back-faces don't confuse the orientation; the normal `n` already
+        // faces the incoming ray. The bounce cap bounds stacked refractions.
+        if (payload.material > 0.5) {
+            if (bounce == 0) { // primary water hit: feed RR a stable, slightly glossy guide surface
+                gv_normal = n;
+                gv_albedo = WATER_GUIDE_ALBEDO;
+                gv_rough = WATER_GUIDE_ROUGH;
+                gv_hitCamRel = hitPos - pc.camOffset;
+                gv_objDisp = vec3(0.0); // water surface is static (no per-object MV)
+            }
+            float cosI = clamp(dot(-rd, n), 0.0, 1.0);
+            float etaI = inWater ? WATER_IOR : 1.0;
+            float etaT = inWater ? 1.0 : WATER_IOR;
+            float F = fresnelDielectric(cosI, etaI, etaT);
+            if (rndf(seed) < F) {
+                rd = reflect(rd, n);
+                ro = hitPos + n * SURF_BIAS; // reflected ray stays on the incidence side
+            } else {
+                rd = refract(rd, n, etaI / etaT); // F < 1 here, so this is never total internal reflection
+                ro = hitPos - n * SURF_BIAS;       // transmitted ray crosses to the far side
+                inWater = !inWater;
+            }
+            if (bounce >= RR_START) {
+                float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
+                if (rndf(seed) > q) {
+                    break;
+                }
+                throughput /= q;
+            }
+            continue;
+        }
+
         vec3 albedo = payload.albedo;
-        vec3 p = ro + rd * payload.hitT + n * SURF_BIAS;
+        vec3 p = hitPos + n * SURF_BIAS;
 
         if (bounce == 0) { // primary-visibility surface: capture the denoiser guide buffers
             gv_normal = n;

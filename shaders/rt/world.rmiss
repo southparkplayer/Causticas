@@ -9,6 +9,7 @@ struct Payload {
     float hitT;
     float emission;
     vec3 motionPrev;
+    float material;
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 
@@ -20,4 +21,5 @@ void main() {
     payload.hitT = -1.0;
     payload.emission = 0.0;
     payload.motionPrev = vec3(0.0);
+    payload.material = 0.0;
 }

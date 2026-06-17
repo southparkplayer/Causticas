@@ -69,6 +69,18 @@ void main() {
     }
 
     Section sec = SectionTable(pc.tableAddr).s[gl_InstanceCustomIndexEXT];
+
+    // P5.2 water (per-prim tint.w == 1): a dielectric resolved in the closest-hit, so it must NOT be
+    // alpha-cutout-discarded here. Accept it for path rays (closest-hit does the Fresnel reflect/refract),
+    // but pass light through for shadow/visibility rays (SkipClosestHit set) so submerged terrain still
+    // receives direct sun rather than a hard water shadow.
+    if (Prims(sec.primAddr).p[pid].tint.w > 0.5) {
+        if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0u) {
+            ignoreIntersectionEXT;
+        }
+        return;
+    }
+
     Indices indices = Indices(sec.idxAddr);
     UVs uvs = UVs(sec.uvAddr);
     uint i0 = indices.i[3u * pid + 0u];

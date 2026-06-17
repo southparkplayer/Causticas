@@ -18,6 +18,7 @@ import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.block.RenderShape;
@@ -202,7 +203,7 @@ public final class RtTerrain {
                     long key = sectionKey(scx, scy, scz);
                     desired.add(key);
                     if (!resident.containsKey(key) && !empty.contains(key)
-                            && neighborChunksReady(level, scx, scz, pcx, pcz, r)) {
+                            && neighborChunksReady(level, scx, scz)) {
                         missing.add(new int[]{scx, scy, scz});
                     }
                 }
@@ -257,25 +258,30 @@ public final class RtTerrain {
     }
 
     /**
-     * Whether a section may be built now: all of its eight horizontal neighbour chunks that fall
-     * <em>within the RT view window</em> are loaded. We extract using vanilla's model/fluid renderers,
-     * which read across chunk borders for cull faces and (for fluids) the surrounding blocks that set
-     * a water surface's edge/corner heights. If a border section is built while its neighbour chunk is
-     * still missing, those reads return air — the neighbour-facing faces and the shared water surface
-     * come out wrong, and nothing re-dirties the section once the chunk arrives (a bulk chunk load
-     * fires no per-block update). Deferring the build until the neighbours are present makes the first
-     * build correct. Out-of-window neighbours are ignored: they aren't ray-traced, so there is no
-     * visible seam against them, and waiting on them would leave a permanent hole at the view edge.
+     * Whether a section may be built now: all eight of its horizontal neighbour chunks are loaded. We
+     * extract using vanilla's model/fluid renderers, which read across chunk borders for cull faces and
+     * (for fluids) the surrounding blocks that set a water surface's edge/corner heights. If a border
+     * section is built while a neighbour chunk is still missing, those reads return air — the
+     * neighbour-facing faces and the shared water surface come out wrong, and nothing re-dirties the
+     * section once the chunk arrives (a bulk chunk load fires no per-block update). Deferring the build
+     * until every neighbour is present makes the first build correct.
+     *
+     * <p>We deliberately gate on <em>all</em> neighbours, not just those inside the RT view window. A
+     * section at the window edge has an outward neighbour that is out of window (so not ray-traced) but
+     * whose chunk is still loaded — the RT view is capped well below the vanilla render distance — so we
+     * can read its blocks and bake a correct border. Without this, the edge section would mesh against
+     * air, then show a seam once the player moves and that neighbour becomes interior and is rendered.
+     * The only cost is at the very view edge when the render distance is at or below the RT cap: the
+     * outermost ring waits for a chunk that is never loaded, leaving it unbuilt — an acceptable nit far
+     * from the player.
      */
-    private boolean neighborChunksReady(ClientLevel level, int scx, int scz, int pcx, int pcz, int r) {
+    private boolean neighborChunksReady(ClientLevel level, int scx, int scz) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 if (dx == 0 && dz == 0) {
                     continue;
                 }
-                int ncx = scx + dx, ncz = scz + dz;
-                boolean inWindow = Math.abs(ncx - pcx) <= r && Math.abs(ncz - pcz) <= r;
-                if (inWindow && !level.getChunkSource().hasChunk(ncx, ncz)) {
+                if (!level.getChunkSource().hasChunk(scx + dx, scz + dz)) {
                     return false;
                 }
             }
@@ -318,6 +324,9 @@ public final class RtTerrain {
                     FluidState fluid = state.getFluidState();
                     if (!fluid.isEmpty()) {
                         fluidCapture.emission = state.getLightEmission() / 15f;
+                        // Water is the dielectric fluid (P5.2 translucency/refraction); lava stays an
+                        // opaque emitter. Tagged per-prim so the path tracer can branch (see emitQuad).
+                        fluidCapture.water = fluid.is(FluidTags.WATER);
                         try {
                             fluidRenderer.tesselate(view, m, fluidCapture, state, fluid);
                         } catch (Throwable t) {
@@ -647,10 +656,15 @@ public final class RtTerrain {
      * emit two triangles like {@link QuadCapture}. Coords are already section-local (FluidRenderer uses
      * {@code pos & 15}). The cardinal-lit vertex colour is dropped — albedo comes from the atlas in the
      * hit shader, same as blocks. Tint is left white (biome water tint is deferred to P5 water work).
+     *
+     * <p>P5.2: water faces are tagged in the per-prim {@code tint.w} slot ({@code 1.0} = water) so the
+     * path tracer treats them as a smooth dielectric (Fresnel reflection + refraction + Beer–Lambert
+     * absorption). Lava keeps {@code tint.w == 0.0} and stays an opaque emitter.
      */
     private static final class FluidCapture implements VertexConsumer, FluidRenderer.Output {
         SectionMesh cur;     // set before each section
         float emission;      // set per fluid block (lava = 1, water = 0)
+        boolean water;       // set per fluid block: true for water (dielectric), false for lava
         private int n;
         private final float[] qx = new float[4], qy = new float[4], qz = new float[4], qu = new float[4], qv = new float[4];
 
@@ -698,6 +712,7 @@ public final class RtTerrain {
                 ny /= len;
                 nz /= len;
             }
+            float material = water ? 1f : 0f; // tint.w: 1 = water dielectric, 0 = opaque (lava)
             FloatArrayList prim = cur.prim;
             for (int t = 0; t < 2; t++) { // one {normal+emission, tint} record per triangle
                 prim.add(nx);
@@ -707,7 +722,7 @@ public final class RtTerrain {
                 prim.add(1f);
                 prim.add(1f);
                 prim.add(1f);
-                prim.add(0f);
+                prim.add(material);
             }
         }
 
