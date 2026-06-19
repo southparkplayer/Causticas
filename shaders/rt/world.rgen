@@ -83,6 +83,7 @@ struct Payload {
     float material; // hit: 0 = opaque diffuse, 1 = water (smooth dielectric); 0 on miss.
     float roughness; // P6.1: perceptual roughness for the GGX BRDF.
     float metalness; // P6.1: 0 = dielectric, 1 = conductor.
+    vec3 f0;         // P6.2a: specular F0 (set by the chit: dielectric 0.04 / LabPBR green / metal).
 };
 layout(location = 0) rayPayloadEXT Payload payload;
 layout(location = 1) rayPayloadEXT float shadowVis; // 1.0 if the visibility ray escaped, else 0.0
@@ -302,7 +303,8 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
         float rough = pbr ? clamp(payload.roughness, MIN_ROUGH, 1.0) : 1.0;
         float metal = pbr ? clamp(payload.metalness, 0.0, 1.0) : 0.0;
         vec3 diffAlb = albedo * (1.0 - metal);
-        vec3 F0 = mix(vec3(0.04), albedo, metal);
+        // F0 comes from the chit (P6.2a): dielectric 0.04, a LabPBR custom/metal F0, or albedo for metals.
+        vec3 F0 = pbr ? payload.f0 : mix(vec3(0.04), albedo, metal);
 
         if (bounce == 0) { // primary-visibility surface: capture the denoiser guide buffers
             gv_normal = n;

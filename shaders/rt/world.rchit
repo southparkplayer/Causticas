@@ -62,6 +62,7 @@ struct Payload {
     float material;  // P5.2: 0 = opaque diffuse, 1 = water (smooth dielectric, handled in raygen)
     float roughness; // P6.1: perceptual roughness for the GGX BRDF
     float metalness; // P6.1: 0 = dielectric, 1 = conductor
+    vec3 f0;         // P6.2a: specular reflectance at normal incidence (dielectric 0.04 / LabPBR / metal)
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 attribs;
@@ -71,6 +72,34 @@ hitAttributeEXT vec2 attribs;
 // section table; shading reads per-prim normal + vertex-colour tint (no atlas — entity textures are
 // P5.1b-2b) and the per-object MV displacement.
 const int ENTITY_BIT = 0x800000;
+
+// P6.2a LabPBR predefined metals (green channel 230..237): complex refractive indices N (eta) and K
+// (kappa) per RGB. F0 = ((n-1)^2 + k^2) / ((n+1)^2 + k^2). Values per the LabPBR 1.3 standard.
+const vec3 METAL_N[8] = vec3[8](
+    vec3(2.9114, 2.9497, 2.5845),   // 230 iron
+    vec3(0.18299, 0.42108, 1.3734), // 231 gold
+    vec3(1.3456, 0.96521, 0.61722), // 232 aluminum
+    vec3(3.1071, 3.1812, 2.3230),   // 233 chrome
+    vec3(0.27105, 0.67693, 1.3164), // 234 copper
+    vec3(1.9100, 1.8300, 1.4400),   // 235 lead
+    vec3(2.3757, 2.0847, 1.8453),   // 236 platinum
+    vec3(0.15943, 0.14512, 0.13547) // 237 silver
+);
+const vec3 METAL_K[8] = vec3[8](
+    vec3(3.0893, 2.9318, 2.7670),
+    vec3(3.4242, 2.3459, 1.7704),
+    vec3(7.4746, 6.3995, 5.3031),
+    vec3(3.3314, 3.3291, 3.1350),
+    vec3(3.6092, 2.6248, 2.2921),
+    vec3(3.5100, 3.4000, 3.1800),
+    vec3(4.2655, 3.7153, 3.1365),
+    vec3(3.9291, 3.1900, 2.3808)
+);
+vec3 metalF0(int idx) {
+    vec3 n = METAL_N[idx];
+    vec3 k = METAL_K[idx];
+    return ((n - 1.0) * (n - 1.0) + k * k) / ((n + 1.0) * (n + 1.0) + k * k);
+}
 
 void main() {
     if ((gl_InstanceCustomIndexEXT & ENTITY_BIT) != 0) {
@@ -99,6 +128,7 @@ void main() {
         payload.material = 0.0;          // entities are opaque
         payload.roughness = pr.mat.x;    // P6.1
         payload.metalness = pr.mat.y;
+        payload.f0 = mix(vec3(0.04), payload.albedo, pr.mat.y); // entity F0 (dielectric / metal)
         return;
     }
 
@@ -125,17 +155,36 @@ void main() {
     payload.albedo = textureLod(blockAtlas, uv, 0.0).rgb * tint;
     payload.normal = n;
     payload.hitT = gl_HitTEXT;
-    payload.emission = pr.normal.w; // 0..1 light level, written by extraction into the free slot
     payload.motionPrev = vec3(0.0); // static terrain: camera-only motion vector
     payload.material = pr.tint.w;   // P5.2: 1 = water dielectric, 0 = opaque (set by extraction)
-    // P6.1 heuristic, overridden per-texel by LabPBR _s when present (P6.2a, flagged in mat.z).
+
+    // P6.1 heuristic defaults, overridden per-texel by LabPBR _s when present (P6.2a, flagged in mat.z).
     float rough = pr.mat.x;
     float metal = pr.mat.y;
+    vec3 f0 = mix(vec3(0.04), payload.albedo, metal);
+    float emission = pr.normal.w;   // 0..1 block light level (extraction), the heuristic emission source
     if (pr.mat.z > 0.5) {
         vec4 s = textureLod(blockSpecAtlas, uv, 0.0);
-        rough = (1.0 - s.r) * (1.0 - s.r);          // LabPBR: red = perceptual smoothness
-        metal = s.g >= (229.5 / 255.0) ? 1.0 : 0.0; // LabPBR: green >= 230 = metal, else dielectric
+        rough = (1.0 - s.r) * (1.0 - s.r);          // red = perceptual smoothness -> roughness
+        float g = s.g * 255.0;                      // green = reflectance / metal index
+        if (g < 229.5) {                            // 0..229: dielectric, linear F0 = green/255
+            metal = 0.0;
+            f0 = vec3(s.g);
+        } else if (g < 237.5) {                     // 230..237: predefined metal (N/K table)
+            metal = 1.0;
+            f0 = metalF0(int(g + 0.5) - 230);
+        } else {                                    // 238..255: generic metal, albedo as F0
+            metal = 1.0;
+            f0 = payload.albedo;
+        }
+        float a = s.a * 255.0;                      // alpha = emission (255 = ignored, 0..254 = strength)
+        if (a < 254.5) {
+            emission = max(emission, a / 254.0);
+        }
+        // (blue channel: porosity 0..64 / SSS 65..255 — deferred, not consumed yet.)
     }
     payload.roughness = rough;
     payload.metalness = metal;
+    payload.f0 = f0;
+    payload.emission = emission;
 }

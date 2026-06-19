@@ -349,9 +349,11 @@ to fill our own buffers — we do not consume its packed/culled render output.)
       atlas sprite layout (a `NativeImage`→`DynamicTexture`, MC's own upload path — no Vulkan staging),
       filled **lazily** from the sprites terrain extraction sees (`BakedQuad.materialInfo().sprite()`; no
       atlas enumeration). `RtTerrain` flags `_s`-backed prims in the free `mat.z` lane; `world.rchit`
-      samples `blockSpecAtlas` (set 0, binding 8) at the same UV as albedo and decodes LabPBR
-      (`roughness=(1-r)²`, green≥230 = metal), else the heuristic. One extra plain sampler — **no
-      bindless**. Gated by `-Dupscaler.rt.pbr`.
+      samples `blockSpecAtlas` (set 0, binding 8) at the same UV as albedo. One extra plain sampler —
+      **no bindless**. Gated by `-Dupscaler.rt.pbr`. **Fuller LabPBR `_s` decode:** red → roughness
+      `(1-r)²`; green → reflectance (dielectric F0 0–229, the 8 predefined metals via hardcoded N/K →
+      F0, generic metal albedo); alpha → emission (255 ignored). F0 flows through a new `Payload.f0`
+      into the GGX specular + the `gSpecAlbedo` RR guide. **Deferred:** blue channel (porosity/SSS).
     - **P6.2b (NEXT) — `_n` normal map.** Needs a per-triangle TBN derived in the chit from the 3 vertex
       positions + UVs (no new buffer). **P6.2c — entity `_n`/`_s`** via the existing bindless array.
       Deferred refinements: LabPBR dielectric green-channel F0 (0–229), emission alpha, animated `_s`.

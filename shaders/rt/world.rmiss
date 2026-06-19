@@ -12,6 +12,7 @@ struct Payload {
     float material;
     float roughness;
     float metalness;
+    vec3 f0;
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 
@@ -26,4 +27,5 @@ void main() {
     payload.material = 0.0;
     payload.roughness = 1.0;
     payload.metalness = 0.0;
+    payload.f0 = vec3(0.0);
 }
