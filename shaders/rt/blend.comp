@@ -4,24 +4,23 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(binding = 0, set = 0, rgba8) uniform image2D baseImage;        // LDR world target copy
 layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // HDR RT radiance
+layout(binding = 2, set = 0, r32f) uniform readonly image2D exposureImage; // 1x1 linear exposure scale
 
 layout(push_constant) uniform Push {
     float blend; // 0 = vanilla only, 1 = RT only
 } pc;
 
 // Tonemap seam: map HDR RT radiance to displayable LDR before compositing over the LDR world target.
-// P3.1 emits true HDR (sun NEE + multi-bounce can exceed 1), so we apply exposure + the Narkowicz
-// ACES filmic curve. (When P4's DLSS Ray Reconstruction lands it consumes the HDR pre-tonemap; this
-// stays the final display-mapping step for the composite path.)
-const float EXPOSURE = 1.1;
+// P3.1 emits true HDR (sun NEE + multi-bounce can exceed 1), so exposure is applied here from the
+// compositor-owned 1x1 image before ACES. DLSS-RR still consumes HDR pre-tonemap.
 
 vec3 acesFilmic(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-vec3 tonemap(vec3 hdr) {
-    return acesFilmic(hdr * EXPOSURE);
+vec3 tonemap(vec3 hdr, float exposure) {
+    return acesFilmic(max(hdr * exposure, vec3(0.0)));
 }
 
 void main() {
@@ -33,6 +32,7 @@ void main() {
 
     vec4 base = imageLoad(baseImage, pix);
     vec4 rt = imageLoad(rtImage, pix);
-    vec3 ldr = tonemap(rt.rgb);
+    float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
+    vec3 ldr = tonemap(rt.rgb, exposure);
     imageStore(baseImage, pix, vec4(mix(base.rgb, ldr, pc.blend), base.a));
 }

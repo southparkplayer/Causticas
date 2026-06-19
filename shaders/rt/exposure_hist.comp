@@ -1,0 +1,26 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, set = 0, rgba16f) uniform readonly image2D colorImage;
+layout(std430, binding = 1, set = 0) buffer Histogram {
+    uint bins[256];
+} hist;
+
+const float LOG_MIN = -12.0;
+const float LOG_MAX = 12.0;
+const float INV_LOG_RANGE = 1.0 / (LOG_MAX - LOG_MIN);
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(colorImage);
+    if (pix.x >= size.x || pix.y >= size.y) {
+        return;
+    }
+
+    vec3 rgb = max(imageLoad(colorImage, pix).rgb, vec3(0.0));
+    float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+    float logLum = clamp(log2(max(lum, 1.0e-5)), LOG_MIN, LOG_MAX);
+    uint bin = min(uint(floor((logLum - LOG_MIN) * INV_LOG_RANGE * 256.0)), 255u);
+    atomicAdd(hist.bins[bin], 1u);
+}

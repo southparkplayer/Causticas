@@ -125,6 +125,7 @@ public final class RtComposite {
     // Display-res RT image the blend reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
+    private final RtExposure exposure = new RtExposure();
 
     // P4.2b resolution split: the trace + guide buffers run at render res, the composite at display res.
     private int displayW = -1;
@@ -285,7 +286,8 @@ public final class RtComposite {
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
-        if (output != null && baseCopy != null && rrOutput != null && displayW == width && displayH == height) {
+        if (output != null && baseCopy != null && rrOutput != null && exposure.ready()
+                && displayW == width && displayH == height) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -318,13 +320,14 @@ public final class RtComposite {
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT);
         // Display-res RT image the blend reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT);
+        exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
-        blendPipeline.setImages(baseCopy.view, rrOutput.view);
+        blendPipeline.setImages(baseCopy.view, rrOutput.view, exposure.image().view);
     }
 
     /**
@@ -429,6 +432,8 @@ public final class RtComposite {
             deferredTlas.add(new DeferredTlas(frameCounter + KEEP_FRAMES, frameTlas));
 
             active.trace(cmd, renderW, renderH, push);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT color visible to exposure histogram/fixed write
+            exposure.record(cmd, stack, output);
             // P4.2b: DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput, which
             // the blend reads. No copy-back: render and display sizes now differ.
@@ -568,6 +573,7 @@ public final class RtComposite {
             output = null;
         }
         destroyGuideImages();
+        exposure.destroy();
         if (blendPipeline != null) {
             blendPipeline.destroy();
             blendPipeline = null;

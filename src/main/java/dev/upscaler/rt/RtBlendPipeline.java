@@ -37,6 +37,7 @@ public final class RtBlendPipeline {
     private final long pipeline;
     private long boundBaseView;
     private long boundRtView;
+    private long boundExposureView;
     private boolean destroyed;
 
     private RtBlendPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -51,10 +52,12 @@ public final class RtBlendPipeline {
     public static RtBlendPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(2, stack);
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(3, stack);
             binds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
@@ -63,7 +66,7 @@ public final class RtBlendPipeline {
             long dsl = p.get(0);
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(2);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(3);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt blend)");
             long pool = p.get(0);
@@ -95,8 +98,8 @@ public final class RtBlendPipeline {
         }
     }
 
-    public void setImages(long baseImageView, long rtImageView) {
-        if (boundBaseView == baseImageView && boundRtView == rtImageView) {
+    public void setImages(long baseImageView, long rtImageView, long exposureImageView) {
+        if (boundBaseView == baseImageView && boundRtView == rtImageView && boundExposureView == exposureImageView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -104,16 +107,21 @@ public final class RtBlendPipeline {
             baseInfo.get(0).imageView(baseImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer rtInfo = VkDescriptorImageInfo.calloc(1, stack);
             rtInfo.get(0).imageView(rtImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer exposureInfo = VkDescriptorImageInfo.calloc(1, stack);
+            exposureInfo.get(0).imageView(exposureImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
             writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(baseInfo);
             writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(rtInfo);
+            writes.get(2).sType$Default().dstSet(descriptorSet).dstBinding(2)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundBaseView = baseImageView;
         boundRtView = rtImageView;
+        boundExposureView = exposureImageView;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, float blend) {
