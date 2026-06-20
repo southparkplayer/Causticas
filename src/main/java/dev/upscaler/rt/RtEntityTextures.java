@@ -12,14 +12,18 @@ import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  * P5.1b-2b: resolves the texture backing an entity {@link RenderType} to a Vulkan image-view handle,
  * for the bindless entity-texture array. Entities use per-type texture files (zombie.png, …), not the
- * block atlas, so each distinct {@link RenderType} maps to its own texture/bindless slot.
+ * block atlas, so each distinct texture maps to its own bindless slot. Slots are keyed by the resolved
+ * image view rather than the {@link RenderType}: some render types are rebuilt every frame with a fresh
+ * identity (the charged-creeper energy swirl scrolls its texture transform, so {@code energySwirl()}
+ * allocates a new RenderType per frame), and keying by RenderType there would leak a slot per frame
+ * until the array exhausts and everything falls back to slot 0.
  *
  * <p>The view is obtained through the <b>public</b> {@code RenderType.prepare()} → {@link
  * PreparedRenderType#textures()} API (a list of {@code Texture(name, GpuTextureView, sampler)}): the
@@ -35,10 +39,18 @@ public final class RtEntityTextures {
     /** Bindless array capacity (slot 0 reserved as a fallback texture). {@code -Dupscaler.rt.maxEntityTextures}. */
     public static final int MAX_TEXTURES = Integer.getInteger("upscaler.rt.maxEntityTextures", 256);
 
-    private final Map<RenderType, Long> viewCache = new IdentityHashMap<>();
-    // Append-only RenderType → bindless slot registry (slot 0 = fallback). Slots never change once
-    // assigned, so update-after-bind writes for new slots never disturb in-flight frames.
-    private final Map<RenderType, Integer> slotCache = new IdentityHashMap<>();
+    // RenderType identity → resolved primary image-view handle. WEAK: some render types are rebuilt
+    // every frame with a fresh identity (e.g. the charged-creeper energy-swirl layer, whose scrolling
+    // texture transform makes RenderTypes.energySwirl() allocate a new RenderType each frame). A weak map
+    // lets those dead identities be collected instead of accumulating; stable singletons (zombie.png, …)
+    // stay cached and skip the costly RenderType.prepare().
+    private final Map<RenderType, Long> viewCache = new WeakHashMap<>();
+    // Resolved image-view handle → bindless slot. The slot identifies a *texture*, not a RenderType, so
+    // many render types that differ only by a texture transform we don't replicate (the swirl's scroll)
+    // collapse to ONE slot — instead of leaking a slot per frame until the array exhausts and everything
+    // falls back to slot 0 (the block atlas). Append-only: a handle's slot never changes once assigned,
+    // so update-after-bind writes for new slots never disturb in-flight frames.
+    private final Map<Long, Integer> viewSlotCache = new HashMap<>();
     // Atlas-location → bindless slot, for items/blocks (which texture from an atlas, not a per-type
     // file). Seeded with the block atlas = slot 0 (also the fallback). Items use a separate item atlas.
     private final Map<Identifier, Integer> atlasSlotCache = new HashMap<>();
@@ -53,27 +65,15 @@ public final class RtEntityTextures {
     }
 
     /**
-     * The bindless slot for {@code renderType}'s texture (cached, append-only). Resolves + assigns a new
-     * slot on first sight (queued for upload via {@link #uploadPending}); returns 0 (the fallback slot)
-     * if the texture can't be resolved or the array is full.
+     * The bindless slot for {@code renderType}'s texture. Keyed by the resolved image view, not the
+     * RenderType, so per-frame-allocated render types sharing one texture reuse a single slot. Returns 0
+     * (the fallback slot = block atlas) if the texture can't be resolved or the array is full.
      */
     public int slotFor(RenderType renderType) {
         if (renderType == null) {
             return 0;
         }
-        Integer cached = slotCache.get(renderType);
-        if (cached != null) {
-            return cached;
-        }
-        long view = resolveView(renderType);
-        if (view == 0L || nextSlot >= MAX_TEXTURES) {
-            slotCache.put(renderType, 0);
-            return 0;
-        }
-        int slot = nextSlot++;
-        slotCache.put(renderType, slot);
-        pending.add(new Pending(slot, view));
-        return slot;
+        return slotForView(resolveView(renderType));
     }
 
     /**
@@ -99,12 +99,30 @@ public final class RtEntityTextures {
                 UpscalerMod.LOGGER.warn("RT atlas texture resolution failed for {}", atlasLocation, t);
             }
         }
-        if (view == 0L || nextSlot >= MAX_TEXTURES) {
-            atlasSlotCache.put(atlasLocation, 0);
+        int slot = slotForView(view);
+        atlasSlotCache.put(atlasLocation, slot);
+        return slot;
+    }
+
+    /**
+     * Map a resolved image-view handle to a stable bindless slot, allocating one on first sight (queued
+     * for upload via {@link #uploadPending}). Returns 0 (fallback) when the view is unresolved or the
+     * array is full. Deduping by handle is what bounds slot use: distinct render types backed by the same
+     * texture share a slot instead of each consuming one.
+     */
+    private int slotForView(long view) {
+        if (view == 0L) {
+            return 0;
+        }
+        Integer cached = viewSlotCache.get(view);
+        if (cached != null) {
+            return cached;
+        }
+        if (nextSlot >= MAX_TEXTURES) {
             return 0;
         }
         int slot = nextSlot++;
-        atlasSlotCache.put(atlasLocation, slot);
+        viewSlotCache.put(view, slot);
         pending.add(new Pending(slot, view));
         return slot;
     }
@@ -120,10 +138,10 @@ public final class RtEntityTextures {
         pending.clear();
     }
 
-    /** Drop the registry (call when the world pipeline / bindless set is recreated). */
+    /** Drop the registry (call when the world pipeline / bindless set is recreated, or textures reload). */
     public void reset() {
         viewCache.clear();
-        slotCache.clear();
+        viewSlotCache.clear();
         atlasSlotCache.clear();
         atlasSlotCache.put(TextureAtlas.LOCATION_BLOCKS, 0); // block atlas = the slot-0 fallback
         pending.clear();
