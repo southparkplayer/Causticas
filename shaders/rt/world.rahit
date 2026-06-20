@@ -25,8 +25,8 @@ struct EntityGeom {
     uint64_t primAddr;
     uint64_t idxAddr;
     uint64_t uvAddr;
-    uint64_t dispAddr; // P5.1c-2: per-vertex MV displacement buffer (unused here; the any-hit only needs primAddr)
-    vec4 pad;
+    uint64_t dispAddr; // P5.1c-2: MV data (unused here; the any-hit only needs primAddr)
+    vec4 rigidDisp;
 };
 
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Prims { Prim p[]; };

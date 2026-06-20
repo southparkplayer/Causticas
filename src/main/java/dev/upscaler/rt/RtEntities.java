@@ -72,9 +72,9 @@ public final class RtEntities {
     // capped per frame so a burst of newly loaded chunks can't stall (over-budget BEs keep their last
     // geometry / pop in over later frames, like terrain's SECTIONS_PER_TICK).
     private static final int BE_BUILDS_PER_FRAME = Integer.getInteger("upscaler.rt.beBuildsPerFrame", 8);
-    // Entity geometry table entry: {u64 primAddr, u64 idxAddr, u64 uvAddr, u64 dispAddr, vec4 pad} = 48
-    // bytes (std430 vec4 forces 16-align/48-size). P5.1c-2: dispAddr points at a per-vertex world-space
-    // displacement buffer (cur − prev frame) for the motion vector; 0 ⇒ static (no MV).
+    // Entity geometry table entry: {u64 primAddr, u64 idxAddr, u64 uvAddr, u64 dispAddr, vec4 rigidDisp}
+    // = 48 bytes (std430 vec4 forces 16-align/48-size). P5.1c-2: dispAddr points at a per-vertex
+    // world-space displacement buffer; when it is 0, rigidDisp.xyz carries whole-object motion (or zero).
     private static final int TABLE_ENTRY_BYTES = 48;
     // Ring of fixed-size geometry tables: each frame fills the next slot so the GPU read of this frame's
     // trace never races a later frame's host write. > frames-in-flight (mirrors RtPipeline RING).
@@ -91,9 +91,13 @@ public final class RtEntities {
     // Force a periodic full rebuild of a slot's AS to bound BVH-quality degradation from repeated refits
     // (an entity that deforms a lot would otherwise refit the same BVH topology forever). Per-slot count.
     private static final int REFIT_REBUILD_INTERVAL = Integer.getInteger("upscaler.rt.refitRebuildInterval", 120);
+    // Treat per-vertex displacements as rigid when every vertex agrees within this tolerance, avoiding a
+    // transient disp buffer for plain whole-entity translation.
+    private static final float RIGID_DISP_EPS = 1.0e-5f;
     // Identity 3x4 row-major: entity geometry is captured directly in rebased space, so no per-instance
     // transform is needed (unlike terrain sections, which carry sectionOrigin − rebase).
     private static final float[] IDENTITY = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    private static final Motion NO_MOTION = new Motion(0L, 0f, 0f, 0f);
 
     // Reusable capture pipeline (single-threaded on the render thread).
     private final RtEntityCollector collector = new RtEntityCollector();
@@ -121,14 +125,17 @@ public final class RtEntities {
     private final RtBufferPool pool = new RtBufferPool();
 
     // P5.1c-2: previous frame's captured (rebase-space) vertex positions + that frame's rebase origin,
-    // keyed by entity id (rebuilt each frame → prunes entities that left view). Diffed against the current
-    // capture to produce a PER-VERTEX world-space displacement (so rotation/animation reproject, not just
-    // rigid translation). Topology must match (same vertex count) to pair vertices index-by-index.
+    // keyed by entity id. The maps are swapped/reused each frame: entries not seen this frame fall out,
+    // while visible entities keep their float[] backing to avoid steady-state allocation churn.
     private Map<Integer, EntityPrev> prevVerts = new HashMap<>();
+    private Map<Integer, EntityPrev> curVerts = new HashMap<>();
 
     /** Last frame's posed mesh for one entity: rebase-space vertex positions + the rebase origin they were
      *  captured against (needed to convert the inter-frame delta to world space when the rebase moved). */
-    private record EntityPrev(float[] verts, int rbx, int rby, int rbz) {
+    private static final class EntityPrev {
+        float[] verts = new float[0];
+        int size;
+        int rbx, rby, rbz;
     }
 
     // Per-frame entity GPU resources awaiting a frames-in-flight-safe free.
@@ -188,6 +195,9 @@ public final class RtEntities {
     }
 
     private record Deferred(long freeFrame, Runnable free) {
+    }
+
+    private record Motion(long dispAddr, float rigidX, float rigidY, float rigidZ) {
     }
 
     private record BeCandidate(BlockEntity be, double dist2, long posKey) {
@@ -275,7 +285,7 @@ public final class RtEntities {
     private void captureEntities(RtContext ctx, FrameBuild build, Minecraft mc, ClientLevel level, float partial, int rbx, int rby, int rbz) {
         EntityRenderDispatcher dispatcher = mc.getEntityRenderDispatcher();
         Entity cameraEntity = mc.getCameraEntity();
-        Map<Integer, EntityPrev> curVerts = new HashMap<>();
+        curVerts.clear();
         for (Entity entity : level.entitiesForRendering()) {
             if (build.full()) {
                 break;
@@ -301,29 +311,85 @@ public final class RtEntities {
                 continue; // non-model entity (arrow/etc.) — no body geometry captured
             }
             int id = entity.getId();
-            // P5.1c-2: per-vertex world-space displacement vs last frame's posed mesh (null when new or the
-            // topology changed → one frame of camera-only MV, like the old per-object path on first sight).
-            float[] disp = vertexDisp(capture.verts, prevVerts.get(id), rbx, rby, rbz);
-            curVerts.put(id, new EntityPrev(
-                    java.util.Arrays.copyOf(capture.verts.elements(), capture.verts.size()), rbx, rby, rbz));
-            appendCapture(ctx, build, disp, id, ENTITY_BIT, 0xFF);
+            // P5.1c-2: motion vs last frame's posed mesh. New/topology-changed entities get one frame of
+            // camera-only MV; rigid translation is packed into the table, deformation gets a disp buffer.
+            EntityPrev prev = prevVerts.get(id);
+            Motion motion = uploadVertexMotion(ctx, build, capture.verts, prev, rbx, rby, rbz, "entity " + id);
+            curVerts.put(id, storeEntityPrev(prev, capture.verts, rbx, rby, rbz));
+            appendCapture(ctx, build, motion, id, ENTITY_BIT, 0xFF);
         }
+        Map<Integer, EntityPrev> oldPrev = prevVerts;
         prevVerts = curVerts;
+        curVerts = oldPrev;
     }
 
     /**
-     * Per-vertex world-space displacement (cur − prev frame), in the {@code Disps} buffer layout (vec4 per
-     * vertex, xyz used). Captures are rebase-relative, so the world delta adds the rebase shift
-     * {@code rebaseCur − rebasePrev}. Returns {@code null} when the entity is new or its vertex count
-     * changed (can't pair vertices index-by-index → no MV that frame). Mirrors the refit topology gate.
+     * Upload this entity's motion-vector displacement. Captures are rebase-relative, so the world delta
+     * adds the rebase shift {@code rebaseCur − rebasePrev}. If every vertex has the same displacement,
+     * store it as a rigid vector in the geometry-table entry; otherwise write a per-vertex {@code vec4}
+     * buffer directly, avoiding the old intermediate {@code float[]}.
      */
-    private static float[] vertexDisp(it.unimi.dsi.fastutil.floats.FloatArrayList cur, EntityPrev prev,
-                                      int rbx, int rby, int rbz) {
-        if (prev == null || prev.verts().length != cur.size()) {
-            return null;
+    private Motion uploadVertexMotion(RtContext ctx, FrameBuild build, it.unimi.dsi.fastutil.floats.FloatArrayList cur,
+                                      EntityPrev prev, int rbx, int rby, int rbz, String label) {
+        if (prev == null || prev.size != cur.size()) {
+            return NO_MOTION;
         }
-        return buildDisp(cur.elements(), cur.size(), prev.verts(),
-                rbx - prev.rbx(), rby - prev.rby(), rbz - prev.rbz());
+        float[] curVerts = cur.elements();
+        float[] prevVerts = prev.verts;
+        float sx = rbx - prev.rbx;
+        float sy = rby - prev.rby;
+        float sz = rbz - prev.rbz;
+        int vc = cur.size() / 3;
+        if (vc == 0) {
+            return NO_MOTION;
+        }
+
+        float dx0 = (curVerts[0] - prevVerts[0]) + sx;
+        float dy0 = (curVerts[1] - prevVerts[1]) + sy;
+        float dz0 = (curVerts[2] - prevVerts[2]) + sz;
+        boolean rigid = true;
+        for (int i = 1; i < vc; i++) {
+            float dx = (curVerts[i * 3]     - prevVerts[i * 3])     + sx;
+            float dy = (curVerts[i * 3 + 1] - prevVerts[i * 3 + 1]) + sy;
+            float dz = (curVerts[i * 3 + 2] - prevVerts[i * 3 + 2]) + sz;
+            if (Math.abs(dx - dx0) > RIGID_DISP_EPS
+                    || Math.abs(dy - dy0) > RIGID_DISP_EPS
+                    || Math.abs(dz - dz0) > RIGID_DISP_EPS) {
+                rigid = false;
+                break;
+            }
+        }
+        if (rigid) {
+            return new Motion(0L, dx0, dy0, dz0);
+        }
+
+        beginBuildIfNeeded(ctx, build);
+        int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        RtBuffer dispBuf = pool.acquire(ctx, (long) vc * 4L * Float.BYTES, storage, true, label + " disp");
+        java.nio.FloatBuffer out = MemoryUtil.memFloatBuffer(dispBuf.mapped, vc * 4);
+        for (int i = 0; i < vc; i++) {
+            out.put((curVerts[i * 3]     - prevVerts[i * 3])     + sx);
+            out.put((curVerts[i * 3 + 1] - prevVerts[i * 3 + 1]) + sy);
+            out.put((curVerts[i * 3 + 2] - prevVerts[i * 3 + 2]) + sz);
+            out.put(0f);
+        }
+        build.buffers.add(dispBuf);
+        return new Motion(dispBuf.deviceAddress, 0f, 0f, 0f);
+    }
+
+    private static EntityPrev storeEntityPrev(EntityPrev prev, it.unimi.dsi.fastutil.floats.FloatArrayList cur,
+                                              int rbx, int rby, int rbz) {
+        EntityPrev out = prev != null ? prev : new EntityPrev();
+        int size = cur.size();
+        if (out.verts.length < size) {
+            out.verts = new float[size];
+        }
+        System.arraycopy(cur.elements(), 0, out.verts, 0, size);
+        out.size = size;
+        out.rbx = rbx;
+        out.rby = rby;
+        out.rbz = rbz;
+        return out;
     }
 
     /** Core per-vertex disp builder: {@code (cur − prev) + rebaseShift}, packed vec4/vertex (w = 0). */
@@ -627,7 +693,7 @@ public final class RtEntities {
         // static BE passes null ⇒ dispAddr 0 ⇒ no MV. The disp buffer is a per-frame transient (the geom
         // table is rewritten every frame), so a BE that stops animating reverts to MV 0 next frame.
         long dispAddr = uploadDisp(ctx, build, disp, "block entity");
-        writeTableEntry(build, e.prim.deviceAddress, e.indices.deviceAddress, e.uvs.deviceAddress, dispAddr);
+        writeTableEntry(build, e.prim.deviceAddress, e.indices.deviceAddress, e.uvs.deviceAddress, dispAddr, 0f, 0f, 0f);
         // Block-local mesh placed by a translate-only instance transform (blockPos − rebase), like terrain.
         float[] xform = {1, 0, 0, e.bx - rbx, 0, 1, 0, e.by - rby, 0, 0, 1, e.bz - rbz};
         build.instances.add(new RtAccel.Instance(xform, e.accel.deviceAddress, ENTITY_BIT | (build.count & 0x7FFFFF)));
@@ -686,6 +752,12 @@ public final class RtEntities {
      */
     private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
+        String label = entityId >= 0 ? "entity " + entityId : "entity mesh " + build.count;
+        appendCapture(ctx, build, new Motion(uploadDisp(ctx, build, disp, label), 0f, 0f, 0f), entityId, instanceBit, mask);
+    }
+
+    private void appendCapture(RtContext ctx, FrameBuild build, Motion motion, int entityId, int instanceBit, int mask) {
+        beginBuildIfNeeded(ctx, build);
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         int vertCount = capture.verts.size() / 3;
@@ -718,8 +790,8 @@ public final class RtEntities {
             accel = blas.accel;
         }
 
-        long dispAddr = uploadDisp(ctx, build, disp, "entity " + entityId);
-        writeTableEntry(build, prim.deviceAddress, indices.deviceAddress, uvs.deviceAddress, dispAddr);
+        writeTableEntry(build, prim.deviceAddress, indices.deviceAddress, uvs.deviceAddress, motion.dispAddr,
+                motion.rigidX, motion.rigidY, motion.rigidZ);
 
         build.instances.add(new RtAccel.Instance(IDENTITY, accel.deviceAddress, instanceBit | (build.count & 0x3FFFFF), mask));
         build.buffers.add(positions);
@@ -741,13 +813,18 @@ public final class RtEntities {
         return dispBuf.deviceAddress;
     }
 
-    /** Write one entity geometry-table entry at the current build slot: {primAddr, idxAddr, uvAddr, dispAddr}. */
-    private void writeTableEntry(FrameBuild build, long primAddr, long idxAddr, long uvAddr, long dispAddr) {
+    /** Write one entity geometry-table entry at the current build slot: {primAddr, idxAddr, uvAddr, dispAddr, rigidDisp}. */
+    private void writeTableEntry(FrameBuild build, long primAddr, long idxAddr, long uvAddr, long dispAddr,
+                                 float rigidX, float rigidY, float rigidZ) {
         long entry = build.tableBase + (long) build.count * TABLE_ENTRY_BYTES;
         MemoryUtil.memPutLong(entry, primAddr);
         MemoryUtil.memPutLong(entry + 8, idxAddr);
         MemoryUtil.memPutLong(entry + 16, uvAddr);
         MemoryUtil.memPutLong(entry + 24, dispAddr);
+        MemoryUtil.memPutFloat(entry + 32, rigidX);
+        MemoryUtil.memPutFloat(entry + 36, rigidY);
+        MemoryUtil.memPutFloat(entry + 40, rigidZ);
+        MemoryUtil.memPutFloat(entry + 44, 0f);
     }
 
     /**

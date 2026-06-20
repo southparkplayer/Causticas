@@ -24,14 +24,14 @@ struct Section {
 // {normal, tint} + UV layout as a terrain section) plus the address of a per-vertex world-space
 // displacement buffer (cur − prev frame; vec4 per vertex, xyz used) for the motion vector. P5.1c-2:
 // the displacement is now per-vertex (barycentric-interpolated below) so rotating mobs and animating
-// block entities reproject correctly, not just rigid translation. dispAddr == 0 ⇒ no MV (static).
-// std430 packs dispAddr at offset 24 and keeps the 48-byte stride (vec4 pad); matches RtEntities.
+// block entities reproject correctly. dispAddr == 0 ⇒ rigidDisp.xyz (zero for static/new objects).
+// std430 packs dispAddr at offset 24 and keeps the 48-byte stride; matches RtEntities.
 struct EntityGeom {
     uint64_t primAddr;
     uint64_t idxAddr;
     uint64_t uvAddr;
     uint64_t dispAddr;
-    vec4 pad;
+    vec4 rigidDisp;
 };
 
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Prims { Prim p[]; };
@@ -157,12 +157,13 @@ void main() {
         payload.hitT = gl_HitTEXT;
         payload.emission = 0.0;
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across the
-        // billboard's verts) with the same indices/barycentrics as the UV. dispAddr == 0 ⇒ static.
+        // billboard's verts) with the same indices/barycentrics as the UV. dispAddr == 0 falls back to
+        // rigidDisp, which particles write as zero unless a future path chooses otherwise.
         if (g.dispAddr != 0ul) {
             Disps pd = Disps(g.dispAddr);
             payload.motionPrev = pbary.x * pd.d[p0].xyz + pbary.y * pd.d[p1].xyz + pbary.z * pd.d[p2].xyz;
         } else {
-            payload.motionPrev = vec3(0.0);
+            payload.motionPrev = g.rigidDisp.xyz;
         }
         payload.material = 2.0;          // particle marker → raygen shows-and-terminates
         payload.roughness = 1.0;
@@ -193,13 +194,13 @@ void main() {
         payload.hitT = gl_HitTEXT;
         payload.emission = 0.0;
         // P5.1c-2: per-vertex motion vector — interpolate the captured per-vertex displacement with the
-        // same indices/barycentrics used for the UV above. Exact for rigid translation (all verts share
-        // one disp), rotation, and skeletal/lid animation. dispAddr == 0 ⇒ static (camera-only MV).
+        // same indices/barycentrics used for the UV above. Rotation and skeletal/lid animation use a
+        // per-vertex buffer; pure whole-object translation is packed into rigidDisp with no buffer.
         if (g.dispAddr != 0ul) {
             Disps dd = Disps(g.dispAddr);
             payload.motionPrev = ebary.x * dd.d[e0].xyz + ebary.y * dd.d[e1].xyz + ebary.z * dd.d[e2].xyz;
         } else {
-            payload.motionPrev = vec3(0.0);
+            payload.motionPrev = g.rigidDisp.xyz;
         }
         payload.material = 0.0;          // entities are opaque
         payload.roughness = pr.mat.x;    // P6.1
