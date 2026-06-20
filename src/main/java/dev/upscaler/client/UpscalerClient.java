@@ -39,10 +39,16 @@ public final class UpscalerClient implements ClientModInitializer {
 
 			// P2: once RT is up, keep section residency synced to vanilla's loaded chunks around
 			// the player — builds newly-in-range sections, frees out-of-range ones, per tick.
-			if (rtInitDone && RtTerrain.ENABLED) {
+			if (rtInitDone) {
 				RtContext ctx = RtContext.currentOrNull();
 				if (ctx != null) {
-					RtTerrain.update(ctx);
+					// Bring the world pipeline + LabPBR atlases up before terrain tessellates, so per-prim
+					// material flags resolve from the first section (PBR on join, no re-extract). No-op
+					// until we're in a world with the block atlas loaded, or once already created.
+					RtComposite.INSTANCE.ensureResourcesReady(ctx);
+					if (RtTerrain.ENABLED) {
+						RtTerrain.update(ctx);
+					}
 				}
 			}
 		});

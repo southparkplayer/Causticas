@@ -235,6 +235,30 @@ public final class RtComposite {
         }
     }
 
+    /**
+     * Bring the world pipeline + LabPBR atlases up as soon as we're in a world and the block atlas is
+     * loaded — <em>before</em> terrain tessellates — so per-prim material flags ({@code hasS}/{@code
+     * hasN}) resolve from the first section. That makes PBR-on-join structural rather than relying on a
+     * re-extract after the fact. Driven from the client tick ahead of {@link RtTerrain#update}. No-op once
+     * the pipeline exists, while a reload rebuild is pending (the reload path rebuilds against the new
+     * atlas), or until we're in a world with the atlas ready. The heavy {@code _s}/{@code _n} atlases are
+     * deliberately not built at the menu — only once a world is entered.
+     */
+    public void ensureResourcesReady(RtContext ctx) {
+        if (failed || worldPipeline != null || reloadRebindRequested) {
+            return;
+        }
+        if (Minecraft.getInstance().level == null || blockAtlasView() == 0L) {
+            return;
+        }
+        try {
+            ensureWorld(ctx);
+        } catch (Throwable t) {
+            failed = true;
+            UpscalerMod.LOGGER.error("RT resource bring-up failed; reverting to vanilla path", t);
+        }
+    }
+
     private RtPipeline ensureWorld(RtContext ctx) {
         if (worldPipeline == null) {
             worldPipeline = RtPipeline.create(ctx, "world.rgen.spv",
@@ -265,9 +289,9 @@ public final class RtComposite {
      * and the LabPBR {@code _s}/{@code _n} parallel atlases (bindings 8/9). Shared by first creation and
      * the post-reload rebind. Resets the entity bindless registry and recreates the {@code _s}/{@code _n}
      * atlases at the current block-atlas size, then re-extracts all terrain ({@link RtTerrain#markAllDirty})
-     * so per-prim material flags are recomputed against the (re)built atlases. That re-extraction also
-     * fills PBR for sections built before the atlases existed — the world-join case (terrain becomes
-     * resident, hence this pipeline is created, only after the first sections upload with flags = 0).
+     * so per-prim material flags are recomputed against the (re)built atlases. On first creation this runs
+     * before terrain is resident (see {@link #ensureResourcesReady}), so the re-extract is a no-op and PBR
+     * is structural; on a resource reload it refreshes the flags of the already-resident terrain.
      */
     private void bindWorldTextures(RtContext ctx) {
         long sampler = atlasSampler(ctx);
