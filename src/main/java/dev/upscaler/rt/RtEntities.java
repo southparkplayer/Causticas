@@ -1,13 +1,19 @@
 package dev.upscaler.rt;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.particle.SingleQuadParticle;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.state.level.ParticleGroupRenderState;
+import net.minecraft.client.renderer.state.level.ParticlesRenderState;
+import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
@@ -44,6 +50,12 @@ public final class RtEntities {
     public static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("upscaler.rt.entities", "true"));
     /** Custom-index flag bit (bit 23 of the 24-bit instanceCustomIndex) marking an entity instance. */
     public static final int ENTITY_BIT = 0x800000;
+    /** Custom-index flag (bit 22) marking a particle billboard instance (shares the entity geom table). */
+    public static final int PARTICLE_BIT = 0x400000;
+    /** TLAS instance mask for particles: bit 1 only, so the 0x01 secondary cull mask skips them — particles
+     *  are seen by the primary (camera) ray only (no shadows / GI / reflections; the v1 scope). */
+    private static final int PARTICLE_MASK = 0x02;
+    public static final boolean PARTICLES_ENABLED = Boolean.parseBoolean(System.getProperty("upscaler.rt.particles", "true"));
     private static final int MAX_ENTITIES = Integer.getInteger("upscaler.rt.maxEntities", 1024);
     // Chunk radius around the player to scan for block entities (chests/signs/…) each frame.
     private static final int BE_VIEW_CHUNKS = Integer.getInteger("upscaler.rt.beViewChunks", 8);
@@ -81,6 +93,11 @@ public final class RtEntities {
     private final RtEntityCollector collector = new RtEntityCollector();
     private final RtEntityCapture capture = new RtEntityCapture();
     private CameraRenderState cameraState;
+
+    // Particle capture: a VertexConsumer adapter that funnels MC's billboard quads into `capture` (the
+    // shared entity mesh), plus a reused render state we self-extract into each frame.
+    private final RtParticleCapture particleCapture = new RtParticleCapture(capture);
+    private ParticlesRenderState particleState;
 
     private RtBuffer[] tableRing;
     private int tableSlot;
@@ -204,6 +221,7 @@ public final class RtEntities {
         FrameBuild build = new FrameBuild(base);
         captureEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
         captureBlockEntities(ctx, build, mc, level, partial, rbx, rby, rbz);
+        captureParticles(ctx, build, mc, partial, rbx, rby, rbz, camX, camY, camZ, projection, viewRotation);
         evictStaleAccels();
         evictStaleBes();
 
@@ -271,7 +289,7 @@ public final class RtEntities {
             float[] disp = vertexDisp(capture.verts, prevVerts.get(id), rbx, rby, rbz);
             curVerts.put(id, new EntityPrev(
                     java.util.Arrays.copyOf(capture.verts.elements(), capture.verts.size()), rbx, rby, rbz));
-            appendCapture(ctx, build, disp, id);
+            appendCapture(ctx, build, disp, id, ENTITY_BIT, 0xFF);
         }
         prevVerts = curVerts;
     }
@@ -302,6 +320,57 @@ public final class RtEntities {
             d[i * 4 + 3] = 0f;
         }
         return d;
+    }
+
+    /**
+     * Capture this frame's billboard particles as ONE combined mesh + BLAS (cutout, unlit, camera-only).
+     * Self-extracts via {@code ParticleEngine.extract} (mirrors how entities self-extract) with the live
+     * camera + a frustum from our frame matrices, then funnels each {@link QuadParticleRenderState} layer's
+     * quads through {@link #particleCapture} into the shared {@code capture}. Per-layer texture slot comes
+     * from the layer's atlas (block/item/particle) via the bindless registry. One {@code PARTICLE_BIT}
+     * instance with mask {@link #PARTICLE_MASK} (primary-ray only). No motion vector in v1 (ghosts under RR).
+     */
+    private void captureParticles(RtContext ctx, FrameBuild build, Minecraft mc, float partial,
+                                  int rbx, int rby, int rbz, double camX, double camY, double camZ,
+                                  Matrix4f projection, Matrix4f viewRotation) {
+        if (!PARTICLES_ENABLED || build.full()) {
+            return;
+        }
+        Camera cam = mc.gameRenderer.mainCamera();
+        if (cam == null) {
+            return;
+        }
+        if (particleState == null) {
+            particleState = new ParticlesRenderState();
+        }
+        particleState.reset();
+        Frustum frustum = new Frustum(viewRotation, projection);
+        frustum.prepare(camX, camY, camZ);
+        try {
+            mc.particleEngine.extract(particleState, frustum, cam, partial);
+        } catch (Throwable t) {
+            return; // non-fatal: skip particles this frame if extraction throws
+        }
+        if (particleState.particles.isEmpty()) {
+            return;
+        }
+        capture.reset();
+        // extract() emits camera-relative positions; shift them into rebased space (identity instance).
+        particleCapture.setOffset((float) (camX - rbx), (float) (camY - rby), (float) (camZ - rbz));
+        for (ParticleGroupRenderState group : particleState.particles) {
+            if (!(group instanceof QuadParticleRenderState quads)) {
+                continue; // item-pickup / elder-guardian groups aren't billboard quads (skip for v1)
+            }
+            for (SingleQuadParticle.Layer layer : quads.layers()) {
+                capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(layer.textureAtlasLocation());
+                quads.buildLayer(layer, particleCapture);
+                particleCapture.flush(); // emit the layer's last buffered vertex
+            }
+        }
+        if (capture.isEmpty()) {
+            return;
+        }
+        appendCapture(ctx, build, null, -1, PARTICLE_BIT, PARTICLE_MASK); // one combined mesh, no MV (v1)
     }
 
     /**
@@ -525,7 +594,7 @@ public final class RtEntities {
      * {@code entityId} ≥ 0 → refit path (persistent updatable AS keyed by id); {@code < 0} (refit disabled)
      * → pooled full BUILD (step 1). Used by the animated-entity pass; block entities use {@link #buildBe}.
      */
-    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId) {
+    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -562,7 +631,7 @@ public final class RtEntities {
         long dispAddr = uploadDisp(ctx, build, disp, "entity " + entityId);
         writeTableEntry(build, prim.deviceAddress, indices.deviceAddress, uvs.deviceAddress, dispAddr);
 
-        build.instances.add(new RtAccel.Instance(IDENTITY, accel.deviceAddress, ENTITY_BIT | (build.count & 0x7FFFFF)));
+        build.instances.add(new RtAccel.Instance(IDENTITY, accel.deviceAddress, instanceBit | (build.count & 0x3FFFFF), mask));
         build.buffers.add(positions);
         build.buffers.add(indices);
         build.buffers.add(uvs);

@@ -254,6 +254,11 @@ vec3 sampleGGXVNDF(vec3 n, vec3 ve, float rough, inout uint s) {
     return normalize(Ne.x * t + Ne.y * b + Ne.z * n);             // -> world space
 }
 
+// Particles are tagged with TLAS instance mask 0x02 and everything else (terrain/entities/BEs) keeps
+// 0xFF, so a cull mask of 0x01 sees all the real geometry but skips particles. Shadow rays and GI bounce
+// rays use it → particles are camera-ray-only (no shadows / GI / reflections; that's the v1 scope).
+const uint CULL_SECONDARY = 0x01u;
+
 float visibility(vec3 origin, vec3 dir, float tmax) {
     shadowVis = 0.0; // assume occluded; shadow.rmiss sets 1.0 if the ray escapes
     // No opaque force: cutout geometry (foliage/glass) runs world.rahit and alpha-tests, so leaves
@@ -261,7 +266,7 @@ float visibility(vec3 origin, vec3 dir, float tmax) {
     // blocks keep VK_GEOMETRY_OPAQUE_BIT (any-hit skipped). SkipClosestHit keeps each a depth-1 trace.
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-                0xFFu, 0u, 0u, 1u, origin, RAY_TMIN, dir, tmax, 1);
+                CULL_SECONDARY, 0u, 0u, 1u, origin, RAY_TMIN, dir, tmax, 1);
     return shadowVis;
 }
 
@@ -278,7 +283,9 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
         // No opaque flag: cutout geometry stays alpha-tested via world.rahit on every path ray, so
         // foliage/glass are see-through for GI too. Geometry is double-sided; the chit flips the
         // shading normal toward the incoming ray.
-        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFFu, 0u, 0u, 0u, ro, 0.0, rd, 10000.0, 0);
+        // Primary (bounce 0) sees particles too (0xFF); bounce rays exclude them (CULL_SECONDARY).
+        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, bounce == 0 ? 0xFFu : CULL_SECONDARY,
+                    0u, 0u, 0u, ro, 0.0, rd, 10000.0, 0);
 
         if (payload.hitT < 0.0) {
             // P6.3: the sky colour is computed here (not in world.rmiss) because the dynamic sky needs
@@ -305,6 +312,21 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
 
         vec3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
         vec3 hitPos = ro + rd * payload.hitT;
+
+        // Particles (material == 2): unlit camera-facing billboard, shown directly and the path stops.
+        // The instance mask keeps particles off shadow/GI rays, so this only ever fires at bounce 0, where
+        // throughput == 1 and L += albedo writes the texel straight to the pixel (no emission/GI into the
+        // scene — the v1 scope). Cutout is handled in world.rahit; here we just display and terminate.
+        if (payload.material > 1.5) {
+            gv_normal = n;
+            gv_albedo = payload.albedo; // RR demodulation target = the particle texel (keeps it sharp)
+            gv_specAlb = vec3(0.0);
+            gv_rough = 1.0;
+            gv_hitCamRel = hitPos - pc.camOffset;
+            gv_objDisp = vec3(0.0); // v1: no particle motion vector → particles ghost under RR (deferred)
+            L += throughput * payload.albedo;
+            break;
+        }
 
         // P5.2 water: smooth dielectric interface. Choose reflection or refraction stochastically by the
         // Fresnel reflectance F — sampling by F leaves the throughput unchanged (lossless interface), so

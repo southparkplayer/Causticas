@@ -295,11 +295,16 @@ public final class RtAccel {
     }
 
     /**
-     * A TLAS instance: a 3x4 row-major transform, the device address of its BLAS, and the 24-bit
-     * {@code instanceCustomIndex} the hit shaders read. Terrain passes its section-table index;
-     * dynamic entities set the high {@code ENTITY_BIT} flag so the hit shader takes the entity path.
+     * A TLAS instance: a 3x4 row-major transform, the device address of its BLAS, the 24-bit
+     * {@code instanceCustomIndex} the hit shaders read, and the 8-bit visibility {@code mask} (ANDed with
+     * the trace cull mask). Terrain passes its section-table index; dynamic entities set the high
+     * {@code ENTITY_BIT} flag so the hit shader takes the entity path. Mask defaults to 0xFF (visible to
+     * every ray); particles override it (0x02) so they are seen only by the primary ray (camera-only).
      */
-    public record Instance(float[] transform3x4, long blasDeviceAddress, int customIndex) {
+    public record Instance(float[] transform3x4, long blasDeviceAddress, int customIndex, int mask) {
+        public Instance(float[] transform3x4, long blasDeviceAddress, int customIndex) {
+            this(transform3x4, blasDeviceAddress, customIndex, 0xFF);
+        }
     }
 
     /** A TLAS whose AS + backing + instance buffer are allocated but whose build is recorded later. */
@@ -348,7 +353,7 @@ public final class RtAccel {
                 xform.clear();
                 xform.put(inst.transform3x4()).flip();
                 rec.transform().matrix(xform);
-                rec.instanceCustomIndex(inst.customIndex()).mask(0xFF).instanceShaderBindingTableRecordOffset(0)
+                rec.instanceCustomIndex(inst.customIndex()).mask(inst.mask()).instanceShaderBindingTableRecordOffset(0)
                         .flags(0x00000001) // VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR
                         .accelerationStructureReference(inst.blasDeviceAddress());
                 MemoryUtil.memCopy(rec.address(), instanceBuffer.mapped + (long) i * VkAccelerationStructureInstanceKHR.SIZEOF,

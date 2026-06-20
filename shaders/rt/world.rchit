@@ -94,6 +94,11 @@ hitAttributeEXT vec2 attribs;
 // section table; shading reads per-prim normal + vertex-colour tint (no atlas — entity textures are
 // P5.1b-2b) and the per-object MV displacement.
 const int ENTITY_BIT = 0x800000;
+// Particles: a single combined billboard mesh sharing the entity geometry table + bindless atlas path,
+// but shaded as an unlit cutout billboard (see the particle branch below). 0x400000 (bit 22); the low 22
+// bits index the geom table (IDX_MASK). Particle instances also carry TLAS mask 0x02 (camera-ray-only).
+const int PARTICLE_BIT = 0x400000;
+const int IDX_MASK = 0x3FFFFF;
 
 // P6.2a LabPBR predefined metals (green channel 230..237): complex refractive indices N (eta) and K
 // (kappa) per RGB. F0 = ((n-1)^2 + k^2) / ((n+1)^2 + k^2). Values per the LabPBR 1.3 standard.
@@ -128,6 +133,36 @@ vec3 metalF0(int idx) {
 const float NORMAL_AO_STRENGTH = 0.5;
 
 void main() {
+    // Particle billboard: same geom-table/UV/bindless-atlas path as entities, but unlit — albedo =
+    // atlas texel * per-particle colour (tint.rgb), tagged material 2 so the raygen shows it and stops
+    // (no lighting/GI/emission). Reached only by the primary ray (instance mask 0x02). Cutout: rahit.
+    if ((gl_InstanceCustomIndexEXT & PARTICLE_BIT) != 0) {
+        int idx = gl_InstanceCustomIndexEXT & IDX_MASK;
+        EntityGeom g = EntityTable(pc.entityTableAddr).e[idx];
+        Prim pr = Prims(g.primAddr).p[gl_PrimitiveID];
+        Indices ib = Indices(g.idxAddr);
+        UVs uvb = UVs(g.uvAddr);
+        uint p0 = ib.i[3u * gl_PrimitiveID + 0u];
+        uint p1 = ib.i[3u * gl_PrimitiveID + 1u];
+        uint p2 = ib.i[3u * gl_PrimitiveID + 2u];
+        vec3 pbary = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
+        vec2 puv = pbary.x * uvb.uv[p0] + pbary.y * uvb.uv[p1] + pbary.z * uvb.uv[p2];
+        int pslot = int(pr.tint.w + 0.5);
+        vec3 pn = normalize(pr.normal.xyz);
+        if (dot(pn, gl_WorldRayDirectionEXT) > 0.0) {
+            pn = -pn;
+        }
+        payload.albedo = texture(entityTex[nonuniformEXT(pslot)], puv).rgb * pr.tint.rgb;
+        payload.normal = pn;
+        payload.hitT = gl_HitTEXT;
+        payload.emission = 0.0;
+        payload.motionPrev = vec3(0.0); // v1: no particle MV
+        payload.material = 2.0;          // particle marker → raygen shows-and-terminates
+        payload.roughness = 1.0;
+        payload.metalness = 0.0;
+        payload.f0 = vec3(0.0);
+        return;
+    }
     if ((gl_InstanceCustomIndexEXT & ENTITY_BIT) != 0) {
         int eidx = gl_InstanceCustomIndexEXT & ~ENTITY_BIT;
         EntityGeom g = EntityTable(pc.entityTableAddr).e[eidx];

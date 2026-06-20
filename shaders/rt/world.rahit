@@ -62,13 +62,15 @@ hitAttributeEXT vec2 attribs;
 const float ALPHA_CUTOFF = 0.5;       // terrain (matches the cutout block models)
 const float ENTITY_ALPHA_CUTOFF = 0.1; // entities: only discard near-fully-transparent texels
 const int ENTITY_BIT = 0x800000;
+const int PARTICLE_BIT = 0x400000; // particle billboards share the entity cutout path (geom table + atlas)
+const int IDX_MASK = 0x3FFFFF;     // low 22 bits = geom-table index (strips ENTITY_BIT | PARTICLE_BIT)
 
 void main() {
     uint pid = gl_PrimitiveID;
     vec3 bary = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
 
-    if ((gl_InstanceCustomIndexEXT & ENTITY_BIT) != 0) {
-        EntityGeom g = EntityTable(pc.entityTableAddr).e[gl_InstanceCustomIndexEXT & ~ENTITY_BIT];
+    if ((gl_InstanceCustomIndexEXT & (ENTITY_BIT | PARTICLE_BIT)) != 0) {
+        EntityGeom g = EntityTable(pc.entityTableAddr).e[gl_InstanceCustomIndexEXT & IDX_MASK];
         Indices indices = Indices(g.idxAddr);
         UVs uvs = UVs(g.uvAddr);
         uint i0 = indices.i[3u * pid + 0u];
