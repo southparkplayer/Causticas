@@ -19,6 +19,7 @@ import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
@@ -72,6 +73,7 @@ public final class RtTerrain {
     private static final RtTerrain INSTANCE = new RtTerrain();
 
     private final Map<Long, SectionGeom> resident = new HashMap<>();
+    private Set<Long> published = new HashSet<>();
     private final Set<Long> empty = new HashSet<>(); // loaded, in-window sections with no geometry
     private final Set<Long> dirty = java.util.concurrent.ConcurrentHashMap.newKeySet(); // edited sections to re-extract
     private final List<Deferred> deferred = new ArrayList<>(); // frames-in-flight-safe frees
@@ -94,6 +96,14 @@ public final class RtTerrain {
     /** The manager if it currently has resident geometry (built BLAS + instances) to trace, else null. */
     public static RtTerrain currentOrNull() {
         return INSTANCE.ready ? INSTANCE : null;
+    }
+
+    public static boolean isSectionReady(BlockPos blockPos) {
+        int scx = SectionPos.blockToSectionCoord(blockPos.getX());
+        int scy = SectionPos.blockToSectionCoord(blockPos.getY());
+        int scz = SectionPos.blockToSectionCoord(blockPos.getZ());
+        long key = sectionKey(scx, scy, scz);
+        return INSTANCE.ready && ((INSTANCE.resident.containsKey(key) && INSTANCE.published.contains(key)) || INSTANCE.empty.contains(key));
     }
 
     /**
@@ -391,7 +401,7 @@ public final class RtTerrain {
 
     /** An in-flight async BLAS build: the new section geometry/instances land when {@code op} completes. */
     private record Pending(RtContext.AsyncSubmit op, List<RtAccel.PreparedBlas> blas, RtBuffer newTable,
-                           List<RtAccel.Instance> newInstances, List<SectionGeom> removed, int rbx, int rby, int rbz) {
+                           List<RtAccel.Instance> newInstances, Set<Long> newPublished, List<SectionGeom> removed, int rbx, int rby, int rbz) {
     }
 
     /**
@@ -413,6 +423,7 @@ public final class RtTerrain {
             retire(freeAt, sectionTable, removed);
             sectionTable = null;
             staticInstances = null;
+            published = new HashSet<>();
             ready = false;
             return;
         }
@@ -440,7 +451,7 @@ public final class RtTerrain {
         }
         // BLAS-only async build (empty when this tick only freed sections — completes immediately).
         RtContext.AsyncSubmit op = ctx.submitAsync(cmd -> RtAccel.recordBlasBuilds(ctx, cmd, blasBuilds));
-        pending = new Pending(op, blasBuilds, newTable, instances, removed, rbx, rby, rbz);
+        pending = new Pending(op, blasBuilds, newTable, instances, new HashSet<>(resident.keySet()), removed, rbx, rby, rbz);
     }
 
     /** Swap a completed async build in: retire old table + removed sections, publish the new instances/table. */
@@ -453,6 +464,7 @@ public final class RtTerrain {
         retire(freeAt, sectionTable, p.removed());
         sectionTable = p.newTable();
         staticInstances = p.newInstances();
+        published = p.newPublished();
         blockX = p.rbx();
         blockY = p.rby();
         blockZ = p.rbz();
@@ -489,6 +501,7 @@ public final class RtTerrain {
         if (pending == null && resident.isEmpty() && sectionTable == null && deferred.isEmpty()) {
             empty.clear();
             staticInstances = null;
+            published = new HashSet<>();
             return;
         }
         ctx.waitIdle();
@@ -517,6 +530,7 @@ public final class RtTerrain {
         resident.clear();
         empty.clear();
         staticInstances = null;
+        published = new HashSet<>();
         ready = false;
     }
 

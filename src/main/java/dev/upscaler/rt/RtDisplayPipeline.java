@@ -14,7 +14,6 @@ import org.lwjgl.vulkan.VkDescriptorSetLayoutCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
-import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
@@ -25,8 +24,8 @@ import java.nio.LongBuffer;
 
 import static dev.upscaler.rt.RtContext.check;
 
-/** Compute pass that blends an RT storage image into a storage-capable copy of the world color. */
-public final class RtBlendPipeline {
+/** Compute pass that maps the display-res HDR RT image into an LDR image compatible with the main target. */
+public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/upscaler/rt/";
 
     private final RtContext ctx;
@@ -35,12 +34,12 @@ public final class RtBlendPipeline {
     private final long descriptorSet;
     private final long pipelineLayout;
     private final long pipeline;
-    private long boundBaseView;
+    private long boundOutputView;
     private long boundRtView;
     private long boundExposureView;
     private boolean destroyed;
 
-    private RtBlendPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
+    private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -49,7 +48,7 @@ public final class RtBlendPipeline {
         this.pipeline = pipeline;
     }
 
-    public static RtBlendPipeline create(RtContext ctx) {
+    public static RtDisplayPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(3, stack);
@@ -62,55 +61,53 @@ public final class RtBlendPipeline {
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
-            check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout(rt blend)");
+            check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout(rt display)");
             long dsl = p.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "blend descriptor set layout");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "display descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
             poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(3);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
-            check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt blend)");
+            check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             long pool = p.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, pool, "blend descriptor pool");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, pool, "display descriptor pool");
 
             VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
                     .descriptorPool(pool).pSetLayouts(stack.longs(dsl));
             LongBuffer pSet = stack.mallocLong(1);
-            check(VK10.vkAllocateDescriptorSets(vk, dsai, pSet), "vkAllocateDescriptorSets(rt blend)");
+            check(VK10.vkAllocateDescriptorSets(vk, dsai, pSet), "vkAllocateDescriptorSets(rt display)");
             long set = pSet.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, set, "blend descriptor set");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, set, "display descriptor set");
 
-            VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(4);
             VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(dsl)).pPushConstantRanges(pcr);
-            check(VK10.vkCreatePipelineLayout(vk, plci, null, p), "vkCreatePipelineLayout(rt blend)");
+                    .pSetLayouts(stack.longs(dsl));
+            check(VK10.vkCreatePipelineLayout(vk, plci, null, p), "vkCreatePipelineLayout(rt display)");
             long layout = p.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, layout, "blend pipeline layout");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, layout, "display pipeline layout");
 
-            long module = loadModule(vk, stack, "blend.comp.spv");
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, module, "blend shader module");
+            long module = loadModule(vk, stack, "display.comp.spv");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, module, "display shader module");
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
                     .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
             VkComputePipelineCreateInfo.Buffer cpci = VkComputePipelineCreateInfo.calloc(1, stack);
             cpci.get(0).sType$Default().stage(stage).layout(layout);
             LongBuffer pPipeline = stack.mallocLong(1);
             check(VK10.vkCreateComputePipelines(vk, VK10.VK_NULL_HANDLE, cpci, null, pPipeline),
-                    "vkCreateComputePipelines(rt blend)");
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, pPipeline.get(0), "blend compute pipeline");
+                    "vkCreateComputePipelines(rt display)");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, pPipeline.get(0), "display compute pipeline");
             VK10.vkDestroyShaderModule(vk, module, null);
 
-            return new RtBlendPipeline(ctx, dsl, pool, set, layout, pPipeline.get(0));
+            return new RtDisplayPipeline(ctx, dsl, pool, set, layout, pPipeline.get(0));
         }
     }
 
-    public void setImages(long baseImageView, long rtImageView, long exposureImageView) {
-        if (boundBaseView == baseImageView && boundRtView == rtImageView && boundExposureView == exposureImageView) {
+    public void setImages(long outputImageView, long rtImageView, long exposureImageView) {
+        if (boundOutputView == outputImageView && boundRtView == rtImageView && boundExposureView == exposureImageView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorImageInfo.Buffer baseInfo = VkDescriptorImageInfo.calloc(1, stack);
-            baseInfo.get(0).imageView(baseImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer outputInfo = VkDescriptorImageInfo.calloc(1, stack);
+            outputInfo.get(0).imageView(outputImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer rtInfo = VkDescriptorImageInfo.calloc(1, stack);
             rtInfo.get(0).imageView(rtImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer exposureInfo = VkDescriptorImageInfo.calloc(1, stack);
@@ -118,23 +115,22 @@ public final class RtBlendPipeline {
 
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
             writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(baseInfo);
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
             writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(rtInfo);
             writes.get(2).sType$Default().dstSet(descriptorSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
-        boundBaseView = baseImageView;
+        boundOutputView = outputImageView;
         boundRtView = rtImageView;
         boundExposureView = exposureImageView;
     }
 
-    public void dispatch(VkCommandBuffer cmd, int width, int height, float blend) {
-        try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "blend compute")) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height) {
+        try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
-            VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, stack.floats(blend));
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }
     }
@@ -153,7 +149,7 @@ public final class RtBlendPipeline {
 
     private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
         byte[] bytes;
-        try (InputStream in = RtBlendPipeline.class.getResourceAsStream(SHADER_DIR + name)) {
+        try (InputStream in = RtDisplayPipeline.class.getResourceAsStream(SHADER_DIR + name)) {
             if (in == null) {
                 throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
             }

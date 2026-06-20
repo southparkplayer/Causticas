@@ -24,19 +24,33 @@ public final class WorldRenderScaler {
 
 	/** Open the level-render window. Called right before level rendering. */
 	public void begin(RenderTarget mainTarget) {
-		if (RtComposite.ENABLED) {
+		VanillaRenderController.INSTANCE.beginFrame(mainTarget);
+		if (VanillaRenderController.INSTANCE.shouldCompositeRt()) {
 			this.rtWindowOpen = true;
 		}
 	}
 
 	/**
 	 * Run the RT composite once, at the before-hand seam (the safety-net end() then no-ops because the
-	 * window is already closed). The world has fully rendered at full res by this point.
+	 * window is already closed). In cancel-vanilla mode, this is where the skipped world is replaced.
 	 */
 	public void end(RenderTarget mainTarget) {
-		if (RtComposite.ENABLED && this.rtWindowOpen) {
+		this.end(mainTarget, true);
+	}
+
+	public void endSafetyNet(RenderTarget mainTarget) {
+		this.end(mainTarget, false);
+	}
+
+	private void end(RenderTarget mainTarget, boolean beforeHandSeam) {
+		if (this.rtWindowOpen) {
 			this.rtWindowOpen = false;
-			RtComposite.INSTANCE.composite(mainTarget.getColorTexture(), mainTarget.width, mainTarget.height);
+			if (!beforeHandSeam && VanillaRenderController.INSTANCE.wasWorldSkippedThisFrame()) {
+				VanillaRenderController.INSTANCE.markMissedBeforeHandSeam();
+				return;
+			}
+			boolean success = RtComposite.INSTANCE.composite(mainTarget.getColorTexture(), mainTarget.width, mainTarget.height);
+			VanillaRenderController.INSTANCE.markRtCompositeResult(success);
 		}
 	}
 

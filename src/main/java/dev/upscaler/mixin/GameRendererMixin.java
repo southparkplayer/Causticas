@@ -1,6 +1,7 @@
 package dev.upscaler.mixin;
 
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import dev.upscaler.client.VanillaRenderController;
 import dev.upscaler.client.WorldRenderScaler;
 import dev.upscaler.rt.RtComposite;
 import net.minecraft.client.DeltaTracker;
@@ -42,7 +43,7 @@ public abstract class GameRendererMixin {
 					target = "Lnet/minecraft/client/renderer/fog/FogRenderer;endFrame()V",
 					shift = At.Shift.AFTER))
 	private void upscaler$endWorldScale(DeltaTracker deltaTracker, boolean advanceGameTime, CallbackInfo ci) {
-		WorldRenderScaler.INSTANCE.end(this.mainRenderTarget);
+		WorldRenderScaler.INSTANCE.endSafetyNet(this.mainRenderTarget);
 	}
 
 	// Capture the frame's camera for the RT composite at the exact point the level projection is built
@@ -53,9 +54,14 @@ public abstract class GameRendererMixin {
 					target = "Lnet/minecraft/client/renderer/ProjectionMatrixBuffer;getBuffer(Lorg/joml/Matrix4f;)Lcom/mojang/blaze3d/buffers/GpuBufferSlice;"),
 			index = 0)
 	private Matrix4f upscaler$captureLevelProjection(Matrix4f projection) {
+		if (!VanillaRenderController.rtRuntimeWorkRequested()) {
+			return projection;
+		}
+
 		var cameraState = this.gameRenderState().levelRenderState.cameraRenderState;
 		RtComposite.INSTANCE.captureFrame(projection, cameraState.viewRotationMatrix,
 				cameraState.pos.x, cameraState.pos.y, cameraState.pos.z);
+		VanillaRenderController.INSTANCE.markProjectionCaptured();
 		return projection;
 	}
 

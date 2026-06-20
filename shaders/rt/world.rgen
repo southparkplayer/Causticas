@@ -20,14 +20,14 @@
 // Sky / ambient light needs no separate AO pass: continuation rays that escape land in world.rmiss,
 // which returns sky radiance — so soft sky fill and contact AO both fall out of the path integral.
 // Russian roulette terminates deep paths; a firefly clamp tames the rare bright spike. Output is
-// HDR (R16G16B16A16_SFLOAT); the HDR -> LDR tonemap happens later at the blend.comp seam.
+// HDR (R16G16B16A16_SFLOAT); the HDR -> LDR tonemap happens later at the display.comp seam.
 //
 // Each frame emits a single SPP-averaged (still noisy) estimate; temporal convergence is the
 // denoiser's job (DLSS Ray Reconstruction, P4). With RR disabled the output is the raw noisy path
 // trace — a reference view, not a converged image.
 layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
 // HDR trace target (R16G16B16A16_SFLOAT): we write linear radiance which may exceed 1. The
-// HDR -> LDR tonemap happens later, at the blend.comp seam, not here.
+// HDR -> LDR tonemap happens later, at the display.comp seam, not here.
 layout(binding = 1, set = 0, rgba16f) uniform image2D outImage;
 // P4 guide buffers — first-hit (primary-visibility) attributes a denoiser/DLSS-RR consumes. Written
 // every frame regardless of accumulation. gNormal.w carries roughness (1.0, Lambertian). gDepth is

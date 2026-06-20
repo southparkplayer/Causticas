@@ -53,7 +53,9 @@ import static org.lwjgl.vulkan.KHRRayTracingPositionFetch.VK_STRUCTURE_TYPE_PHYS
  *       {@code vkCreateDevice} would fail on a feature without its extension.</li>
  * </ul>
  * Both are gated on the selected device actually supporting RT; if not, nothing is added
- * and the device comes up exactly as vanilla.
+ * and the device comes up exactly as vanilla. This startup capability switch is intentionally
+ * independent of {@code upscaler.rt.output}: output mode is a runtime work/display toggle,
+ * while the device features must be present before that toggle can be flipped to RT later.
  */
 public final class RtDeviceBringup {
     public static final boolean ENABLED_BY_PROPERTY =

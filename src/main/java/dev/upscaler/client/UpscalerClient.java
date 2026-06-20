@@ -20,6 +20,13 @@ public final class UpscalerClient implements ClientModInitializer {
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.
 		ClientTickEvents.START_CLIENT_TICK.register(client -> {
+			if (!VanillaRenderController.rtRuntimeWorkRequested()) {
+				if (rtInitDone) {
+					shutdownRt();
+				}
+				return;
+			}
+
 			// Bring up the RT device/context once; terrain residency + the composite follow below.
 			if (!rtInitDone && RtDeviceBringup.rtRequested()) {
 				RtContext ctx = RtContext.get();
@@ -39,18 +46,26 @@ public final class UpscalerClient implements ClientModInitializer {
 		});
 
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
-			WorldRenderScaler.INSTANCE.destroy();
-
-			RtContext ctx = RtContext.currentOrNull();
-			if (ctx != null) {
-				ctx.waitIdle();
-				RtTerrain.shutdown(ctx);
-				RtEntities.INSTANCE.shutdown();
-			}
-			RtComposite.INSTANCE.destroy();
-			if (ctx != null) {
-				ctx.destroy();
-			}
+			shutdownRt();
 		});
+	}
+
+	private static void shutdownRt() {
+		WorldRenderScaler.INSTANCE.destroy();
+		if (!rtInitDone) {
+			return;
+		}
+
+		RtContext ctx = RtContext.currentOrNull();
+		if (ctx != null) {
+			ctx.waitIdle();
+			RtTerrain.shutdown(ctx);
+			RtEntities.INSTANCE.shutdown();
+		}
+		RtComposite.INSTANCE.destroy();
+		if (ctx != null) {
+			ctx.destroy();
+		}
+		rtInitDone = false;
 	}
 }
