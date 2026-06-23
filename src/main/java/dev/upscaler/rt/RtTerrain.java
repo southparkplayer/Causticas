@@ -138,6 +138,11 @@ public final class RtTerrain {
                                                        // so it never reaches the worker-task catch — log once)
     private Pending pending; // in-flight async geometry build, or null
     private RtBuffer sectionTable;
+    // ReSTIR DI Stage 0: global emissive-light buffer (all resident sections' lights, rebased into the
+    // traced space). Rebuilt with the section table (residency/rebase change) and retired the same way.
+    // null + count 0 when no emitters are resident; the shader treats a zero count as "no block lights".
+    private RtBuffer lightBuffer;
+    private int lightCount;
     // Static section instances (BLAS address + sectionOrigin-rebase transform, customIndex = list
     // order = section-table index). Rebuilt on residency change; the per-frame TLAS in RtComposite
     // merges these with dynamic (entity) instances. RtTerrain no longer owns the traced TLAS — it
@@ -185,6 +190,16 @@ public final class RtTerrain {
     /** Section table device address: {@code {u64 primAddr, u64 idxAddr, u64 uvAddr, u32 triBase[3], u32 waterGeom}} per section, indexed by gl_InstanceCustomIndexEXT. */
     public long tableAddress() {
         return sectionTable.deviceAddress;
+    }
+
+    /** ReSTIR DI Stage 0: global light buffer device address ({@code RtLights} records, rebased); 0 if empty. */
+    public long lightBufferAddress() {
+        return lightBuffer != null ? lightBuffer.deviceAddress : 0L;
+    }
+
+    /** Number of emissive-triangle area lights in {@link #lightBufferAddress()}. */
+    public int lightCount() {
+        return lightCount;
     }
 
     /** Per-tick residency update (windowing + incremental build/free + TLAS rebuild on change). */
@@ -534,13 +549,19 @@ public final class RtTerrain {
         Geom[] buckets = mesh.buckets(); // { opaque, cutout, water }, indexed by RtAccel.BUCKET_*
         int vertFloats = 0, idxCount = 0, uvFloats = 0, primFloats = 0;
         int[] bucketTris = new int[buckets.length];
+        // ReSTIR DI Stage 0: collect this section's emissive triangles as area lights (section-local, like
+        // the BLAS verts). Done after resolveMaterials so the per-texel _s emission refinement can later
+        // hook the same point. emission is in prim.normal.w; the water bucket carries none (lava is opaque).
+        RtLights.SectionLights lights = new RtLights.SectionLights();
         for (int b = 0; b < buckets.length; b++) {
             resolveMaterials(buckets[b]);
-            vertFloats += buckets[b].verts.size();
-            idxCount += buckets[b].idx.size();
-            uvFloats += buckets[b].cornerUv.size();
-            primFloats += buckets[b].prim.size();
-            bucketTris[b] = buckets[b].triCount();
+            Geom geom = buckets[b];
+            RtLights.appendBucket(lights, geom.verts.elements(), geom.idx.elements(), geom.idx.size(), geom.prim.elements());
+            vertFloats += geom.verts.size();
+            idxCount += geom.idx.size();
+            uvFloats += geom.cornerUv.size();
+            primFloats += geom.prim.size();
+            bucketTris[b] = geom.triCount();
         }
         int vertCount = vertFloats / 3;
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
@@ -593,7 +614,7 @@ public final class RtTerrain {
         // water (shadow passthrough). Build is deferred — the caller batches all sections into one submission.
         RtAccel.PreparedBlas blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices, bucketTris, ommInput,
                 label + " BLAS");
-        return new PreparedSection(key, positions, indices, uvs, material, blas, triBase, waterGeom, sox, soy, soz);
+        return new PreparedSection(key, positions, indices, uvs, material, blas, triBase, waterGeom, lights, sox, soy, soz);
     }
 
     /**
@@ -1120,7 +1141,8 @@ public final class RtTerrain {
 
     /** A section tessellated + uploaded with a prepared (not-yet-built) BLAS, pending the batch build. */
     private record PreparedSection(long key, RtBuffer positions, RtBuffer indices, RtBuffer uvs, RtBuffer material,
-                                   RtAccel.PreparedBlas blas, int[] triBase, int waterGeom, int sx, int sy, int sz) {
+                                   RtAccel.PreparedBlas blas, int[] triBase, int waterGeom, RtLights.SectionLights lights,
+                                   int sx, int sy, int sz) {
     }
 
     /** A deferred free: run {@code free} once the frame counter reaches {@code freeFrame}. */
@@ -1133,7 +1155,8 @@ public final class RtTerrain {
 
     /** An in-flight async BLAS build: the new section geometry/instances land when {@code op} completes. */
     private record Pending(RtContext.AsyncSubmit op, List<RtAccel.PreparedBlas> blas, RtBuffer newTable,
-                           List<RtAccel.Instance> newInstances, Set<Long> newPublished, List<SectionGeom> removed, int rbx, int rby, int rbz) {
+                           RtBuffer newLights, int lightCount, List<RtAccel.Instance> newInstances,
+                           Set<Long> newPublished, List<SectionGeom> removed, int rbx, int rby, int rbz) {
     }
 
     /**
@@ -1145,7 +1168,7 @@ public final class RtTerrain {
      */
     private void startBuild(RtContext ctx, List<PreparedSection> prepared, List<SectionGeom> removed, int rbx, int rby, int rbz) {
         for (PreparedSection ps : prepared) {
-            SectionGeom prev = resident.put(ps.key(), new SectionGeom(ps.positions(), ps.indices(), ps.uvs(), ps.material(), ps.blas().accel, ps.triBase(), ps.waterGeom(), ps.sx(), ps.sy(), ps.sz()));
+            SectionGeom prev = resident.put(ps.key(), new SectionGeom(ps.positions(), ps.indices(), ps.uvs(), ps.material(), ps.blas().accel, ps.triBase(), ps.waterGeom(), ps.lights(), ps.sx(), ps.sy(), ps.sz()));
             if (prev != null) {
                 // Re-extracted section (ASYNC in-place rebuild): the old geometry stayed traced until now;
                 // retire it with the swap so there's no eviction gap and no leak.
@@ -1157,8 +1180,10 @@ public final class RtTerrain {
         if (ordered.isEmpty()) {
             // Everything left the window: retire the current table + removed sections, go not-ready.
             long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
-            retire(freeAt, sectionTable, removed);
+            retire(freeAt, sectionTable, lightBuffer, removed);
             sectionTable = null;
+            lightBuffer = null;
+            lightCount = 0;
             staticInstances = null;
             published = new HashSet<>();
             ready = false;
@@ -1168,9 +1193,38 @@ public final class RtTerrain {
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         RtBuffer newTable = ctx.createBuffer((long) ordered.size() * SECTION_ENTRY_BYTES, storage, true,
                 "terrain section table " + ordered.size() + " sections");
+
+        // ReSTIR DI Stage 0: assemble one global light buffer from all resident sections. The records are
+        // stored section-local, so each is rebased here by the section's instance offset (sectionOrigin −
+        // rebaseOrigin) into the same space the rgen traces — exactly what the TLAS instance transform does
+        // for that section's geometry. Rebuilt with the table, so a rebase re-applies the new offset for
+        // free without re-extracting lights. null when no emitters are resident.
+        int totalLights = 0;
+        for (SectionGeom g : ordered) {
+            totalLights += g.lights.count();
+        }
+        RtBuffer newLights = totalLights > 0
+                ? ctx.createBuffer((long) totalLights * RtLights.FLOATS_PER_LIGHT * Float.BYTES, storage, true,
+                        "terrain lights " + totalLights)
+                : null;
+        java.nio.FloatBuffer lightOut = newLights != null
+                ? MemoryUtil.memFloatBuffer(newLights.mapped, totalLights * RtLights.FLOATS_PER_LIGHT)
+                : null;
+
         List<RtAccel.Instance> instances = new ArrayList<>(ordered.size());
         for (int i = 0; i < ordered.size(); i++) {
             SectionGeom g = ordered.get(i);
+            if (lightOut != null && g.lights.count() > 0) {
+                float ox = g.sx - rbx, oy = g.sy - rby, oz = g.sz - rbz;
+                float[] src = g.lights.data.elements();
+                int n = g.lights.count() * RtLights.FLOATS_PER_LIGHT;
+                for (int o = 0; o < n; o += RtLights.FLOATS_PER_LIGHT) {
+                    lightOut.put(src[o] + ox);      // pos.x (rebased)
+                    lightOut.put(src[o + 1] + oy);  // pos.y
+                    lightOut.put(src[o + 2] + oz);  // pos.z
+                    lightOut.put(src, o + 3, RtLights.FLOATS_PER_LIGHT - 3); // area, normal, Le (offset-free)
+                }
+            }
             long base = newTable.mapped + (long) i * SECTION_ENTRY_BYTES;
             MemoryUtil.memPutLong(base, g.material.deviceAddress);
             MemoryUtil.memPutLong(base + 8, g.indices.deviceAddress);
@@ -1185,6 +1239,10 @@ public final class RtTerrain {
             float[] xform = {1, 0, 0, g.sx - rbx, 0, 1, 0, g.sy - rby, 0, 0, 1, g.sz - rbz};
             instances.add(new RtAccel.Instance(xform, g.blas.deviceAddress, i));
         }
+        if (RtLights.STATS) {
+            UpscalerMod.LOGGER.info("RT lights (Stage 0): {} emissive triangles across {} resident sections",
+                    totalLights, ordered.size());
+        }
 
         List<RtAccel.PreparedBlas> blasBuilds = new ArrayList<>(prepared.size());
         for (PreparedSection ps : prepared) {
@@ -1192,7 +1250,7 @@ public final class RtTerrain {
         }
         // BLAS-only async build (empty when this tick only freed sections — completes immediately).
         RtContext.AsyncSubmit op = ctx.submitAsync(cmd -> RtAccel.recordBlasBuilds(ctx, cmd, blasBuilds));
-        pending = new Pending(op, blasBuilds, newTable, instances, new HashSet<>(resident.keySet()), removed, rbx, rby, rbz);
+        pending = new Pending(op, blasBuilds, newTable, newLights, totalLights, instances, new HashSet<>(resident.keySet()), removed, rbx, rby, rbz);
     }
 
     /** Swap a completed async build in: retire old table + removed sections, publish the new instances/table. */
@@ -1202,8 +1260,10 @@ public final class RtTerrain {
         ctx.freeAsync(p.op());
         RtAccel.freeBlasScratch(p.blas()); // build done -> BLAS scratch safe to free
         long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
-        retire(freeAt, sectionTable, p.removed());
+        retire(freeAt, sectionTable, lightBuffer, p.removed());
         sectionTable = p.newTable();
+        lightBuffer = p.newLights();
+        lightCount = p.lightCount();
         staticInstances = p.newInstances();
         published = p.newPublished();
         blockX = p.rbx();
@@ -1213,9 +1273,12 @@ public final class RtTerrain {
     }
 
     /** Queue old GPU resources for a frames-in-flight-safe free at {@code freeFrame}. */
-    private void retire(long freeFrame, RtBuffer oldTable, List<SectionGeom> removed) {
+    private void retire(long freeFrame, RtBuffer oldTable, RtBuffer oldLights, List<SectionGeom> removed) {
         if (oldTable != null) {
             deferred.add(new Deferred(freeFrame, oldTable::destroy));
+        }
+        if (oldLights != null) {
+            deferred.add(new Deferred(freeFrame, oldLights::destroy));
         }
         for (SectionGeom g : removed) {
             deferred.add(new Deferred(freeFrame, g::destroy));
@@ -1264,6 +1327,9 @@ public final class RtTerrain {
             ctx.freeAsync(pending.op());
             RtAccel.freeBlasScratch(pending.blas());
             pending.newTable().destroy();
+            if (pending.newLights() != null) {
+                pending.newLights().destroy();
+            }
             // The new sections' BLAS were added to `resident` in startBuild, so resident's destroy
             // below frees them; only the removed (already out of resident) need freeing here.
             for (SectionGeom g : pending.removed()) {
@@ -1279,6 +1345,11 @@ public final class RtTerrain {
             sectionTable.destroy();
             sectionTable = null;
         }
+        if (lightBuffer != null) {
+            lightBuffer.destroy();
+            lightBuffer = null;
+        }
+        lightCount = 0;
         for (SectionGeom g : resident.values()) {
             g.destroy();
         }
@@ -1303,11 +1374,12 @@ public final class RtTerrain {
         final RtAccel blas;
         final int[] triBase;  // per-emitted-geometry triangle offset; hit shaders add triBase[gl_GeometryIndexEXT] to pid
         final int waterGeom;  // gl_GeometryIndexEXT of the water geometry (NO_WATER_GEOM if none)
+        final RtLights.SectionLights lights; // ReSTIR DI Stage 0: section-local emissive area lights
         final int sx;
         final int sy;
         final int sz;
 
-        SectionGeom(RtBuffer positions, RtBuffer indices, RtBuffer uvs, RtBuffer material, RtAccel blas, int[] triBase, int waterGeom, int sx, int sy, int sz) {
+        SectionGeom(RtBuffer positions, RtBuffer indices, RtBuffer uvs, RtBuffer material, RtAccel blas, int[] triBase, int waterGeom, RtLights.SectionLights lights, int sx, int sy, int sz) {
             this.positions = positions;
             this.indices = indices;
             this.uvs = uvs;
@@ -1315,6 +1387,7 @@ public final class RtTerrain {
             this.blas = blas;
             this.triBase = triBase;
             this.waterGeom = waterGeom;
+            this.lights = lights;
             this.sx = sx;
             this.sy = sy;
             this.sz = sz;
