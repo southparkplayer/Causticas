@@ -69,10 +69,10 @@ struct WorldPush {
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer WorldPushRef { WorldPush v; };
 
-// ReSTIR DI Stage 0/1: one emissive terrain triangle as an area light (RtLights record, 48 B). Centroids
-// are stored in the same rebased space as the traced geometry, so they need no further transform here.
+// ReSTIR DI Stage 0/1: one emissive emitter quad as an area light (RtLights record, 48 B). Stored in the
+// same rebased space as the traced geometry, so no further transform here.
 struct Light {
-    vec4 posArea;   // xyz triangle centroid, w triangle area
+    vec4 posArea;   // xyz quad centroid, w area
     vec4 normalPad; // xyz geometric (outward) normal, w unused
     vec4 le;        // rgb HDR radiance = albedo · emission · EMISSIVE_STRENGTH, w unused
 };
@@ -262,6 +262,21 @@ vec3 sampleSquare(vec3 axis, float halfAngle, inout uint s) {
     float u = (rndf(s) * 2.0 - 1.0) * t;
     float v = (rndf(s) * 2.0 - 1.0) * t;
     return normalize(axis + u * right + v * up);
+}
+
+// ReSTIR DI soft shadows: sample a point on an emitter quad, approximated as an equal-area disc oriented
+// by the light's normal. Sampling a point (not the fixed centroid) makes each frame's shadow ray land on
+// a different part of the light's extent, so DLSS-RR resolves a penumbra that scales with the light's size
+// and the occluder distance. The area-sampling pdf (1/area) is exactly the `area` factor already in the RIS
+// contribution, so the estimator is unchanged: only the geometry term G is evaluated at the sampled point.
+vec3 sampleLightPoint(vec3 center, vec3 lnrm, float area, inout uint s) {
+    float radius = sqrt(max(area, 0.0) * INV_PI);
+    float r = radius * sqrt(rndf(s));
+    float phi = 6.2831853 * rndf(s);
+    vec3 t = normalize(abs(lnrm.x) > 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0));
+    vec3 b = normalize(cross(lnrm, t));
+    t = cross(b, lnrm);
+    return center + (r * cos(phi)) * t + (r * sin(phi)) * b;
 }
 
 // Sample a GGX visible-normal (VNDF, Heitz 2018) about geometric normal n for view ve, returning the
@@ -569,6 +584,11 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
             L += throughput * albedo * payload.emission * EMISSIVE_STRENGTH;
         }
 
+        // TODO(ReSTIR/PBR): revisit emissive-surface shading when PBR processing is refactored — the NEE
+        // specular glint on self-lit faces and the redstone-torch self-occlusion (its opaque box mesh
+        // shadows the lights on it) were investigated here but the fixes (near-field clamp, emission-scaled
+        // specular suppression, surface-lift, rectangle area-light sampling) were reverted as inadequate.
+
         // NEE: direct light from the dominant celestial body (delta directional light = sun by day,
         // moon by night; P6.3) — Lambert diffuse + GGX specular, one shadow ray. The specular term gives
         // the glint on water/metals/smooth blocks (a known P5.2 gap).
@@ -600,11 +620,12 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
         }
 
         // ReSTIR DI (Stage 1): RIS direct lighting from block emitters (lava/glowstone/torches/lanterns).
-        // Disjoint from the sun NEE above, so the two sum. Each emitter triangle is a small area light
-        // approximated at its centroid: unshadowed contribution = f · Le · (cosS · cosL / dist²) · area.
-        // Draw M candidates uniformly over the light list, weighted-reservoir-select one by its unshadowed
-        // target p̂ = luminance(contribution), then cast ONE shadow ray to the survivor. The RIS estimate is
-        // contrib · vis · W with W = (wSum / M) / p̂_selected. Temporal/spatial reservoir reuse comes later.
+        // Disjoint from the sun NEE above, so the two sum. Each emitter quad is an area light sampled at a
+        // random surface point (equal-area disc): unshadowed contribution = f · Le · (cosS · cosL / dist²) ·
+        // area. Draw M candidates uniformly over the light list, weighted-reservoir-select one by its
+        // unshadowed target p̂ = luminance(contribution), then cast ONE shadow ray to the sampled point. The
+        // RIS estimate is contrib · vis · W with W = (wSum / M) / p̂_selected; area point-sampling gives the
+        // soft penumbra (DLSS-RR averages frames). Temporal/spatial reservoir reuse comes later.
         if (risOn) {
             Lights lightBuf = Lights(pc.lightBufAddr);
             float wSum = 0.0;
@@ -615,7 +636,9 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
             for (uint c = 0u; c < pc.risCandidates; c++) {
                 uint li = min(uint(rndf(seed) * float(pc.lightCount)), pc.lightCount - 1u);
                 Light lg = lightBuf.l[li];
-                vec3 toL = lg.posArea.xyz - p;
+                // Soft shadows: sample a point on the light's area (not the fixed centroid). G below uses
+                // this point; the 1/area sampling pdf is the `area` factor already in `contrib`.
+                vec3 toL = sampleLightPoint(lg.posArea.xyz, lg.normalPad.xyz, lg.posArea.w, seed) - p;
                 float dist2 = dot(toL, toL);
                 if (dist2 < 1.0e-6) { continue; }
                 float dist = sqrt(dist2);

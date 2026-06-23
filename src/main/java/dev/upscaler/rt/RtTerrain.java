@@ -143,6 +143,12 @@ public final class RtTerrain {
     // null + count 0 when no emitters are resident; the shader treats a zero count as "no block lights".
     private RtBuffer lightBuffer;
     private int lightCount;
+    // ReSTIR DI debug: periodically log the area lights near the player (position, size, area, radiance,
+    // colour, luminance) so emitter membership/brightness can be inspected. -Dupscaler.rt.lightDump.
+    private static final boolean LIGHT_DUMP = Boolean.getBoolean("upscaler.rt.lightDump");
+    private static final double LIGHT_DUMP_RADIUS = Double.parseDouble(System.getProperty("upscaler.rt.lightDumpRadius", "12"));
+    private static final long LIGHT_DUMP_INTERVAL_MS = 3000;
+    private long lastLightDumpMs;
     // Static section instances (BLAS address + sectionOrigin-rebase transform, customIndex = list
     // order = section-table index). Rebuilt on residency change; the per-frame TLAS in RtComposite
     // merges these with dynamic (entity) instances. RtTerrain no longer owns the traced TLAS — it
@@ -286,6 +292,15 @@ public final class RtTerrain {
             reresolveAllRequested = false;
             dirty.addAll(resident.keySet());
             dirty.addAll(empty);
+        }
+
+        if (LIGHT_DUMP) {
+            long now = System.currentTimeMillis();
+            if (now - lastLightDumpMs >= LIGHT_DUMP_INTERVAL_MS) {
+                lastLightDumpMs = now;
+                var p = mc.player.position();
+                dumpNearbyLights(p.x, p.y, p.z);
+            }
         }
 
         // One GPU build in flight at a time. When it finishes, finalize and FALL THROUGH so this same
@@ -557,7 +572,7 @@ public final class RtTerrain {
             resolveMaterials(buckets[b]);
             Geom geom = buckets[b];
             RtLights.appendBucket(lights, geom.verts.elements(), geom.idx.elements(), geom.idx.size(),
-                    geom.prim.elements(), geom.triSprites);
+                    geom.prim.elements(), geom.cornerUv.elements(), geom.triSprites);
             vertFloats += geom.verts.size();
             idxCount += geom.idx.size();
             uvFloats += geom.cornerUv.size();
@@ -1298,6 +1313,42 @@ public final class RtTerrain {
                 d.free().run();
                 it.remove();
             }
+        }
+    }
+
+    /**
+     * ReSTIR DI debug: log the area lights within {@link #LIGHT_DUMP_RADIUS} of the player, nearest first,
+     * each as world position + size (√area, ~edge length in blocks) + radiance Le (colour) + luminance.
+     * Lights are stored section-local, so the section's world origin (sx,sy,sz) lifts them to world space.
+     */
+    private void dumpNearbyLights(double px, double py, double pz) {
+        record Hit(double dist, double x, double y, double z, float area, float r, float g, float b) {
+        }
+        List<Hit> hits = new ArrayList<>();
+        double r2 = LIGHT_DUMP_RADIUS * LIGHT_DUMP_RADIUS;
+        for (SectionGeom sg : resident.values()) {
+            float[] d = sg.lights.data.elements();
+            int n = sg.lights.count();
+            for (int i = 0; i < n; i++) {
+                int o = i * RtLights.FLOATS_PER_LIGHT;
+                double wx = d[o] + sg.sx, wy = d[o + 1] + sg.sy, wz = d[o + 2] + sg.sz;
+                double dx = wx - px, dy = wy - py, dz = wz - pz;
+                double dd = dx * dx + dy * dy + dz * dz;
+                if (dd <= r2) {
+                    hits.add(new Hit(Math.sqrt(dd), wx, wy, wz, d[o + 3], d[o + 8], d[o + 9], d[o + 10]));
+                }
+            }
+        }
+        hits.sort((a, b) -> Double.compare(a.dist(), b.dist()));
+        int cap = Math.min(hits.size(), 48);
+        UpscalerMod.LOGGER.info("RT lights within {} blocks of player: {} (showing nearest {})",
+                (int) LIGHT_DUMP_RADIUS, hits.size(), cap);
+        for (int i = 0; i < cap; i++) {
+            Hit h = hits.get(i);
+            float lum = 0.2126f * h.r() + 0.7152f * h.g() + 0.0722f * h.b();
+            UpscalerMod.LOGGER.info(String.format(
+                    "  [%2d] d=%5.1f pos=(%.1f,%.1f,%.1f) size=%.3fm area=%.4f Le=(%.2f,%.2f,%.2f) lum=%.2f",
+                    i, h.dist(), h.x(), h.y(), h.z(), Math.sqrt(h.area()), h.area(), h.r(), h.g(), h.b(), lum));
         }
     }
 
