@@ -61,8 +61,22 @@ struct WorldPush {
     vec4 lightRadiance;        // 240 xyz HDR radiance of the active light (warm/dim low, white high)
     vec4 moonDir;              // 256 xyz moon direction, w moonPhase (sky rewrite; the disc lives in world.rmiss)
     vec4 celestial;            // 272 xyz celestial rotation axis (NEE square + disc frame), w star drift
+    vec4 sunUv;                // 288 world.rmiss only (sun sprite UV rect); declared here for field alignment
+    vec4 moonUv;               // 304 world.rmiss only (moon sprite UV rect); declared here for field alignment
+    uint64_t lightBufAddr;     // 320 ReSTIR DI: global emissive area-light buffer (0 = no block lights)
+    uint lightCount;           // 328 number of area lights in lightBufAddr
+    uint risCandidates;        // 332 ReSTIR DI: RIS candidate count M per vertex (0 = ReSTIR off)
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer WorldPushRef { WorldPush v; };
+
+// ReSTIR DI Stage 0/1: one emissive terrain triangle as an area light (RtLights record, 48 B). Centroids
+// are stored in the same rebased space as the traced geometry, so they need no further transform here.
+struct Light {
+    vec4 posArea;   // xyz triangle centroid, w triangle area
+    vec4 normalPad; // xyz geometric (outward) normal, w unused
+    vec4 le;        // rgb HDR radiance = albedo · emission · EMISSIVE_STRENGTH, w unused
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Lights { Light l[]; };
 layout(push_constant) uniform PushAddr { uint64_t worldPushAddr; } pcAddr;
 WorldPush pc; // populated from the BDA buffer at the top of main()
 
@@ -96,6 +110,8 @@ struct Payload {
     float metalness; // P6.1: 0 = dielectric, 1 = conductor.
     vec3 f0;         // P6.2a: specular F0 (set by the chit: dielectric 0.04 / LabPBR green / metal).
     float showCelestial; // raygen sets this before each trace: >0.5 ⇒ world.rmiss draws the sun/moon disc.
+    float emitterInList; // ReSTIR DI: hit emitter is in the light buffer (NEE-sampled) ⇒ gate the direct-hit
+                         // emission on diffuse bounces. 0 ⇒ emissive but NOT sampled ⇒ always gather (= no-NEE).
 };
 layout(location = 0) rayPayloadEXT Payload payload;
 layout(location = 1) rayPayloadEXT float shadowVis; // 1.0 if the visibility ray escaped, else 0.0
@@ -402,6 +418,9 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
     vec3 L = vec3(0.0);
     vec3 throughput = vec3(1.0);
     bool pbr = (pc.flags & 2u) != 0u; // P6.1: GGX BRDF + material guides (else legacy Lambertian)
+    // ReSTIR DI Stage 1: RIS direct lighting from block emitters is active when there are lights and a
+    // non-zero candidate count. When off, emitters are gathered only on path hits (the legacy behaviour).
+    bool risOn = pc.risCandidates > 0u && pc.lightCount > 0u;
     // P6.1: start submerged if the camera is in water (fixes the air->water first-segment orientation
     // + absorption when the eye is underwater; without it the first hit was treated as an air segment).
     bool inWater = (pc.flags & 1u) != 0u;
@@ -539,10 +558,14 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
         }
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
-        // Block lights have no NEE yet, so emission is gathered purely by hitting emitters during the
-        // walk (counted at every vertex, no double counting) — noisy for small emitters until ReSTIR
-        // (P3.3), but temporal accumulation converges static views.
-        if (payload.emission > 0.0) {
+        // ReSTIR DI (P3.3): the direct-hit emission term is gated only for emitters that RIS actually samples
+        // (payload.emitterInList) — and then only off diffuse continuation rays (showCelestial false), which
+        // the previous vertex's RIS already accounted for; the primary ray + specular/dielectric bounces
+        // (showCelestial true) still add it, since no emitter NEE happened there. Emitters NOT in the light
+        // buffer (sparse/sub-threshold _s emitters, entities) are never NEE-sampled, so they ALWAYS gather —
+        // bit-identical to the no-NEE path, no energy lost. RIS off ⇒ everything always gathers (legacy).
+        bool gateEmitter = risOn && payload.emitterInList > 0.5;
+        if (payload.emission > 0.0 && (!gateEmitter || showCelestial)) {
             L += throughput * albedo * payload.emission * EMISSIVE_STRENGTH;
         }
 
@@ -573,6 +596,67 @@ vec3 tracePath(vec3 ro, vec3 rd, inout uint seed) {
                     brdf += (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
                 }
                 L += throughput * brdf * pc.lightRadiance.xyz * ndl * vis;
+            }
+        }
+
+        // ReSTIR DI (Stage 1): RIS direct lighting from block emitters (lava/glowstone/torches/lanterns).
+        // Disjoint from the sun NEE above, so the two sum. Each emitter triangle is a small area light
+        // approximated at its centroid: unshadowed contribution = f · Le · (cosS · cosL / dist²) · area.
+        // Draw M candidates uniformly over the light list, weighted-reservoir-select one by its unshadowed
+        // target p̂ = luminance(contribution), then cast ONE shadow ray to the survivor. The RIS estimate is
+        // contrib · vis · W with W = (wSum / M) / p̂_selected. Temporal/spatial reservoir reuse comes later.
+        if (risOn) {
+            Lights lightBuf = Lights(pc.lightBufAddr);
+            float wSum = 0.0;
+            vec3 selContrib = vec3(0.0); // unshadowed f·Le·G·area for the surviving candidate
+            vec3 selDir = vec3(0.0);
+            float selDist = 0.0;
+            float selPhat = 0.0;
+            for (uint c = 0u; c < pc.risCandidates; c++) {
+                uint li = min(uint(rndf(seed) * float(pc.lightCount)), pc.lightCount - 1u);
+                Light lg = lightBuf.l[li];
+                vec3 toL = lg.posArea.xyz - p;
+                float dist2 = dot(toL, toL);
+                if (dist2 < 1.0e-6) { continue; }
+                float dist = sqrt(dist2);
+                vec3 wi = toL / dist;
+                float ndl2 = dot(n, wi);
+                if (ndl2 <= 0.0) { continue; }            // light is below the surface horizon
+                float cosL = max(0.0, dot(lg.normalPad.xyz, -wi));
+                if (cosL <= 0.0) { continue; }            // receiver is behind the emitter face
+                float G = ndl2 * cosL / dist2;            // area light geometry term (× area below)
+                vec3 brdf = diffAlb * INV_PI;             // same BRDF split as the sun NEE
+                if (pbr) {
+                    vec3 h = normalize(wi + v);
+                    float ndh = max(0.0, dot(n, h));
+                    float ndv = max(1.0e-4, dot(n, v));
+                    float vdh = max(0.0, dot(v, h));
+                    float D = ggxD(ndh, rough);
+                    float Gs = ggxG1(ndv, rough) * ggxG1(ndl2, rough);
+                    vec3 Fs = fresnelSchlick(vdh, F0);
+                    brdf += (D * Gs) * Fs / (4.0 * ndv * ndl2);
+                }
+                vec3 contrib = brdf * lg.le.xyz * (G * lg.posArea.w);
+                float phat = luminance(contrib);
+                if (phat <= 0.0) { continue; }
+                // Source pdf is uniform = 1/lightCount, so the resampling weight is p̂ · lightCount.
+                float w = phat * float(pc.lightCount);
+                wSum += w;
+                if (rndf(seed) * wSum < w) {              // weighted reservoir update
+                    selContrib = contrib;
+                    selDir = wi;
+                    selDist = dist;
+                    selPhat = phat;
+                }
+            }
+            if (selPhat > 0.0) {
+                // Shadow ray stops just short of the emitter centroid so it doesn't self-occlude on the
+                // emitter's own face. (Same cutout-aware visibility() the sun NEE uses.)
+                float vis = visibility(p, selDir, selDist * 0.999);
+                if (vis > 0.0) {
+                    float W = (wSum / float(pc.risCandidates)) / selPhat;
+                    L += throughput * selContrib * vis * W;
+                }
             }
         }
 

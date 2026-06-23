@@ -52,6 +52,7 @@ struct Payload {
     float metalness;
     vec3 f0;
     float showCelestial; // raygen-set gate: >0.5 ⇒ draw the sun/moon disc on this miss
+    float emitterInList; // ReSTIR DI: layout match only (sky is not an emitter; world.rmiss never sets it)
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 

@@ -91,6 +91,7 @@ struct Payload {
     float metalness; // P6.1: 0 = dielectric, 1 = conductor
     vec3 f0;         // P6.2a: specular reflectance at normal incidence (dielectric 0.04 / LabPBR / metal)
     float showCelestial; // sky-disc gate (raygen-set, read by world.rmiss); unused here, kept for layout match
+    float emitterInList; // ReSTIR DI: 1 = this emitter is in the light buffer (NEE-sampled), 0 = not (always gather)
 };
 layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 attribs;
@@ -210,6 +211,7 @@ void main() {
         payload.normal = pn;
         payload.hitT = gl_HitTEXT;
         payload.emission = 0.0;
+        payload.emitterInList = 0.0; // particles are not in the light buffer (always gather; emission 0 anyway)
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across the
         // billboard's verts) with the same indices/barycentrics as the UV. dispAddr == 0 falls back to
         // rigidDisp, which particles write as zero unless a future path chooses otherwise.
@@ -275,6 +277,7 @@ void main() {
         payload.normal = n;
         payload.hitT = gl_HitTEXT;
         payload.emission = emission;
+        payload.emitterInList = 0.0; // entity emitters aren't in the (terrain-only) light buffer ⇒ always gather
         // P5.1c-2: per-vertex motion vector — interpolate the captured per-vertex displacement with the
         // same indices/barycentrics used for the UV above. Rotation and skeletal/lid animation use a
         // per-vertex buffer; pure whole-object translation is packed into rigidDisp with no buffer.
@@ -339,9 +342,14 @@ void main() {
     float rough = pr.mat.x;
     float metal = pr.mat.y;
     vec3 f0 = mix(vec3(0.04), payload.albedo, metal);
-    float emission = pr.normal.w;   // 0..1 block light level (extraction): the heuristic emission source
+    // ReSTIR DI: the SIGN of prim.normal.w is the NEE-membership flag (set by RtLights); its MAGNITUDE is the
+    // block light level. >= 0 ⇒ this emitter is in the light buffer (sampled by RIS) so the raygen gates its
+    // direct-hit term on diffuse bounces; < 0 ⇒ emissive but excluded ⇒ raygen always gathers it (= no-NEE).
+    float primEmiss = pr.normal.w;
+    float emission = abs(primEmiss); // 0..1 block light level: the heuristic emission source
     // P6.2a LabPBR _s, gated by mat.z — shared decode. When an _s map is authored we trust ITS emission and
-    // REPLACE the block-light heuristic, so emissive texels come from the pack, not the light level.
+    // REPLACE the block-light heuristic, so emissive texels come from the pack, not the light level. The
+    // membership sign lives in primEmiss independently, so it survives this magnitude override.
     // (blue channel: porosity 0..64 / SSS 65..255 — deferred, not consumed yet.)
     if (pr.mat.z > 0.5) {
         decodeSpec(textureLod(blockSpecAtlas, uv, 0.0), payload.albedo, rough, metal, f0, emission);
@@ -350,4 +358,5 @@ void main() {
     payload.metalness = metal;
     payload.f0 = f0;
     payload.emission = emission;
+    payload.emitterInList = primEmiss >= 0.0 ? 1.0 : 0.0;
 }

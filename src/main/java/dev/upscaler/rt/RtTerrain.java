@@ -556,7 +556,8 @@ public final class RtTerrain {
         for (int b = 0; b < buckets.length; b++) {
             resolveMaterials(buckets[b]);
             Geom geom = buckets[b];
-            RtLights.appendBucket(lights, geom.verts.elements(), geom.idx.elements(), geom.idx.size(), geom.prim.elements());
+            RtLights.appendBucket(lights, geom.verts.elements(), geom.idx.elements(), geom.idx.size(),
+                    geom.prim.elements(), geom.triSprites);
             vertFloats += geom.verts.size();
             idxCount += geom.idx.size();
             uvFloats += geom.cornerUv.size();

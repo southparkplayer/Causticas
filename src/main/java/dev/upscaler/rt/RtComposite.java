@@ -58,7 +58,8 @@ public final class RtComposite {
     // + flags(@192): P6.1 bit 0 = camera submerged, bit 1 = PBR BRDF enabled
     // + P6.3 dynamic sky (16-byte aligned vec4s): sunDir+dayFactor(@208) + lightDir(@224) + lightRadiance(@240)
     // + sky rewrite: moonDir+moonPhase(@256) + celestialAxis+starAngle(@272) + sunUv(@288) + moonUv(@304)
-    private static final int WORLD_PUSH_SIZE = 320;
+    // + ReSTIR DI: lightBufAddr(u64@320) + lightCount(u32@328) + risCandidates(u32@332)
+    private static final int WORLD_PUSH_SIZE = 336;
     private static final int GUIDE_COUNT = 7; // P4/RR guide buffers bound at world-pipeline bindings 3..9
     // Frames a retired per-frame TLAS must outlive before it's freed (> frames-in-flight); matches
     // RtTerrain's deferred-free horizon. The frame TLAS is built + traced this frame, then freed once
@@ -80,6 +81,13 @@ public final class RtComposite {
      * Radii in degrees; the real sun/moon are ~0.27° but a touch larger reads as a pleasant penumbra.
      */
     public static final boolean SOFT_SHADOWS = Boolean.parseBoolean(System.getProperty("upscaler.rt.softShadows", "true"));
+    /**
+     * ReSTIR DI (P3.3) Stage 1: number of RIS candidate lights drawn per shaded vertex for block-emitter
+     * direct lighting (lava/glowstone/torches/…). 0 disables ReSTIR entirely — the path tracer falls back
+     * to gathering emission only when a path ray lands on an emitter (today's behaviour). The sun/moon NEE
+     * is independent of this. {@code -Dupscaler.rt.risCandidates}.
+     */
+    public static final int RIS_CANDIDATES = Math.max(0, Integer.getInteger("upscaler.rt.risCandidates", 8));
     private static final float SUN_ANGULAR_RADIUS = (float) Math.toRadians(Double.parseDouble(System.getProperty("upscaler.rt.sunAngularRadius", "0.6")));
     private static final float MOON_ANGULAR_RADIUS = (float) Math.toRadians(Double.parseDouble(System.getProperty("upscaler.rt.moonAngularRadius", "1.5")));
     private static final float SUN_NOON_SOUTH_TILT = (float) Math.toRadians(Double.parseDouble(System.getProperty("upscaler.rt.sunNoonSouthDeg", "0.0")));
@@ -542,6 +550,11 @@ public final class RtComposite {
             push.putInt(192, flags);
             // P6.3: sun/moon direction + light radiance + sky day-factor, derived from the time of day.
             writeSky(push);
+            // ReSTIR DI Stage 1: global emissive light buffer (rebased with the section table) + its count
+            // + the RIS candidate count. Address 0 / count 0 ⇒ no block lights this frame (rgen skips RIS).
+            push.putLong(320, terrain.lightBufferAddress());
+            push.putInt(328, terrain.lightCount());
+            push.putInt(332, RIS_CANDIDATES);
 
             // P5.1a/b: rebuild the TLAS this frame from the static section instances merged with
             // dynamic entity-box instances, bind it into the pipeline's descriptor ring, record the
