@@ -14,6 +14,14 @@ import dev.upscaler.rt.material.RtBlockMaterials;
 import dev.upscaler.rt.material.RtMaterials;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
@@ -42,13 +50,8 @@ import org.joml.Vector3fc;
 import org.lwjgl.system.MemoryUtil;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 
 /**
@@ -86,18 +89,26 @@ public final class RtTerrain {
     // Frames a retired resource must outlive before it's freed (> frames-in-flight). The frame counter
     // advances per composite; old TLAS/table/sections are freed this many frames after the swap.
     private static final int KEEP_FRAMES = 4;
+    private static final long NO_TESS_TOKEN = Long.MIN_VALUE;
 
     private static final RtTerrain INSTANCE = new RtTerrain();
 
-    private final Map<Long, SectionGeom> resident = new HashMap<>();
-    private Set<Long> published = new HashSet<>();
-    private final Set<Long> empty = new HashSet<>(); // loaded, in-window sections with no geometry
-    private final Set<Long> dirty = java.util.concurrent.ConcurrentHashMap.newKeySet(); // edited sections to re-extract
+    private final Long2ObjectOpenHashMap<SectionGeom> resident = new Long2ObjectOpenHashMap<>();
+    private LongOpenHashSet published = new LongOpenHashSet();
+    private final LongOpenHashSet empty = new LongOpenHashSet(); // loaded, in-window sections with no geometry
+    private final Object dirtyLock = new Object();
+    private final LongOpenHashSet dirty = new LongOpenHashSet(); // edited sections to re-extract
+    private final LongArrayList dirtyDrain = new LongArrayList();
+    private final LongOpenHashSet desired = new LongOpenHashSet();
+    private final LongArrayList missing = new LongArrayList();
+    private final LongArrayList reextract = new LongArrayList();
+    private final List<SectionGeom> removed = new ArrayList<>();
+    private final List<PreparedSection> prepared = new ArrayList<>();
     private final List<Deferred> deferred = new ArrayList<>(); // frames-in-flight-safe frees
     // Worker tessellation bookkeeping (render-thread only). `inFlight` maps a dispatched section key to a
     // monotonic token; a completed job whose token no longer matches (section re-dirtied / unloaded /
     // left the window since dispatch) is dropped. `jobs` holds the outstanding worker futures.
-    private final Map<Long, Long> inFlight = new HashMap<>();
+    private final Long2LongOpenHashMap inFlight = new Long2LongOpenHashMap();
     private final List<TessJob> jobs = new ArrayList<>();
     private long tessToken;
     private boolean loggedTessFailure; // log the first worker tessellation failure (should never happen)
@@ -118,12 +129,14 @@ public final class RtTerrain {
     // Re-extract every live section to recompute LabPBR material flags against (re)loaded atlases — used
     // after a resource reload, which does NOT route through allChanged(). Consumed in tick().
     private volatile boolean reresolveAllRequested;
+    private volatile boolean dirtyPending;
     // Rebase origin (player block at the last TLAS rebuild) for the instance transforms + ray camOffset.
     public int blockX;
     public int blockY;
     public int blockZ;
 
     private RtTerrain() {
+        inFlight.defaultReturnValue(NO_TESS_TOKEN);
     }
 
     /** The manager if it currently has resident geometry (built BLAS + instances) to trace, else null. */
@@ -177,12 +190,16 @@ public final class RtTerrain {
      * Interior edits stay within one section (±1 doesn't cross a 16-block boundary).
      */
     public static void markBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
-        for (int scx = (minX - 1) >> 4; scx <= (maxX + 1) >> 4; scx++) {
-            for (int scy = (minY - 1) >> 4; scy <= (maxY + 1) >> 4; scy++) {
-                for (int scz = (minZ - 1) >> 4; scz <= (maxZ + 1) >> 4; scz++) {
-                    INSTANCE.dirty.add(sectionKey(scx, scy, scz));
+        RtTerrain terrain = INSTANCE;
+        synchronized (terrain.dirtyLock) {
+            for (int scx = (minX - 1) >> 4; scx <= (maxX + 1) >> 4; scx++) {
+                for (int scy = (minY - 1) >> 4; scy <= (maxY + 1) >> 4; scy++) {
+                    for (int scz = (minZ - 1) >> 4; scz <= (maxZ + 1) >> 4; scz++) {
+                        terrain.dirty.add(sectionKey(scx, scy, scz));
+                    }
                 }
             }
+            terrain.dirtyPending = true;
         }
     }
 
@@ -231,8 +248,11 @@ public final class RtTerrain {
         // Re-extract all live sections after a resource reload so material flags pick up the new atlases.
         if (reresolveAllRequested) {
             reresolveAllRequested = false;
-            dirty.addAll(resident.keySet());
-            dirty.addAll(empty);
+            synchronized (dirtyLock) {
+                dirty.addAll(resident.keySet());
+                dirty.addAll(empty);
+                dirtyPending = true;
+            }
         }
 
         // One GPU build in flight at a time. When it finishes, finalize and FALL THROUGH so this same
@@ -247,22 +267,26 @@ public final class RtTerrain {
             }
         }
 
-        BlockPos pb = mc.player.blockPosition();
-        int pcx = pb.getX() >> 4, pcz = pb.getZ() >> 4, psy = pb.getY() >> 4;
+        int pbx = mc.player.getBlockX();
+        int pby = mc.player.getBlockY();
+        int pbz = mc.player.getBlockZ();
+        int pcx = pbx >> 4, pcz = pbz >> 4, psy = pby >> 4;
         int r = horizontalChunks(mc);
         int minSecY = level.getMinY() >> 4;
         int maxSecY = (level.getMinY() + level.getHeight() - 1) >> 4;
         int loY = Math.max(minSecY, psy - VIEW_SECTIONS_V);
         int hiY = Math.min(maxSecY, psy + VIEW_SECTIONS_V);
 
-        List<SectionGeom> removed = new ArrayList<>();
-        List<int[]> reextract = new ArrayList<>(); // dirty sections to rebuild in place (kept resident)
+        List<SectionGeom> removed = this.removed;
+        removed.clear();
+        LongArrayList reextract = this.reextract;
+        reextract.clear(); // dirty sections to rebuild in place (kept resident)
 
-        // Re-extract edited sections. Snapshot+removeAll drains without losing concurrent adds.
-        if (!dirty.isEmpty()) {
-            List<Long> keys = new ArrayList<>(dirty);
-            dirty.removeAll(keys);
-            for (long key : keys) {
+        // Re-extract edited sections. Drain under a short lock so concurrent block updates are not lost.
+        drainDirty();
+        if (!dirtyDrain.isEmpty()) {
+            for (LongIterator it = dirtyDrain.iterator(); it.hasNext(); ) {
+                long key = it.nextLong();
                 empty.remove(key);
                 inFlight.remove(key); // invalidate any in-flight tessellation of the now-stale section
                 // Keep the old geometry resident + traced; re-dispatch and swap when the new mesh is
@@ -270,15 +294,17 @@ public final class RtTerrain {
                 // normal window/missing pass.
                 SectionGeom g = resident.get(key);
                 if (g != null) {
-                    reextract.add(new int[]{g.sx >> 4, g.sy >> 4, g.sz >> 4});
+                    reextract.add(key);
                 }
             }
         }
 
         // Desired window = loaded sections within the view. hasChunk gating makes residency follow
         // vanilla: unloaded chunks aren't desired (so their sections get freed), loaded ones are.
-        Set<Long> desired = new HashSet<>();
-        List<int[]> missing = new ArrayList<>();
+        LongOpenHashSet desired = this.desired;
+        LongArrayList missing = this.missing;
+        desired.clear();
+        missing.clear();
         for (int scx = pcx - r; scx <= pcx + r; scx++) {
             for (int scz = pcz - r; scz <= pcz + r; scz++) {
                 if (!level.getChunkSource().hasChunk(scx, scz)) {
@@ -290,26 +316,27 @@ public final class RtTerrain {
                     if (!resident.containsKey(key) && !empty.contains(key)
                             && !inFlight.containsKey(key)
                             && neighborChunksReady(level, scx, scz)) {
-                        missing.add(new int[]{scx, scy, scz});
+                        missing.add(key);
                     }
                 }
             }
         }
 
         // Free sections that left the window (or whose chunk unloaded).
-        for (Iterator<Map.Entry<Long, SectionGeom>> it = resident.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<Long, SectionGeom> e = it.next();
-            if (!desired.contains(e.getKey())) {
+        for (ObjectIterator<Long2ObjectMap.Entry<SectionGeom>> it = resident.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
+            Long2ObjectMap.Entry<SectionGeom> e = it.next();
+            if (!desired.contains(e.getLongKey())) {
                 removed.add(e.getValue());
                 it.remove();
             }
         }
-        empty.removeIf(k -> !desired.contains(k));
+        removeKeysNotIn(empty, desired);
         // Drop in-flight tessellations whose section left the window / unloaded since dispatch.
-        inFlight.keySet().removeIf(k -> !desired.contains(k));
+        removeKeysNotIn(inFlight.keySet(), desired);
 
         // Tessellate + upload new sections (BLAS build deferred to rebuild's single batched submission).
-        List<PreparedSection> prepared = new ArrayList<>();
+        List<PreparedSection> prepared = this.prepared;
+        prepared.clear();
         // Build nearest-first so terrain fills from the player outward.
         if (!missing.isEmpty()) {
             missing.sort((a, b) -> Integer.compare(dist2(a, pcx, psy, pcz), dist2(b, pcx, psy, pcz)));
@@ -319,7 +346,7 @@ public final class RtTerrain {
         drainTessellation(ctx, prepared, removed);
 
         if (!removed.isEmpty() || !prepared.isEmpty()) {
-            startBuild(ctx, prepared, removed, pb.getX(), pb.getY(), pb.getZ());
+            startBuild(ctx, prepared, removed, pbx, pby, pbz);
         }
     }
 
@@ -355,8 +382,30 @@ public final class RtTerrain {
         return Math.max(1, mc.options.getEffectiveRenderDistance());
     }
 
-    private static int dist2(int[] s, int pcx, int psy, int pcz) {
-        int dx = s[0] - pcx, dy = s[1] - psy, dz = s[2] - pcz;
+    private void drainDirty() {
+        dirtyDrain.clear();
+        if (!dirtyPending) {
+            return;
+        }
+        synchronized (dirtyLock) {
+            for (LongIterator it = dirty.iterator(); it.hasNext(); ) {
+                dirtyDrain.add(it.nextLong());
+            }
+            dirty.clear();
+            dirtyPending = false;
+        }
+    }
+
+    private static void removeKeysNotIn(LongSet keys, LongOpenHashSet keep) {
+        for (LongIterator it = keys.iterator(); it.hasNext(); ) {
+            if (!keep.contains(it.nextLong())) {
+                it.remove();
+            }
+        }
+    }
+
+    private static int dist2(long key, int pcx, int psy, int pcz) {
+        int dx = sectionX(key) - pcx, dy = sectionY(key) - psy, dz = sectionZ(key) - pcz;
         return dx * dx + dy * dy + dz * dz;
     }
 
@@ -544,7 +593,7 @@ public final class RtTerrain {
      * job so nothing mutable is shared across threads; the captured {@code region}, model sets and block
      * colors are read-only. Capped at {@link #ASYNC_DISPATCH_PER_TICK} dispatches per tick.
      */
-    private void dispatchTessellation(ClientLevel level, List<int[]> missing) {
+    private void dispatchTessellation(ClientLevel level, LongArrayList missing) {
         if (missing.isEmpty()) {
             return;
         }
@@ -554,12 +603,14 @@ public final class RtTerrain {
         FluidStateModelSet fluidModelSet = mc.getModelManager().getFluidStateModelSet();
         BlockColors blockColors = mc.getBlockColors();
         int budget = ASYNC_DISPATCH_PER_TICK;
-        for (int[] s : missing) {
+        for (LongIterator it = missing.iterator(); it.hasNext(); ) {
             if (budget <= 0 || inFlight.size() >= MAX_INFLIGHT) {
                 break;
             }
+            long key = it.nextLong();
             budget--;
-            dispatchSection(level, regionCache, modelSet, fluidModelSet, blockColors, s[0], s[1], s[2]);
+            dispatchSection(level, regionCache, modelSet, fluidModelSet, blockColors,
+                    key, sectionX(key), sectionY(key), sectionZ(key));
         }
     }
 
@@ -569,7 +620,7 @@ public final class RtTerrain {
      * with a gap — when the new mesh is built (see {@link #startBuild} retiring the replaced geom). This
      * is what prevents the visible flicker on block updates that plain eviction would cause.
      */
-    private void dispatchReextract(ClientLevel level, List<int[]> reextract) {
+    private void dispatchReextract(ClientLevel level, LongArrayList reextract) {
         if (reextract.isEmpty()) {
             return;
         }
@@ -578,19 +629,21 @@ public final class RtTerrain {
         BlockStateModelSet modelSet = mc.getModelManager().getBlockStateModelSet();
         FluidStateModelSet fluidModelSet = mc.getModelManager().getFluidStateModelSet();
         BlockColors blockColors = mc.getBlockColors();
-        for (int[] s : reextract) {
+        for (LongIterator it = reextract.iterator(); it.hasNext(); ) {
+            long key = it.nextLong();
             // Skip ones the window pass freed this tick (out of view) — they're being retired, not rebuilt.
-            if (!resident.containsKey(sectionKey(s[0], s[1], s[2]))) {
+            SectionGeom g = resident.get(key);
+            if (g == null) {
                 continue;
             }
-            dispatchSection(level, regionCache, modelSet, fluidModelSet, blockColors, s[0], s[1], s[2]);
+            dispatchSection(level, regionCache, modelSet, fluidModelSet, blockColors,
+                    key, g.sx >> 4, g.sy >> 4, g.sz >> 4);
         }
     }
 
     /** Snapshot one section on the render thread and submit its tessellation to the worker pool. */
     private void dispatchSection(ClientLevel level, RenderRegionCache regionCache, BlockStateModelSet modelSet,
-                                 FluidStateModelSet fluidModelSet, BlockColors blockColors, int sx, int sy, int sz) {
-        long key = sectionKey(sx, sy, sz);
+                                 FluidStateModelSet fluidModelSet, BlockColors blockColors, long key, int sx, int sy, int sz) {
         RenderSectionRegion region = regionCache.createRegion(level, SectionPos.asLong(sx, sy, sz));
         long token = ++tessToken;
         Future<CpuSection> future = RtWorkerPool.INSTANCE.submit(() -> {
@@ -631,8 +684,8 @@ public final class RtTerrain {
                 }
                 continue;
             }
-            Long expected = inFlight.get(job.key());
-            boolean valid = expected != null && expected == job.token();
+            long expected = inFlight.get(job.key());
+            boolean valid = expected == job.token();
             if (!valid) {
                 continue; // stale result; a newer dispatch (or none) supersedes it
             }
@@ -673,7 +726,7 @@ public final class RtTerrain {
 
     /** An in-flight async BLAS build: the new section geometry/instances land when {@code op} completes. */
     private record Pending(RtContext.AsyncSubmit op, List<RtAccel.PreparedBlas> blas, RtBuffer newTable,
-                           List<RtAccel.Instance> newInstances, Set<Long> newPublished, List<SectionGeom> removed, int rbx, int rby, int rbz) {
+                           List<RtAccel.Instance> newInstances, LongOpenHashSet newPublished, List<SectionGeom> removed, int rbx, int rby, int rbz) {
     }
 
     /**
@@ -700,7 +753,7 @@ public final class RtTerrain {
             retire(freeAt, sectionTable, removed);
             sectionTable = null;
             staticInstances = null;
-            published = new HashSet<>();
+            published.clear();
             ready = false;
             return;
         }
@@ -732,7 +785,7 @@ public final class RtTerrain {
         }
         // BLAS-only async build (empty when this tick only freed sections — completes immediately).
         RtContext.AsyncSubmit op = ctx.submitAsync(cmd -> RtAccel.recordBlasBuilds(ctx, cmd, blasBuilds));
-        pending = new Pending(op, blasBuilds, newTable, instances, new HashSet<>(resident.keySet()), removed, rbx, rby, rbz);
+        pending = new Pending(op, blasBuilds, newTable, instances, new LongOpenHashSet(resident.keySet()), removed, rbx, rby, rbz);
     }
 
     /** Swap a completed async build in: retire old table + removed sections, publish the new instances/table. */
@@ -792,11 +845,20 @@ public final class RtTerrain {
     /** Full teardown (world exit / shutdown): drain the GPU, then free everything incl. an in-flight build. */
     private void clear(RtContext ctx) {
         cancelJobs();
-        dirty.clear(); // any pending re-extract keys refer to the old world/coords — drop them
+        synchronized (dirtyLock) {
+            dirty.clear(); // any pending re-extract keys refer to the old world/coords — drop them
+            dirtyPending = false;
+        }
+        dirtyDrain.clear();
+        desired.clear();
+        missing.clear();
+        reextract.clear();
         if (pending == null && resident.isEmpty() && sectionTable == null && deferred.isEmpty()) {
             empty.clear();
             staticInstances = null;
-            published = new HashSet<>();
+            published.clear();
+            removed.clear();
+            prepared.clear();
             return;
         }
         ctx.waitIdle();
@@ -825,13 +887,27 @@ public final class RtTerrain {
         resident.clear();
         empty.clear();
         staticInstances = null;
-        published = new HashSet<>();
+        published.clear();
+        removed.clear();
+        prepared.clear();
         ready = false;
     }
 
     /** Pack section coords into a stable map key; ranges fit comfortably in the masks. */
     private static long sectionKey(int scx, int scy, int scz) {
         return (scx & 0x3FFFFFFL) | ((scz & 0x3FFFFFFL) << 26) | ((scy & 0xFFFL) << 52);
+    }
+
+    private static int sectionX(long key) {
+        return (int) (key << 38 >> 38);
+    }
+
+    private static int sectionZ(long key) {
+        return (int) (key << 12 >> 38);
+    }
+
+    private static int sectionY(long key) {
+        return (int) (key >> 52);
     }
 
     /** GPU residency for one section: geometry buffers + BLAS + world section origin. */
