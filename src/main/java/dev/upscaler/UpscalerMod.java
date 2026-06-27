@@ -10,6 +10,9 @@ public final class UpscalerMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
-		LOGGER.info("Upscaler initialized (common)");
+		// Register every setting (applying TOML file values) and write a default config on first run.
+		UpscalerConfig.ensureRegistered();
+		UpscalerConfig.saveIfMissing();
+		LOGGER.info("Upscaler initialized (common); config: {}", UpscalerConfig.configPath());
 	}
 }

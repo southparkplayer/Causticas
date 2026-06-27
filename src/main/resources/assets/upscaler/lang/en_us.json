@@ -1,0 +1,39 @@
+{
+	"upscaler.options.rt.header": "Ray Tracing",
+
+	"upscaler.options.rt.exposureMode": "Exposure",
+	"upscaler.options.rt.exposureMode.tooltip": "How the ray-traced image is mapped to display brightness. Auto adapts to scene luminance; Manual applies a fixed EV offset.",
+	"upscaler.options.rt.exposureMode.auto": "Auto",
+	"upscaler.options.rt.exposureMode.fixed": "Fixed",
+	"upscaler.options.rt.exposureMode.manual": "Manual",
+
+	"upscaler.options.rt.manualEv": "Manual Exposure",
+	"upscaler.options.rt.manualEv.tooltip": "Exposure compensation in stops (EV), used when Exposure is set to Manual.",
+
+	"upscaler.options.rt.spp": "Samples Per Pixel",
+	"upscaler.options.rt.spp.tooltip": "Path-tracing samples taken per pixel each frame. Higher is cleaner but more demanding.",
+
+	"upscaler.options.rt.sunSize": "Sun Size",
+	"upscaler.options.rt.sunSize.tooltip": "Angular radius of the sun and moon disk. Larger discs cast softer shadow penumbrae.",
+
+	"upscaler.options.rt.entities": "Ray-Traced Entities",
+	"upscaler.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
+
+	"upscaler.options.rt.particles": "Ray-Traced Particles",
+	"upscaler.options.rt.particles.tooltip": "Draw particles as camera-ray billboards inside the traced scene.",
+
+	"upscaler.options.rt.waterWaves": "Animated Water",
+	"upscaler.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
+
+	"upscaler.options.rt.debugView": "Debug View",
+	"upscaler.options.rt.debugView.tooltip": "Visualize an intermediate ray-tracing buffer instead of the final image.",
+	"upscaler.options.rt.debugView.0": "Off",
+	"upscaler.options.rt.debugView.1": "Normals",
+	"upscaler.options.rt.debugView.2": "Albedo",
+	"upscaler.options.rt.debugView.3": "Depth",
+	"upscaler.options.rt.debugView.4": "Roughness",
+	"upscaler.options.rt.debugView.5": "Motion",
+	"upscaler.options.rt.debugView.6": "Specular",
+	"upscaler.options.rt.debugView.7": "Specular Hit",
+	"upscaler.options.rt.debugView.8": "Specular Motion"
+}

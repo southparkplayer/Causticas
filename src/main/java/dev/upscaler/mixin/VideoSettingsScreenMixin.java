@@ -70,4 +70,10 @@ public abstract class VideoSettingsScreenMixin {
         list.addHeader(UPSCALER$RT_HEADER);
         list.addSmall(RtVideoOptions.runtimeOptions());
     }
+
+    @Inject(method = "removed", at = @At("TAIL"))
+    private void upscaler$saveConfig(CallbackInfo ci) {
+        // Persist any RT settings the player changed in this screen to the TOML config.
+        UpscalerConfig.save();
+    }
 }

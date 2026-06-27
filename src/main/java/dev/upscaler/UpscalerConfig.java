@@ -1,18 +1,42 @@
 package dev.upscaler;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.IntUnaryOperator;
 import java.util.function.UnaryOperator;
+import net.fabricmc.loader.api.FabricLoader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Central mutable runtime configuration. For now settings are seeded from the existing
- * {@code -Dupscaler.*} system-property surface; later a config file or settings UI can call the same
- * {@code set(...)} methods without chasing parsing/defaults through renderer code.
+ * Central mutable runtime configuration. Each setting resolves its value, in order of precedence, from a
+ * {@code -Dupscaler.*} system property, then the {@code config/upscaler.toml} file, then a hardcoded
+ * default. The settings UI and any other code call the same {@code set(...)} methods, and {@link #save()}
+ * writes the current values back to the TOML file.
+ *
+ * <p>The TOML file uses quoted, fully-qualified keys at the top level (e.g.
+ * {@code "upscaler.rt.composite" = true}). Quoting sidesteps the dotted-key/table ambiguity that would
+ * otherwise collide {@code upscaler.rt} (a boolean) with the {@code upscaler.rt.*} family.
  */
 public final class UpscalerConfig {
+    private static final Logger LOGGER = LoggerFactory.getLogger("upscaler-config");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
+
+    /** External values parsed from the TOML file, keyed by full setting key. Loaded once at class init. */
+    private static final Map<String, String> FILE_VALUES = new HashMap<>();
+    private static final Path CONFIG_PATH = resolveConfigPath();
+
+    static {
+        loadFileValues(CONFIG_PATH);
+    }
 
     private UpscalerConfig() {
     }
@@ -21,10 +45,138 @@ public final class UpscalerConfig {
         return List.copyOf(SETTINGS);
     }
 
+    public static Path configPath() {
+        return CONFIG_PATH;
+    }
+
     public static void reloadFromSystemProperties() {
         for (RuntimeSetting<?> setting : SETTINGS) {
             setting.reloadFromSystemProperties();
         }
+    }
+
+    /**
+     * Forces every settings holder to class-initialize so all settings are registered (and have applied
+     * their file values). Call before {@link #save()} to write a complete file, and once at startup so the
+     * file round-trips the full surface even for settings the renderer has not touched yet.
+     */
+    public static void ensureRegistered() {
+        @SuppressWarnings("unused")
+        Object[] touch = {
+            Rt.ENABLED, Rt.Composite.ENABLED, Rt.Terrain.VIEW_SECTIONS_V, Rt.Omm.ENABLED,
+            Rt.Entities.ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED,
+            Rt.Exposure.MODE, Rt.BufferPool.STATS, Ngx.PATH,
+        };
+    }
+
+    /** Writes the default config file if it does not exist yet. */
+    public static void saveIfMissing() {
+        ensureRegistered();
+        if (!Files.isRegularFile(CONFIG_PATH)) {
+            save();
+        }
+    }
+
+    /** Serializes all registered settings to the TOML config file. */
+    public static synchronized void save() {
+        ensureRegistered();
+        List<RuntimeSetting<?>> sorted = new ArrayList<>(SETTINGS);
+        sorted.sort(Comparator.comparing(RuntimeSetting::key));
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Upscaler RT renderer configuration.\n");
+        sb.append("# Generated automatically; edit while the game is closed.\n");
+        sb.append("# Precedence: a matching -Dupscaler.* system property overrides this file.\n\n");
+        for (RuntimeSetting<?> setting : sorted) {
+            String value = setting.tomlValue();
+            if (value == null) {
+                continue;
+            }
+            sb.append('"').append(setting.key()).append("\" = ").append(value).append('\n');
+        }
+
+        try {
+            Path parent = CONFIG_PATH.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(CONFIG_PATH, sb.toString());
+        } catch (IOException e) {
+            LOGGER.warn("Failed to write Upscaler config {}: {}", CONFIG_PATH, e.toString());
+        }
+    }
+
+    private static Path resolveConfigPath() {
+        try {
+            return FabricLoader.getInstance().getConfigDir().resolve("upscaler.toml");
+        } catch (Throwable t) {
+            return Path.of("config", "upscaler.toml");
+        }
+    }
+
+    private static void loadFileValues(Path file) {
+        if (file == null || !Files.isRegularFile(file)) {
+            return;
+        }
+        try {
+            for (String raw : Files.readAllLines(file)) {
+                String line = raw.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                int eq = line.indexOf('=');
+                if (eq < 0) {
+                    continue;
+                }
+                String key = unquote(line.substring(0, eq).trim());
+                String rhs = line.substring(eq + 1).trim();
+                // Strip a trailing inline comment from bare (unquoted) scalars only.
+                if (!rhs.isEmpty() && rhs.charAt(0) != '"' && rhs.charAt(0) != '\'') {
+                    int hash = rhs.indexOf('#');
+                    if (hash >= 0) {
+                        rhs = rhs.substring(0, hash).trim();
+                    }
+                }
+                if (!key.isEmpty()) {
+                    FILE_VALUES.put(key, unquote(rhs));
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Failed to read Upscaler config {}: {}", file, e.toString());
+        }
+    }
+
+    private static String unquote(String s) {
+        if (s.length() >= 2) {
+            char c = s.charAt(0);
+            if ((c == '"' || c == '\'') && s.charAt(s.length() - 1) == c) {
+                return s.substring(1, s.length() - 1);
+            }
+        }
+        return s;
+    }
+
+    /** TOML literal-string form; backslashes and Windows paths survive verbatim. */
+    private static String tomlString(String value) {
+        if (value.indexOf('\'') < 0) {
+            return "'" + value + "'";
+        }
+        // Fall back to a basic string with the minimal escapes when a literal string can't hold the value.
+        return '"' + value.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
+    }
+
+    /** The raw external value for a key: system property wins, then the TOML file, else {@code null}. */
+    private static String externalRaw(String key) {
+        String prop = System.getProperty(key);
+        if (prop != null) {
+            return prop;
+        }
+        return FILE_VALUES.get(key);
+    }
+
+    /** Whether the active external value for a key came from the file rather than a system property. */
+    private static boolean externalFromFile(String key) {
+        return System.getProperty(key) == null && FILE_VALUES.containsKey(key);
     }
 
     public interface RuntimeSetting<T> {
@@ -37,6 +189,9 @@ public final class UpscalerConfig {
         void set(T value);
 
         void reloadFromSystemProperties();
+
+        /** This setting's value as a TOML right-hand-side literal, or {@code null} to omit it from the file. */
+        String tomlValue();
     }
 
     public static final class BooleanSetting implements RuntimeSetting<Boolean> {
@@ -47,7 +202,7 @@ public final class UpscalerConfig {
         private BooleanSetting(String key, boolean defaultValue) {
             this.key = key;
             this.defaultValue = defaultValue;
-            this.value = Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue)));
+            this.value = readExternalBoolean(key, defaultValue);
             SETTINGS.add(this);
         }
 
@@ -79,6 +234,16 @@ public final class UpscalerConfig {
         public void reloadFromSystemProperties() {
             set(Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue))));
         }
+
+        @Override
+        public String tomlValue() {
+            return Boolean.toString(value);
+        }
+
+        private static boolean readExternalBoolean(String key, boolean fallback) {
+            String value = externalRaw(key);
+            return value != null ? Boolean.parseBoolean(value.trim()) : fallback;
+        }
     }
 
     public static final class IntSetting implements RuntimeSetting<Integer> {
@@ -91,7 +256,7 @@ public final class UpscalerConfig {
             this.key = key;
             this.defaultValue = sanitize.applyAsInt(defaultValue);
             this.sanitize = sanitize;
-            this.value = readInt(key, this.defaultValue, sanitize);
+            this.value = readExternalInt(key, this.defaultValue, sanitize);
             SETTINGS.add(this);
         }
 
@@ -123,19 +288,29 @@ public final class UpscalerConfig {
         public void reloadFromSystemProperties() {
             this.value = readInt(key, defaultValue, sanitize);
         }
+
+        @Override
+        public String tomlValue() {
+            return Integer.toString(value);
+        }
     }
 
     public static final class FloatSetting implements RuntimeSetting<Float> {
         private final String key;
         private final float defaultValue;
-        private final DoubleUnaryOperator sanitize;
+        // Maps external input (system property / UI / default) into the stored value domain, e.g. degrees ->
+        // radians. File values are already in the value domain, so they skip this transform.
+        private final DoubleUnaryOperator inputTransform;
+        // Idempotent guard on a value-domain number (clamp / finite check); safe to apply to any source.
+        private final DoubleUnaryOperator valueClamp;
         private volatile float value;
 
-        private FloatSetting(String key, float defaultValue, DoubleUnaryOperator sanitize) {
+        private FloatSetting(String key, float rawDefault, DoubleUnaryOperator inputTransform, DoubleUnaryOperator valueClamp) {
             this.key = key;
-            this.defaultValue = (float) sanitize.applyAsDouble(defaultValue);
-            this.sanitize = sanitize;
-            this.value = readFloat(key, this.defaultValue, sanitize);
+            this.inputTransform = inputTransform;
+            this.valueClamp = valueClamp;
+            this.defaultValue = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(rawDefault));
+            this.value = readExternalFloat(key, this.defaultValue, inputTransform, valueClamp);
             SETTINGS.add(this);
         }
 
@@ -160,12 +335,30 @@ public final class UpscalerConfig {
 
         @Override
         public void set(Float value) {
-            this.value = (float) sanitize.applyAsDouble(value != null ? value : defaultValue);
+            if (value == null) {
+                this.value = defaultValue;
+            } else {
+                this.value = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(value));
+            }
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            this.value = readFloat(key, defaultValue, sanitize);
+            String prop = System.getProperty(key);
+            if (prop == null) {
+                this.value = defaultValue;
+                return;
+            }
+            try {
+                this.value = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(Double.parseDouble(prop.trim())));
+            } catch (NumberFormatException e) {
+                this.value = defaultValue;
+            }
+        }
+
+        @Override
+        public String tomlValue() {
+            return Float.toString(value);
         }
     }
 
@@ -179,7 +372,8 @@ public final class UpscalerConfig {
             this.key = key;
             this.defaultValue = sanitize.apply(defaultValue);
             this.sanitize = sanitize;
-            this.value = sanitize.apply(System.getProperty(key, defaultValue));
+            String external = externalRaw(key);
+            this.value = sanitize.apply(external != null ? external : defaultValue);
             SETTINGS.add(this);
         }
 
@@ -207,6 +401,11 @@ public final class UpscalerConfig {
         public void reloadFromSystemProperties() {
             set(System.getProperty(key, defaultValue));
         }
+
+        @Override
+        public String tomlValue() {
+            return tomlString(value);
+        }
     }
 
     public static final class OptionalStringSetting implements RuntimeSetting<String> {
@@ -215,7 +414,7 @@ public final class UpscalerConfig {
 
         private OptionalStringSetting(String key) {
             this.key = key;
-            this.value = System.getProperty(key);
+            this.value = externalRaw(key);
             SETTINGS.add(this);
         }
 
@@ -242,6 +441,11 @@ public final class UpscalerConfig {
         @Override
         public void reloadFromSystemProperties() {
             this.value = System.getProperty(key);
+        }
+
+        @Override
+        public String tomlValue() {
+            return value != null ? tomlString(value) : null;
         }
     }
 
@@ -430,19 +634,19 @@ public final class UpscalerConfig {
     }
 
     private static FloatSetting finiteFloat(String key, float fallback) {
-        return new FloatSetting(key, fallback, v -> Float.isFinite((float) v) ? v : fallback);
+        return new FloatSetting(key, fallback, v -> v, v -> Double.isFinite(v) ? v : fallback);
     }
 
     private static FloatSetting exposureScale(String key, float fallback) {
-        return new FloatSetting(key, fallback, v -> Math.clamp(v, 1.0e-4f, 1.0e4f));
+        return new FloatSetting(key, fallback, v -> v, v -> Math.clamp(v, 1.0e-4, 1.0e4));
     }
 
     private static FloatSetting clampedFloat(String key, float fallback, float min, float max) {
-        return new FloatSetting(key, fallback, v -> Math.clamp(v, min, max));
+        return new FloatSetting(key, fallback, v -> v, v -> Math.clamp(v, min, max));
     }
 
     private static FloatSetting radians(String key, float fallbackDegrees) {
-        return new FloatSetting(key, fallbackDegrees, v -> Math.toRadians(v));
+        return new FloatSetting(key, fallbackDegrees, Math::toRadians, v -> Double.isFinite(v) ? v : 0.0);
     }
 
     private static int readInt(String key, int fallback, IntUnaryOperator sanitize) {
@@ -457,13 +661,27 @@ public final class UpscalerConfig {
         }
     }
 
-    private static float readFloat(String key, float fallback, DoubleUnaryOperator sanitize) {
-        String value = System.getProperty(key);
+    private static int readExternalInt(String key, int fallback, IntUnaryOperator sanitize) {
+        String value = externalRaw(key);
         if (value == null) {
             return fallback;
         }
         try {
-            return (float) sanitize.applyAsDouble(Double.parseDouble(value));
+            return sanitize.applyAsInt(Integer.parseInt(value.trim()));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static float readExternalFloat(String key, float fallback, DoubleUnaryOperator inputTransform, DoubleUnaryOperator valueClamp) {
+        String value = externalRaw(key);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            double parsed = Double.parseDouble(value.trim());
+            double inDomain = externalFromFile(key) ? parsed : inputTransform.applyAsDouble(parsed);
+            return (float) valueClamp.applyAsDouble(inDomain);
         } catch (NumberFormatException e) {
             return fallback;
         }
