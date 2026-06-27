@@ -6,6 +6,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.QuadInstance;
 import dev.upscaler.mixin.RenderSetupAccessor;
 import dev.upscaler.mixin.RenderTypeAccessor;
+import net.fabricmc.fabric.api.client.rendering.v1.SubmitRenderPhase;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.model.Model;
@@ -20,6 +21,7 @@ import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.feature.ModelFeatureRenderer;
+import net.minecraft.client.renderer.feature.submit.SubmitNode;
 import net.minecraft.client.renderer.gizmos.DrawableGizmoPrimitives;
 import net.minecraft.client.renderer.item.ItemStackRenderState;
 import net.minecraft.client.renderer.rendertype.RenderType;
@@ -321,5 +323,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
 
     @Override
     public void submitGizmoPrimitives(DrawableGizmoPrimitives.Group group, CameraRenderState camera, boolean onTop) {
+    }
+
+    @Override
+    public <T extends SubmitNode> void submitCustom(SubmitRenderPhase<T> phase, T node) {
     }
 }
