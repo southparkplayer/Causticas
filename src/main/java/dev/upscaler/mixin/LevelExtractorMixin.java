@@ -10,13 +10,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Forwards vanilla's block-dirty signal to the RT renderer so edited sections (and their boundary
- * neighbours) re-extract. In 26.2 the dirty methods live on {@link LevelExtractor}. We hook the two
+ * neighbours) re-extract. In 26.2 the dirty methods live on {@link LevelExtractor}. We hook the
  * <em>block-change</em> entry points and let {@link RtTerrain#markBlocksDirty} expand to sections:
  *
  * <ul>
- *   <li>{@code setBlockDirty(BlockPos, boolean)} — the primary path
- *       ({@code ClientLevel.sendBlockUpdated → blockChanged → setBlockDirty}). Vanilla expands this to
- *       a 3³ block area; we receive the single block at HEAD and do the same expansion ourselves.</li>
+ *   <li>{@code blockChanged(BlockPos, int)} — packet/prediction block changes.</li>
  *   <li>{@code setBlocksDirty(int×6)} — multi-block changes (explosions, etc.) and the
  *       {@code setBlockDirty(pos, old, new)} render-shape path.</li>
  * </ul>
@@ -27,8 +25,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(LevelExtractor.class)
 public class LevelExtractorMixin {
-    @Inject(method = "setBlockDirty(Lnet/minecraft/core/BlockPos;Z)V", at = @At("HEAD"))
-    private void upscaler$rtBlockDirty(BlockPos pos, boolean playerChanged, CallbackInfo ci) {
+    @Inject(method = "blockChanged(Lnet/minecraft/core/BlockPos;I)V", at = @At("HEAD"))
+    private void upscaler$rtBlockChanged(BlockPos pos, int updateFlags, CallbackInfo ci) {
         RtTerrain.markBlocksDirty(pos.getX(), pos.getY(), pos.getZ(), pos.getX(), pos.getY(), pos.getZ());
     }
 

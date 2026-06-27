@@ -466,7 +466,7 @@ public final class RtTerrain {
                 reextract.add(key);
             }
         } else {
-            enqueueMissingIfNeeded(key);
+            enqueueMissingUrgent(key);
         }
     }
 
@@ -478,6 +478,21 @@ public final class RtTerrain {
             return false;
         }
         missing.add(key);
+        return true;
+    }
+
+    private boolean enqueueMissingUrgent(long key) {
+        if (resident.containsKey(key) || empty.contains(key) || inFlight.containsKey(key)) {
+            return false;
+        }
+        if (!queuedMissing.add(key)) {
+            int existing = missing.indexOf(key);
+            if (existing < 0) {
+                return false;
+            }
+            missing.removeLong(existing);
+        }
+        missing.add(0, key);
         return true;
     }
 
