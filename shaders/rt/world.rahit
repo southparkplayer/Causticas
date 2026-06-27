@@ -59,6 +59,8 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Wo
 layout(push_constant) uniform PushAddr { uint64_t worldPushAddr; } pcAddr;
 #define pc WorldPushRef(pcAddr.worldPushAddr).v
 
+layout(location = 1) rayPayloadInEXT vec4 shadowVis;
+
 hitAttributeEXT vec2 attribs;
 
 const float ALPHA_CUTOFF = 0.5;       // terrain (matches the cutout block models)
@@ -66,6 +68,26 @@ const float ENTITY_ALPHA_CUTOFF = 0.1; // entities: only discard near-fully-tran
 const int ENTITY_BIT = 0x800000;
 const int PARTICLE_BIT = 0x400000; // particle billboards share the entity cutout path (geom table + atlas)
 const int IDX_MASK = 0x3FFFFF;     // low 22 bits = geom-table index (strips ENTITY_BIT | PARTICLE_BIT)
+
+// Progressive 8x8 blue-noise-style alpha threshold pattern, with a golden-ratio temporal rotation. This keeps
+// translucent entity hits stochastic, but trades per-pixel white noise for a stable spatial distribution
+// that temporal upscaling can integrate with less sparkle.
+const float ALPHA_DITHER_8X8[64] = float[64](
+    0.281250, 0.968750, 0.375000, 0.859375, 0.250000, 0.937500, 0.406250, 0.812500,
+    0.593750, 0.187500, 0.734375, 0.046875, 0.578125, 0.218750, 0.703125, 0.015625,
+    0.453125, 0.765625, 0.328125, 0.921875, 0.484375, 0.796875, 0.343750, 0.890625,
+    0.640625, 0.093750, 0.546875, 0.156250, 0.671875, 0.078125, 0.515625, 0.125000,
+    0.265625, 0.953125, 0.421875, 0.828125, 0.296875, 0.984375, 0.390625, 0.843750,
+    0.562500, 0.234375, 0.687500, 0.000000, 0.609375, 0.203125, 0.718750, 0.031250,
+    0.468750, 0.781250, 0.359375, 0.875000, 0.437500, 0.750000, 0.312500, 0.906250,
+    0.656250, 0.062500, 0.500000, 0.140625, 0.625000, 0.109375, 0.531250, 0.171875
+);
+
+float alphaDitherThreshold(uint salt) {
+    uvec2 p = (uvec2(gl_LaunchIDEXT.xy) + uvec2(salt * 3u, salt * 5u)) & uvec2(7u);
+    float base = ALPHA_DITHER_8X8[int(p.y * 8u + p.x)];
+    return fract(base + float((pc.frameIndex + salt) & 255u) * 0.61803398875);
+}
 
 void main() {
     uint pid = gl_PrimitiveID;
@@ -80,18 +102,19 @@ void main() {
         uint i2 = indices.i[3u * pid + 2u];
         vec2 uv = bary.x * uvs.uv[i0] + bary.y * uvs.uv[i1] + bary.z * uvs.uv[i2];
         Prim epr = Prims(g.primAddr).p[pid];
+        int texSlot = int(epr.tint.w + 0.5);
+        float ealpha = texture(entityTex[nonuniformEXT(texSlot)], uv).a;
         // normal.w flags an alpha-blended (translucent) surface — slime / sulfur-cube shells, ghosts, …
         // (set by RtEntityCapture; 0 for opaque/cutout mobs + particles, which keep the binary cutout).
-        // Translucent shells are a colored filter resolved in the closest hit (material 3): accept for path
-        // rays, and pass light through for shadow/visibility rays so they don't cast a hard shadow.
         if (epr.normal.w > 0.5) {
-            if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0u) {
+            uint salt = pid * 1664525u
+                    ^ uint(gl_InstanceCustomIndexEXT & IDX_MASK) * 1013904223u
+                    ^ floatBitsToUint(gl_HitTEXT);
+            if (alphaDitherThreshold(salt) >= clamp(ealpha, 0.0, 1.0)) {
                 ignoreIntersectionEXT;
             }
             return;
         }
-        int texSlot = int(epr.tint.w + 0.5);
-        float ealpha = texture(entityTex[nonuniformEXT(texSlot)], uv).a;
         if (ealpha < ENTITY_ALPHA_CUTOFF) {
             ignoreIntersectionEXT;
         }
@@ -116,20 +139,24 @@ void main() {
     // geometry's triangle base to index the section's packed index/uv arrays.
     uint tri = gl_PrimitiveID + sec.triBase[gl_GeometryIndexEXT];
 
-    // Stained glass / ice (tint.w == 2, flagged at extraction and excluded from the OMM) is a colored
-    // dielectric resolved in the closest hit (material 3): accept for path rays, pass light through for
-    // shadow/visibility rays — so it neither alpha-cutout-holes nor casts a hard shadow.
-    if (Prims(sec.primAddr).p[tri].tint.w > 1.5) {
-        if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0u) {
-            ignoreIntersectionEXT;
-        }
-        return;
-    }
+    Prim pr = Prims(sec.primAddr).p[tri];
 
     // Lever B: per-triangle corner UVs in primitive order (see world.rchit) — a contiguous, directly
     // addressed load, no index buffer, no scattered vertex-UV gather.
     UVs uvs = UVs(sec.uvAddr);
     vec2 uv = bary.x * uvs.uv[3u * tri + 0u] + bary.y * uvs.uv[3u * tri + 1u] + bary.z * uvs.uv[3u * tri + 2u];
+
+    // Stained glass / ice (tint.w == 2, flagged at extraction and excluded from the OMM) is a colored
+    // dielectric resolved in the closest hit (material 3): accept for path rays, and tint shadow/visibility
+    // rays instead of treating the pane as either fully open or fully opaque.
+    if (pr.tint.w > 1.5) {
+        if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0u) {
+            vec4 gtex = textureLod(blockAtlas, uv, 0.0);
+            shadowVis.rgb *= mix(vec3(1.0), gtex.rgb * pr.tint.rgb, gtex.a);
+            ignoreIntersectionEXT;
+        }
+        return;
+    }
 
     if (textureLod(blockAtlas, uv, 0.0).a < ALPHA_CUTOFF) {
         ignoreIntersectionEXT;
