@@ -65,7 +65,7 @@ public final class UpscalerConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.ENABLED, Rt.Terrain.VIEW_SECTIONS_V, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED,
-            Rt.Exposure.MODE, Rt.BufferPool.STATS, Ngx.PATH,
+            Rt.Exposure.MODE, Rt.BufferPool.STATS, Rt.Hdr.MODE, Ngx.PATH,
         };
     }
 
@@ -594,6 +594,48 @@ public final class UpscalerConfig {
             public static final BooleanSetting STATS = bool("upscaler.rt.poolStats", false);
 
             private BufferPool() {
+            }
+        }
+
+        /**
+         * HDR display output (Phase 0/1 scaffolding). {@code mode} selects the presentation convention:
+         * {@code off} keeps the SDR AgX path, {@code scrgb} targets scRGB/linear extended range, {@code auto}
+         * picks scRGB when the swapchain supports it (resolution happens in the later swapchain-ownership
+         * phase). {@code forceSdr} is a debug override that pins SDR even when a mode is selected. The nit
+         * values drive the scene-HDR → display mapping: SDR paper white maps to {@code paperWhiteNits}, and
+         * highlights roll off toward {@code peakNits}.
+         */
+        public static final class Hdr {
+            public static final StringSetting MODE = string("upscaler.rt.hdr.mode", "off", Hdr::sanitizeMode);
+            public static final FloatSetting PAPER_WHITE_NITS =
+                    clampedFloat("upscaler.rt.hdr.paperWhiteNits", 200.0f, 80.0f, 1000.0f);
+            public static final FloatSetting PEAK_NITS =
+                    clampedFloat("upscaler.rt.hdr.peakNits", 1000.0f, 80.0f, 10000.0f);
+            public static final BooleanSetting FORCE_SDR = bool("upscaler.rt.hdr.forceSdr", false);
+
+            private Hdr() {
+            }
+
+            /** Whether the HDR display path should be active (a mode is selected and SDR isn't forced). */
+            public static boolean enabled() {
+                return !FORCE_SDR.value() && !"off".equals(MODE.get());
+            }
+
+            /** scRGB linear scale for SDR paper white (scRGB defines 1.0 = 80 nits). */
+            public static float paperWhiteScale() {
+                return PAPER_WHITE_NITS.value() / 80.0f;
+            }
+
+            /** Highlight headroom above paper white, in paper-white-referred units ({@code >= 1}). */
+            public static float headroom() {
+                return Math.max(1.0f, PEAK_NITS.value() / Math.max(1.0f, PAPER_WHITE_NITS.value()));
+            }
+
+            private static String sanitizeMode(String value) {
+                if ("scrgb".equalsIgnoreCase(value) || "auto".equalsIgnoreCase(value)) {
+                    return value.toLowerCase();
+                }
+                return "off";
             }
         }
 

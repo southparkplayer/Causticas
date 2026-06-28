@@ -173,6 +173,10 @@ public final class RtComposite {
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
     private RtImage displayImage;
+    // Parallel scRGB-linear HDR display image (Phase 1). Written alongside displayImage when HDR is enabled;
+    // not yet presented (the SDR displayImage is still what gets copied to the main target). Phase 3 will
+    // composite/present this instead under an HDR swapchain.
+    private RtImage hdrDisplayImage;
     // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
     // specular albedo, disabled specular hit distance, and reflection motion.
     private RtImage gNormal;
@@ -522,13 +526,16 @@ public final class RtComposite {
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
-        if (output != null && displayImage != null && rrOutput != null && exposure.ready()
+        if (output != null && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
                 && displayW == width && displayH == height) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
         if (displayImage != null) {
             displayImage.destroy();
+        }
+        if (hdrDisplayImage != null) {
+            hdrDisplayImage.destroy();
         }
         if (output != null) {
             output.destroy();
@@ -548,6 +555,8 @@ public final class RtComposite {
         // (vkCmdCopyImage requires texel-size-compatible formats).
         output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
+        // scRGB-linear HDR display image, written in parallel by display.comp when HDR mode is active.
+        hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
@@ -565,7 +574,7 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
-        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view);
+        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view);
     }
 
     /**
@@ -734,7 +743,8 @@ public final class RtComposite {
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display")) {
-                displayPipeline.dispatch(cmd, displayW, displayH);
+                displayPipeline.dispatch(cmd, displayW, displayH, UpscalerConfig.Rt.Hdr.enabled(),
+                        UpscalerConfig.Rt.Hdr.paperWhiteScale(), UpscalerConfig.Rt.Hdr.headroom());
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
@@ -894,6 +904,10 @@ public final class RtComposite {
         if (displayImage != null) {
             displayImage.destroy();
             displayImage = null;
+        }
+        if (hdrDisplayImage != null) {
+            hdrDisplayImage.destroy();
+            hdrDisplayImage = null;
         }
         if (output != null) {
             output.destroy();

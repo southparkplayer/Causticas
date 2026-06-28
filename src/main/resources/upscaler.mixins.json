@@ -21,6 +21,7 @@
 		"SpriteContentsAccessor",
 		"VideoSettingsScreenMixin",
 		"VulkanBackendMixin",
+		"VulkanGpuSurfaceMixin",
 		"VulkanGpuTextureAccessor"
 	],
 	"injectors": {
