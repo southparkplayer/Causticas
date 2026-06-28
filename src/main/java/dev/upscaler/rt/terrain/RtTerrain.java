@@ -80,10 +80,6 @@ import java.util.concurrent.Future;
  * (no {@code waitIdle} on the hot path).
  */
 public final class RtTerrain {
-    private static int viewSectionsV() {
-        return UpscalerConfig.Rt.Terrain.VIEW_SECTIONS_V.value();
-    }
-
     // CPU tessellation runs on RtWorkerPool. The render thread snapshots RenderSectionRegions, uploads
     // completed meshes, prepares BLASes, and submits the GPU build.
     private static int asyncDispatchPerTick() {
@@ -352,16 +348,15 @@ public final class RtTerrain {
         ClientChunkCache chunkSource = level.getChunkSource();
         int minSecY = level.getMinY() >> 4;
         int maxSecY = (level.getMinY() + level.getHeight() - 1) >> 4;
-        int viewSectionsV = viewSectionsV();
-        int loY = Math.max(minSecY, psy - viewSectionsV);
-        int hiY = Math.min(maxSecY, psy + viewSectionsV);
+        int loY = minSecY;
+        int hiY = maxSecY;
 
         List<SectionGeom> removed = this.removed;
         removed.clear();
         List<PreparedSection> prepared = this.prepared;
         prepared.clear();
 
-        boolean movedWindow = windowValid && (windowPcx != pcx || windowPsy != psy || windowPcz != pcz);
+        boolean movedWindow = windowValid && (windowPcx != pcx || windowPcz != pcz);
         syncDesiredWindow(chunkSource, pcx, psy, pcz, r, loY, hiY, removed);
 
         // Re-extract edited sections. Drain under a short lock so concurrent block updates are not lost.
@@ -410,11 +405,16 @@ public final class RtTerrain {
 
     private void syncDesiredWindow(ClientChunkCache chunkSource, int pcx, int psy, int pcz,
                                    int radius, int loY, int hiY, List<SectionGeom> removed) {
-        if (!windowValid || windowPcx != pcx || windowPsy != psy || windowPcz != pcz
+        boolean priorityYChanged = windowValid && windowPsy != psy;
+        if (!windowValid || windowPcx != pcx || windowPcz != pcz
                 || windowRadius != radius || windowLoY != loY || windowHiY != hiY) {
             rebuildDesiredWindow(chunkSource, pcx, psy, pcz, radius, loY, hiY, removed);
         } else {
             pollLoadedColumns(chunkSource, pcx, psy, pcz, loY, hiY, removed);
+            if (priorityYChanged) {
+                sortMissing(pcx, psy, pcz);
+                windowPsy = psy;
+            }
         }
     }
 

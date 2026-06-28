@@ -63,7 +63,7 @@ public final class UpscalerConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.ENABLED, Rt.Terrain.VIEW_SECTIONS_V, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.ENABLED, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED,
             Rt.Exposure.MODE, Rt.BufferPool.STATS, Rt.Hdr.MODE, Ngx.PATH,
         };
@@ -481,7 +481,6 @@ public final class UpscalerConfig {
         }
 
         public static final class Terrain {
-            public static final IntSetting VIEW_SECTIONS_V = intAtLeast("upscaler.rt.viewSectionsV", 6, 0);
             public static final IntSetting ASYNC_DISPATCH_PER_TICK =
                     intAtLeast("upscaler.rt.asyncDispatchPerTick", 64, 0);
             public static final IntSetting SECTION_RESULTS_PER_TICK =
