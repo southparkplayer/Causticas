@@ -9,6 +9,8 @@ import dev.upscaler.rt.RtComposite;
 import dev.upscaler.rt.RtUiOverlay;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.SubmitNodeStorage;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
@@ -38,6 +40,9 @@ public abstract class GameRendererMixin {
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At("HEAD"))
 	private void upscaler$beginOverlayFrame(DeltaTracker deltaTracker, boolean advanceGameTime, CallbackInfo ci) {
 		RtUiOverlay.beginFrame();
+		// Clear the stale HDR-present flag every frame: composite() only runs while a level renders, so on
+		// menu frames it would otherwise stay true from the last world frame and present a black HDR image.
+		RtComposite.INSTANCE.beginFrame();
 	}
 
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V",
@@ -58,13 +63,37 @@ public abstract class GameRendererMixin {
 			Matrix4fc modelViewMatrix, Operation<Void> original) {
 		boolean hdr = RtComposite.INSTANCE.isHdrPresentActive();
 		if (hdr) {
-			RtUiOverlay.beginHandRedirect(this.mainRenderTarget);
+			RtUiOverlay.beginOutputRedirect(this.mainRenderTarget);
 		}
 		try {
 			original.call(self, cameraState, deltaPartialTick, modelViewMatrix);
 		} finally {
 			if (hdr) {
-				RtUiOverlay.endHandRedirect();
+				RtUiOverlay.endOutputRedirect();
+			}
+		}
+	}
+
+	// HDR mode: redirect the screen-effect flush (fire, underwater, view-blocking-block overlays submitted
+	// by ScreenEffectRenderer.submit) into the UI overlay, same as the hand. This is the renderAllFeatures
+	// call in the "screenEffects" section of renderLevel — distinct from the one inside renderItemInHand
+	// (that's a different method, so this @WrapOperation on renderLevel matches only the screen-effect flush).
+	// The spyglass scope and worn-pumpkin blur are drawn by the GUI/HUD instead, so they already reach the
+	// overlay via the GuiRenderer redirect. try/finally guarantees the overrides clear even on a throw.
+	@WrapOperation(method = "renderLevel(Lnet/minecraft/client/DeltaTracker;)V",
+			at = @At(value = "INVOKE",
+					target = "Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher;renderAllFeatures(Lnet/minecraft/client/renderer/SubmitNodeStorage;)V"))
+	private void upscaler$redirectScreenEffectsToOverlay(FeatureRenderDispatcher self, SubmitNodeStorage storage,
+			Operation<Void> original) {
+		boolean hdr = RtComposite.INSTANCE.isHdrPresentActive();
+		if (hdr) {
+			RtUiOverlay.beginOutputRedirect(this.mainRenderTarget);
+		}
+		try {
+			original.call(self, storage);
+		} finally {
+			if (hdr) {
+				RtUiOverlay.endOutputRedirect();
 			}
 		}
 	}

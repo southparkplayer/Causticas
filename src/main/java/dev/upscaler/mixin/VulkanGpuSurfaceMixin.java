@@ -128,12 +128,30 @@ public abstract class VulkanGpuSurfaceMixin {
 			return;
 		}
 		RtComposite rt = RtComposite.INSTANCE;
-		if (!rt.isHdrPresentActive()) {
+		long swapchainImage = this.swapchainImages.getLong(this.currentImageIndex);
+		long acquireSem = this.acquireSemaphores[this.currentAcquireSemaphore];
+		long presentSem = this.presentSemaphores[this.currentImageIndex];
+		if (rt.isHdrPresentActive()) {
+			rt.presentHdr((VulkanCommandEncoder) commandEncoder, swapchainImage, this.swapchainWidth, this.swapchainHeight,
+					acquireSem, presentSem);
+			ci.cancel();
 			return;
 		}
-		long swapchainImage = this.swapchainImages.getLong(this.currentImageIndex);
-		rt.presentHdr((VulkanCommandEncoder) commandEncoder, swapchainImage, this.swapchainWidth, this.swapchainHeight,
-				this.acquireSemaphores[this.currentAcquireSemaphore], this.presentSemaphores[this.currentImageIndex]);
-		ci.cancel();
+		// Non-RT frame (menu, title panorama, loading screen) on an scRGB swapchain: vanilla's raw SDR blit
+		// would wash out (SDR bytes reinterpreted as scRGB-linear). Convert sRGB -> scRGB at paper white
+		// instead. Falls through to vanilla SDR if conversion resources aren't ready or the source view is
+		// not a Vulkan view.
+		if (rt.isScrgbSdrPresentActive()) {
+			long sdrView = upscaler$vkImageView(textureView);
+			if (sdrView != 0L && rt.presentSdrToScrgb((VulkanCommandEncoder) commandEncoder, swapchainImage,
+					this.swapchainWidth, this.swapchainHeight, sdrView, acquireSem, presentSem)) {
+				ci.cancel();
+			}
+		}
+	}
+
+	@Unique
+	private static long upscaler$vkImageView(GpuTextureView view) {
+		return view instanceof com.mojang.blaze3d.vulkan.VulkanGpuTextureView v ? v.vkImageView() : 0L;
 	}
 }

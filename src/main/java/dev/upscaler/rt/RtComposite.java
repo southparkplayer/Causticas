@@ -46,6 +46,7 @@ import dev.upscaler.rt.material.RtMaterials;
 import dev.upscaler.rt.pipeline.RtDisplayPipeline;
 import dev.upscaler.rt.pipeline.RtDlssRr;
 import dev.upscaler.rt.pipeline.RtHdrCompositePipeline;
+import dev.upscaler.rt.pipeline.RtSdrPresentPipeline;
 import dev.upscaler.rt.pipeline.RtExposure;
 import dev.upscaler.rt.pipeline.RtPipeline;
 import dev.upscaler.rt.terrain.RtTerrain;
@@ -188,6 +189,11 @@ public final class RtComposite {
         // Step C.2: composites the captured UI overlay over hdrDisplayImage at paper white, just before present.
     private RtHdrCompositePipeline hdrCompositePipeline;
     private long hdrUiSampler;
+    // Menu/non-RT present: converts the SDR main target (sRGB) to scRGB-linear at paper white so menus,
+    // the title panorama and the loading screen present correctly to the scRGB swapchain instead of being
+    // raw-copied (washed). Lazily created; the image is sized to the swapchain.
+    private RtSdrPresentPipeline sdrPresentPipeline;
+    private RtImage sdrPresentImage;
     // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
     // specular albedo, and reflection motion.
     private RtImage gNormal;
@@ -277,6 +283,19 @@ public final class RtComposite {
         frameCaptured = true;
     }
 
+    /**
+     * Reset per-frame present state at the very start of {@link net.minecraft.client.renderer.GameRenderer}
+     * render (before any RT work). Critical for menu/no-world frames: {@link #composite()} is only called
+     * while a level is rendering ({@code WorldRenderScaler} opens its window in {@code renderLevel}), so on
+     * menu frames {@code composite} never runs and {@code hdrWrittenThisFrame} would otherwise keep its stale
+     * {@code true} from the last world frame — presenting a black/stale HDR image behind the menu. Clearing it
+     * here every frame makes {@link #isHdrPresentActive()} false on menu frames so the SDR convert-present path
+     * runs instead.
+     */
+    public void beginFrame() {
+        hdrWrittenThisFrame = false;
+    }
+
     public boolean composite(GpuTexture nativeColor, int width, int height) {
         frameCounter++; // advances once per frame; RtTerrain retires resources relative to it
         hdrWrittenThisFrame = false; // set true again below once this frame's HDR display image is written
@@ -288,8 +307,12 @@ public final class RtComposite {
             return false;
         }
         processDeferredTlasFrees(); // free per-frame TLASes now safely past their frames-in-flight window
-        if (RtTerrain.currentOrNull() == null || !frameCaptured) {
-            return false; // no terrain extracted yet
+        if (RtTerrain.currentOrNull() == null || !frameCaptured || Minecraft.getInstance().level == null) {
+            // No world this frame (incl. after quitting to the title — terrain residency + frameCaptured can
+            // linger until an explicit invalidate, which would otherwise present a stale/empty HDR image as a
+            // black menu background). Skip RT so the present path falls back to vanilla SDR / the scRGB SDR
+            // convert path, which shows the menu + panorama correctly.
+            return false;
         }
         try {
             if (displayPipeline == null) {
@@ -936,6 +959,14 @@ public final class RtComposite {
             }
             hdrUiSampler = 0L;
         }
+        if (sdrPresentPipeline != null) {
+            sdrPresentPipeline.destroy();
+            sdrPresentPipeline = null;
+        }
+        if (sdrPresentImage != null) {
+            sdrPresentImage.destroy();
+            sdrPresentImage = null;
+        }
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;
@@ -1096,25 +1127,125 @@ public final class RtComposite {
             return;
         }
         RtContext ctx = RtContext.get();
-        if (ctx == null) {
+        if (ctx == null || !ensureUiSampler(ctx)) {
             return;
         }
-        if (hdrUiSampler == 0L) {
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
-                        .magFilter(VK10.VK_FILTER_NEAREST).minFilter(VK10.VK_FILTER_NEAREST)
-                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
-                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-                var p = stack.mallocLong(1);
-                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
-                    return;
-                }
-                hdrUiSampler = p.get(0);
-            }
-        }
         hdrCompositePipeline = RtHdrCompositePipeline.create(ctx);
+    }
+
+    /** Ensure the shared nearest/clamp sampler used to sample SDR/overlay targets in the present compute. */
+    private boolean ensureUiSampler(RtContext ctx) {
+        if (hdrUiSampler != 0L) {
+            return true;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                    .magFilter(VK10.VK_FILTER_NEAREST).minFilter(VK10.VK_FILTER_NEAREST)
+                    .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                    .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+            var p = stack.mallocLong(1);
+            if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                return false;
+            }
+            hdrUiSampler = p.get(0);
+        }
+        return true;
+    }
+
+    /**
+     * Whether a non-RT frame (menu, title panorama, loading screen) should be SDR-&gt;scRGB converted for
+     * present instead of vanilla's raw SDR blit. True when the scRGB swapchain is active but this frame did
+     * not produce an HDR image ({@link #isHdrPresentActive()} false).
+     */
+    public boolean isScrgbSdrPresentActive() {
+        return UpscalerConfig.Rt.Hdr.SCRGB_SWAPCHAIN.value()
+                && UpscalerConfig.Rt.Hdr.enabled()
+                && !isHdrPresentActive();
+    }
+
+    /**
+     * Present a non-RT (menu/loading) frame to the scRGB swapchain: convert the SDR main target (sRGB-encoded
+     * rgba8, GENERAL layout, already holding the composited panorama + UI) to scRGB-linear at paper white via
+     * a compute pass into {@link #sdrPresentImage}, then blit that into the swapchain. Mirrors
+     * {@link #presentHdr} barrier-for-barrier; returns false (keep vanilla SDR blit) if resources are
+     * unavailable.
+     */
+    public boolean presentSdrToScrgb(VulkanCommandEncoder enc, long swapchainImage, int swapW, int swapH,
+            long sdrMainView, long acquireSem, long presentSem) {
+        if (sdrMainView == 0L || failed) {
+            return false;
+        }
+        RtContext ctx = RtContext.get();
+        if (ctx == null || !ensureUiSampler(ctx)) {
+            return false;
+        }
+        if (sdrPresentPipeline == null) {
+            sdrPresentPipeline = RtSdrPresentPipeline.create(ctx);
+        }
+        if (sdrPresentImage == null || sdrPresentImage.width != swapW || sdrPresentImage.height != swapH) {
+            if (sdrPresentImage != null) {
+                sdrPresentImage.destroy();
+            }
+            sdrPresentImage = ctx.createStorageImage(swapW, swapH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "RT SDR->scRGB present image " + swapW + "x" + swapH);
+        }
+        RtImage dst = sdrPresentImage;
+        int copyW = Math.min(swapW, dst.width);
+        int copyH = Math.min(swapH, dst.height);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkCommandBuffer cmd = enc.allocateAndBeginTransientCommandBuffer();
+
+            // Make the prior GUI/overlay writes to the SDR main target visible to the compute sample.
+            VkMemoryBarrier2.Buffer pre = VkMemoryBarrier2.calloc(1, stack).sType$Default();
+            pre.get(0).srcStageMask(65536L).srcAccessMask(65536L).dstStageMask(2048L).dstAccessMask(98304L);
+            VkDependencyInfo preDep = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(pre);
+            KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, preDep);
+
+            sdrPresentPipeline.setImages(dst.view, sdrMainView, hdrUiSampler);
+            sdrPresentPipeline.dispatch(cmd, dst.width, dst.height, UpscalerConfig.Rt.Hdr.paperWhiteScale());
+
+            // Swapchain UNDEFINED -> TRANSFER_DST, plus make the compute write visible to the blit read.
+            VkImageMemoryBarrier2.Buffer toDst = VkImageMemoryBarrier2.calloc(1, stack).sType$Default();
+            toDst.get(0).srcStageMask(0L).srcAccessMask(0L).dstStageMask(4096L).dstAccessMask(4096L)
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED).newLayout(VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                    .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(swapchainImage);
+            toDst.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+            VkMemoryBarrier2.Buffer srcVis = VkMemoryBarrier2.calloc(1, stack).sType$Default();
+            srcVis.get(0).srcStageMask(65536L).srcAccessMask(65536L).dstStageMask(4096L).dstAccessMask(2048L);
+            VkDependencyInfo dep1 = VkDependencyInfo.calloc(stack).sType$Default().pImageMemoryBarriers(toDst).pMemoryBarriers(srcVis);
+            KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, dep1);
+
+            // Blit converted scRGB image (GENERAL) -> swapchain (TRANSFER_DST), Y-flipped like vanilla.
+            VkImageBlit.Buffer region = VkImageBlit.calloc(1, stack);
+            region.get(0).srcSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            region.get(0).dstSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
+            region.get(0).srcOffsets(1).set(copyW, copyH, 1); // srcOffsets[0] = (0,0,0) from calloc
+            region.get(0).dstOffsets(0).set(0, copyH, 0);
+            region.get(0).dstOffsets(1).set(copyW, 0, 1);
+            VK10.vkCmdBlitImage(cmd, dst.image, VK10.VK_IMAGE_LAYOUT_GENERAL, swapchainImage,
+                    VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK10.VK_FILTER_NEAREST);
+
+            // Swapchain TRANSFER_DST -> PRESENT_SRC_KHR (1000001002).
+            VkImageMemoryBarrier2.Buffer toPresent = VkImageMemoryBarrier2.calloc(1, stack).sType$Default();
+            toPresent.get(0).srcStageMask(4096L).srcAccessMask(4096L).dstStageMask(65536L).dstAccessMask(0L)
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL).newLayout(1000001002)
+                    .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(swapchainImage);
+            toPresent.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+            VkMemoryBarrier2.Buffer mem2 = VkMemoryBarrier2.calloc(1, stack).sType$Default();
+            mem2.get(0).srcStageMask(4096L).srcAccessMask(2048L).dstStageMask(65536L).dstAccessMask(98304L);
+            VkDependencyInfo dep2 = VkDependencyInfo.calloc(stack).sType$Default().pImageMemoryBarriers(toPresent).pMemoryBarriers(mem2);
+            KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, dep2);
+
+            if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
+                throw new IllegalStateException("vkEndCommandBuffer(sdr present) failed");
+            }
+            enc.waitSemaphore(acquireSem, 0L, 65536L);
+            enc.execute(cmd);
+            enc.signalSemaphore(presentSem, 0L, 4096L);
+        }
+        return true;
     }
 
     /**

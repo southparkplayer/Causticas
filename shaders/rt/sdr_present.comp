@@ -1,0 +1,33 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Destination scRGB-linear image, blitted to the scRGB swapchain after this pass.
+layout(binding = 0, set = 0, rgba16f) uniform image2D outImage;
+// Minecraft's SDR main target (rgba8, sRGB-encoded), sampled in GENERAL layout. Holds the complete
+// non-RT frame (menu panorama + GUI), which the HDR present path would otherwise raw-copy into the
+// scRGB swapchain and wash out (SDR bytes reinterpreted as scRGB-linear).
+layout(binding = 1, set = 0) uniform sampler2D sdrTex;
+
+layout(push_constant) uniform Push {
+    float paperWhiteScale; // scRGB-linear scale for SDR paper white (paperWhiteNits / 80)
+} pc;
+
+vec3 srgbToLinear(vec3 c) {
+    bvec3 hi = greaterThan(c, vec3(0.04045));
+    vec3 lo = c / 12.92;
+    vec3 hiV = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hiV, hi);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outImage);
+    if (pix.x >= size.x || pix.y >= size.y) {
+        return;
+    }
+    // Decode the sRGB-authored SDR frame to linear and place it at paper white. No highlight roll-off:
+    // SDR content tops out at 1.0 (= paper white), well below the HDR peak.
+    vec3 lin = srgbToLinear(texelFetch(sdrTex, pix, 0).rgb) * pc.paperWhiteScale;
+    imageStore(outImage, pix, vec4(lin, 1.0));
+}

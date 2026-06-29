@@ -145,17 +145,19 @@ public final class RtUiOverlay {
     }
 
     /**
-     * HDR mode: redirect the held-item/hand render output into the overlay (so it composites over the HDR
-     * world at paper white) via the render-system output overrides honoured by {@code PreparedRenderType}.
-     * Must be paired with {@link #endHandRedirect()}.
+     * HDR mode: redirect a world-space overlay render (the held-item/hand, then the fire/underwater/
+     * view-blocking screen effects) into the overlay so it composites over the HDR world at paper white,
+     * via the render-system output overrides honoured by {@code PreparedRenderType}. Both share the overlay's
+     * color+depth (cleared once per frame), matching vanilla where hand and screen effects share the main
+     * target's depth without a clear between them. Must be paired with {@link #endOutputRedirect()}.
      */
-    public static void beginHandRedirect(RenderTarget main) {
+    public static void beginOutputRedirect(RenderTarget main) {
         TextureTarget target = prepare(main);
         RenderSystem.outputColorTextureOverride = target.getColorTextureView();
         RenderSystem.outputDepthTextureOverride = target.getDepthTextureView();
     }
 
-    public static void endHandRedirect() {
+    public static void endOutputRedirect() {
         RenderSystem.outputColorTextureOverride = null;
         RenderSystem.outputDepthTextureOverride = null;
     }
