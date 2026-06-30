@@ -180,9 +180,17 @@ public abstract class VulkanGpuSurfaceMixin {
 			return;
 		}
 		int generatedCount = dev.upscaler.rt.pipeline.RtDlssFg.INSTANCE.effectiveMultiFrameCount();
-		RtFramePresenter.INSTANCE.presentExtraFrames((VulkanCommandEncoder) commandEncoder, this.device,
-				this.swapchain, this.presentQueue, this.swapchainImages, this.presentSemaphores,
+		RtFramePresenter.INSTANCE.prepareExtraFrames((VulkanCommandEncoder) commandEncoder, this.device,
+				this.swapchain, this.swapchainImages, this.presentSemaphores,
 				this.swapchainWidth, this.swapchainHeight,
 				srcImage, textureView.getWidth(0), textureView.getHeight(0), generatedCount);
+	}
+
+	// Present the FG-generated frame(s) acquired/recorded at blitFromTexture TAIL — at present() HEAD, after
+	// Minecraft.java's encoder.submit() has flushed (so our present semaphores are signaled) and before MC
+	// presents the real frame, giving display order generated-then-real.
+	@Inject(method = "present", at = @At("HEAD"))
+	private void upscaler$flushGeneratedPresents(CallbackInfo ci) {
+		RtFramePresenter.INSTANCE.flushPendingPresents(this.swapchain, this.presentQueue);
 	}
 }
