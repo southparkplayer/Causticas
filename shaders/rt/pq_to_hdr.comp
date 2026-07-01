@@ -1,0 +1,33 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// scRGB-linear destination (1.0 == 80 nits) — decoded back from DLSS-FG's PQ-encoded interpolated output
+// (see hdr_to_pq.comp) so the generated frame can be blitted into our scRGB swapchain just like a real one.
+layout(binding = 0, set = 0, rgba16f) uniform image2D outImage;
+// PQ-encoded ([0,1], ST.2084) source — DLSS-FG's generated-frame output, sampled in GENERAL layout.
+layout(binding = 1, set = 0) uniform sampler2D srcTex;
+
+const float PQ_M1 = 0.1593017578125;
+const float PQ_M2 = 78.84375;
+const float PQ_C1 = 0.8359375;
+const float PQ_C2 = 18.8515625;
+const float PQ_C3 = 18.6875;
+
+float pqDecode(float e) {
+    float ep = pow(max(e, 0.0), 1.0 / PQ_M2);
+    float num = max(ep - PQ_C1, 0.0);
+    float den = max(PQ_C2 - PQ_C3 * ep, 1e-6);
+    return 10000.0 * pow(num / den, 1.0 / PQ_M1);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outImage);
+    if (pix.x >= size.x || pix.y >= size.y) {
+        return;
+    }
+    vec3 pq = texelFetch(srcTex, pix, 0).rgb;
+    vec3 nits = vec3(pqDecode(pq.r), pqDecode(pq.g), pqDecode(pq.b));
+    imageStore(outImage, pix, vec4(nits / 80.0, 1.0)); // back to scRGB units
+}

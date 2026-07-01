@@ -235,6 +235,11 @@ public abstract class VulkanGpuSurfaceMixin {
 	 * Step C — world-only HDR present. When the RT renderer has a fresh scRGB HDR image and the swapchain is
 	 * scRGB, blit that image straight into the swapchain instead of Minecraft's SDR main target. Replaces the
 	 * vanilla blit entirely (the SDR target + its UI are bypassed for now; UI compositing is a later step).
+	 *
+	 * <p>Because this cancels {@code blitFromTexture} at HEAD, the normal {@code upscaler$presentGeneratedFrames}
+	 * TAIL inject below never runs on HDR frames — so DLSS-FG's extra-present step is invoked explicitly here,
+	 * right after the real HDR frame is recorded, using the just-composited {@code hdrDisplayImage} (already
+	 * UI-composited by {@code presentHdr}) as the interpolation source instead of the SDR main target.
 	 */
 	@Inject(method = "blitFromTexture", at = @At("HEAD"), cancellable = true)
 	private void upscaler$presentHdr(CommandEncoderBackend commandEncoder, GpuTextureView textureView, CallbackInfo ci) {
@@ -246,8 +251,9 @@ public abstract class VulkanGpuSurfaceMixin {
 		long acquireSem = this.acquireSemaphores[this.currentAcquireSemaphore];
 		long presentSem = this.presentSemaphores[this.currentImageIndex];
 		if (rt.isHdrPresentActive()) {
-			rt.presentHdr((VulkanCommandEncoder) commandEncoder, swapchainImage, this.swapchainWidth, this.swapchainHeight,
-					acquireSem, presentSem);
+			VulkanCommandEncoder enc = (VulkanCommandEncoder) commandEncoder;
+			rt.presentHdr(enc, swapchainImage, this.swapchainWidth, this.swapchainHeight, acquireSem, presentSem);
+			upscaler$presentGeneratedFramesHdr(enc, rt);
 			ci.cancel();
 			return;
 		}
@@ -290,7 +296,30 @@ public abstract class VulkanGpuSurfaceMixin {
 		RtFramePresenter.INSTANCE.prepareExtraFrames((VulkanCommandEncoder) commandEncoder, this.device,
 				this.swapchain, this.swapchainImages, this.presentSemaphores,
 				this.swapchainWidth, this.swapchainHeight,
-				srcView, srcImage, textureView.getWidth(0), textureView.getHeight(0), generatedCount);
+				srcView, srcImage, textureView.getWidth(0), textureView.getHeight(0), generatedCount, false);
+	}
+
+	/**
+	 * DLSS-FG on the HDR present path: same extra-present mechanism as {@link #upscaler$presentGeneratedFrames},
+	 * but sourced from the HDR backbuffer ({@link RtComposite#hdrBackbufferView()}/{@code hdrBackbufferImage()})
+	 * since HDR frames never reach that TAIL inject (HEAD cancels {@code blitFromTexture} above). No-op if FG
+	 * isn't active or the HDR backbuffer isn't available (shouldn't happen right after a successful
+	 * {@code presentHdr} call, but mirrors the defensive {@code srcImage == 0L} check in the SDR path).
+	 */
+	@Unique
+	private void upscaler$presentGeneratedFramesHdr(VulkanCommandEncoder enc, RtComposite rt) {
+		if (this.currentImageIndex < 0 || !RtFramePresenter.INSTANCE.isActive()) {
+			return;
+		}
+		long hdrView = rt.hdrBackbufferView();
+		long hdrImage = rt.hdrBackbufferImage();
+		if (hdrImage == 0L) {
+			return;
+		}
+		int generatedCount = dev.upscaler.rt.pipeline.RtDlssFg.INSTANCE.effectiveMultiFrameCount();
+		RtFramePresenter.INSTANCE.prepareExtraFrames(enc, this.device, this.swapchain, this.swapchainImages,
+				this.presentSemaphores, this.swapchainWidth, this.swapchainHeight,
+				hdrView, hdrImage, this.swapchainWidth, this.swapchainHeight, generatedCount, true);
 	}
 
 	// Present the FG-generated frame(s) acquired/recorded at blitFromTexture TAIL — at present() HEAD, after

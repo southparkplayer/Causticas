@@ -43,8 +43,10 @@ import java.nio.LongBuffer;
  * {@link RtComposite#fgInterpolate}); when there's simply no captured RT frame this tick (menu/loading/
  * transition — routine) it falls back to duplicating the real frame for just that one frame (see
  * {@code interpFallbackDuplicate} in the present-rate log), but a genuine FG failure is fatal (see that
- * method's docs) rather than silently duplicating forever. Engaged only on the normal present path
- * (HDR/scRGB cancel {@code blitFromTexture} at HEAD); gated by {@code upscaler.rt.fg} (default off).
+ * method's docs) rather than silently duplicating forever. Called from both present paths — the normal SDR
+ * {@code blitFromTexture} TAIL, and (via {@code hdrBackbuffer=true}) explicitly from inside the HDR present
+ * hook, since the HDR/scRGB path cancels {@code blitFromTexture} at HEAD and never reaches the TAIL inject.
+ * Gated by {@code upscaler.rt.fg} (default off).
  */
 public final class RtFramePresenter {
     public static final RtFramePresenter INSTANCE = new RtFramePresenter();
@@ -86,10 +88,14 @@ public final class RtFramePresenter {
      * Blits DLSSG's real interpolated output per generated frame, or a duplicate of the real frame when RT
      * simply isn't producing frames this tick (routine). A genuine DLSSG failure latches FG off for the
      * session — see {@link RtComposite#fgInterpolate}.
+     *
+     * @param hdrBackbuffer whether {@code backbufferView}/{@code srcImage} is the scRGB HDR backbuffer
+     *     ({@link RtComposite#hdrBackbufferView()}, already UI-composited) rather than the SDR main target —
+     *     selects DLSSG's HDR backbuffer format/flag in {@link RtComposite#fgInterpolate}.
      */
     public void prepareExtraFrames(VulkanCommandEncoder enc, VulkanDevice device, long swapchain,
             LongList swapchainImages, long[] presentSemaphores, int swapW, int swapH,
-            long backbufferView, long srcImage, int srcW, int srcH, int generatedCount) {
+            long backbufferView, long srcImage, int srcW, int srcH, int generatedCount, boolean hdrBackbuffer) {
         pendingCount = 0;
         if (failed || swapchain == 0L || srcImage == 0L || generatedCount <= 0) {
             return;
@@ -101,7 +107,7 @@ public final class RtFramePresenter {
                 // back to duplicating the real frame for just this one frame. A genuine FG failure instead
                 // throws, caught below, which disables FG for the session.
                 RtImage interp = RtComposite.INSTANCE.fgInterpolate(enc, backbufferView, srcImage,
-                        swapW, swapH, i + 1, generatedCount);
+                        swapW, swapH, i + 1, generatedCount, hdrBackbuffer);
                 if (interp != null) {
                     interpOkInWindow++;
                 } else {

@@ -1,0 +1,34 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// PQ-encoded ([0,1], SMPTE ST.2084 EOTF over a 0-10000 nit reference) destination. Per the DLSS Frame
+// Generation programming guide's HDR section, scRGB buffers are explicitly NOT a supported DLSS-FG input
+// ("these buffers are not suitable as inputs to DLSS-FG") — only a display-ready, EOTF-encoded [0,1] signal
+// is. This re-encodes our own scRGB HDR image (already tonemapped/highlight-rolled-off by display.comp) into
+// that format purely for DLSS-FG's consumption; our own scRGB swapchain presentation is untouched.
+layout(binding = 0, set = 0, rgba16f) uniform image2D outImage;
+// scRGB-linear source (1.0 == 80 nits), sampled in GENERAL layout.
+layout(binding = 1, set = 0) uniform sampler2D srcTex;
+
+const float PQ_M1 = 0.1593017578125;
+const float PQ_M2 = 78.84375;
+const float PQ_C1 = 0.8359375;
+const float PQ_C2 = 18.8515625;
+const float PQ_C3 = 18.6875;
+
+float pqEncode(float nits) {
+    float y = pow(max(nits, 0.0) / 10000.0, PQ_M1);
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outImage);
+    if (pix.x >= size.x || pix.y >= size.y) {
+        return;
+    }
+    vec3 nits = texelFetch(srcTex, pix, 0).rgb * 80.0; // scRGB unit 1.0 == 80 nits
+    vec3 pq = vec3(pqEncode(nits.r), pqEncode(nits.g), pqEncode(nits.b));
+    imageStore(outImage, pix, vec4(pq, 1.0));
+}
