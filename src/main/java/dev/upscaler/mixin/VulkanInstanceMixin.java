@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * HDR Phase 3 groundwork: enable {@code VK_EXT_swapchain_colorspace} at instance creation when the platform
  * supports it. Minecraft's stock instance does not request it, so on a stock build
  * {@code vkGetPhysicalDeviceSurfaceFormatsKHR} only ever reports {@code SRGB_NONLINEAR} — no extended/HDR
- * color spaces are visible and the swapchain cannot be created in scRGB/HDR10. Adding this instance
+ * color spaces are visible and the swapchain cannot be created in HDR10 (PQ). Adding this instance
  * extension is the prerequisite that makes HDR color spaces queryable (surfaced by the Phase 0 capability
  * log) and selectable by a later swapchain-ownership change. It is a no-op for present rendering: the
  * extension only adds color-space enum values; Minecraft still creates its swapchain with color space 0.

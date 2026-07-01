@@ -30,12 +30,13 @@ import static dev.upscaler.rt.RtContext.check;
 
 /**
  * Compute pass that composites the vanilla UI overlay (premultiplied sRGB rgba8, sampled) over the
- * scRGB-linear HDR display image in place, at paper white. Used by the HDR present path (step C.2) after the
- * GUI has rendered into the overlay, before the HDR image is blitted to the scRGB swapchain.
+ * PQ-encoded HDR display image in place (decode-blend-reencode, since PQ is nonlinear), at paper white. Used
+ * by the HDR present path (step C.2) after the GUI has rendered into the overlay, before the HDR image is
+ * blitted to the PQ swapchain.
  */
 public final class RtHdrCompositePipeline {
     private static final String SHADER_DIR = "/upscaler/rt/";
-    private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteScale
+    private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteNits
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -134,12 +135,12 @@ public final class RtHdrCompositePipeline {
         boundSampler = sampler;
     }
 
-    public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteScale) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteNits) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "hdr ui composite")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
-            push.putFloat(0, paperWhiteScale);
+            push.putFloat(0, paperWhiteNits);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

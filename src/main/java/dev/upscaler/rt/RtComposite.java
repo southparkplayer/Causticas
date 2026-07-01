@@ -49,8 +49,6 @@ import dev.upscaler.rt.pipeline.RtDlssFg;
 import dev.upscaler.rt.pipeline.RtDlssRr;
 import dev.upscaler.rt.pipeline.RtHdrCompositePipeline;
 import dev.upscaler.rt.pipeline.RtSdrPresentPipeline;
-import dev.upscaler.rt.pipeline.RtPqEncodePipeline;
-import dev.upscaler.rt.pipeline.RtPqDecodePipeline;
 import dev.upscaler.rt.pipeline.RtExposure;
 import dev.upscaler.rt.pipeline.RtPipeline;
 import dev.upscaler.rt.terrain.RtTerrain;
@@ -58,7 +56,6 @@ import dev.upscaler.rt.terrain.RtTerrain;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
@@ -184,8 +181,8 @@ public final class RtComposite {
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
     private RtImage displayImage;
-    // Parallel scRGB-linear HDR display image (Phase 1). Written alongside displayImage when HDR is enabled.
-    // Step C: when the scRGB swapchain is active, this is blitted straight to the swapchain (world-only;
+    // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
+    // enabled. When the PQ swapchain is active, this is blitted straight to the swapchain (world-only;
     // bypasses the SDR main target + its UI). UI compositing over it is a later sub-step.
     private RtImage hdrDisplayImage;
     // Set true after this frame's display dispatch wrote hdrDisplayImage (HDR enabled + RT ran); gates the
@@ -195,46 +192,28 @@ public final class RtComposite {
     // taken in captureFgHudless right before the UI overlay composites the GUI back on top. Lazily allocated
     // (only meaningful once FG + the UI overlay redirect are both active), resized on demand.
     private RtImage fgHudlessImage;
-    // Same idea as fgHudlessImage but for the HDR present path: PQ-encoded (see pqHudlessEncodePipeline) capture of
-    // hdrDisplayImage taken in presentHdr right before its own UI-overlay composite dispatch overwrites it in
-    // place (see captureFgHdrHudless). PQ, not scRGB, despite the container format being the same
-    // R16G16B16A16_SFLOAT as hdrDisplayImage — the DLSS-FG programming guide's HDR section states scRGB
-    // buffers are "not suitable as inputs to DLSS-FG"; only a display-ready EOTF-encoded [0,1] signal is
-    // (ST.2084/PQ is what we use, following its "recommended HDR format" guidance modulo container format).
+    // Same idea as fgHudlessImage but for the HDR present path: a copy of hdrDisplayImage taken in
+    // presentHdr right before its own UI-overlay composite dispatch overwrites it in place (see
+    // captureFgHdrHudless). Already PQ-encoded (same as hdrDisplayImage), so this is a plain image copy, not
+    // a format conversion — DLSS-FG requires a display-ready EOTF-encoded [0,1] signal (its programming
+    // guide explicitly disallows scRGB), and PQ is exactly that.
     private RtImage fgHdrHudlessImage;
         // Step C.2: composites the captured UI overlay over hdrDisplayImage at paper white, just before present.
     private RtHdrCompositePipeline hdrCompositePipeline;
     private long hdrUiSampler;
-    // Menu/non-RT present: converts the SDR main target (sRGB) to scRGB-linear at paper white so menus,
-    // the title panorama and the loading screen present correctly to the scRGB swapchain instead of being
-    // raw-copied (washed). Lazily created; the image is sized to the swapchain.
+    // Menu/non-RT present: converts the SDR main target (sRGB) to PQ-encoded at paper white so menus,
+    // the title panorama and the loading screen present correctly to the PQ swapchain instead of being
+    // raw-copied (misdisplayed). Lazily created; the image is sized to the swapchain.
     private RtSdrPresentPipeline sdrPresentPipeline;
     private RtImage sdrPresentImage;
-    // DLSS-FG HDR-only: PQ-encoded copy of the (post-UI-composite, final) HDR backbuffer fed to DLSSG instead
-    // of the raw scRGB hdrDisplayImage — same "scRGB unsupported as DLSS-FG input" reason as fgHdrHudlessImage
-    // above. Encoded fresh each generated-frame batch (fgInterpolate index==1); decoded back with
-    // pqDecodePipelines[] into fgInterpScrgb[] after DLSSG writes its (also PQ-encoded) output.
-    private RtImage fgPqBackbufferImage;
-    // A descriptor set can't be rebound to a different image pair while an earlier command buffer that
-    // referenced it hasn't been submitted yet (Vulkan: not UPDATE_AFTER_BIND) — MC's encoder defers all our
-    // execute() calls into ONE later vkQueueSubmit2, so within a single frame's batch every encode/decode
-    // "slot" that targets a different image pair needs its OWN pipeline instance (own descriptor set), never
-    // a shared one reused with setImages() for a different pair. Hence separate hudless-vs-backbuffer encode
-    // pipelines, and one decode pipeline per generated-frame index (pqDecodePipelines[]).
-    private RtPqEncodePipeline pqHudlessEncodePipeline;
-    private RtPqEncodePipeline pqBackbufferEncodePipeline;
-    private RtPqDecodePipeline[] pqDecodePipelines = new RtPqDecodePipeline[0];
     // DLSS Frame Generation: per-generated-frame interpolated output images (backbuffer size/format), and
     // the jitter-free reprojection matrices derived from the MV view-projections each frame. In HDR mode
-    // these hold DLSSG's raw PQ-encoded output; fgInterpScrgb[] holds the decoded-back-to-scRGB version that
-    // actually gets blitted to the (scRGB) swapchain.
+    // these hold DLSSG's raw PQ-encoded output, which is blitted straight to the (PQ) swapchain — no decode
+    // needed since the swapchain itself is PQ-native.
     private RtImage[] fgInterp = new RtImage[0];
     private int fgInterpW = -1;
     private int fgInterpH = -1;
     private int fgInterpFormat = Integer.MIN_VALUE;
-    private RtImage[] fgInterpScrgb = new RtImage[0];
-    private int fgInterpScrgbW = -1;
-    private int fgInterpScrgbH = -1;
     private boolean fgReset = true;
     private final Matrix4f fgClipToPrev = new Matrix4f();
     private final Matrix4f fgPrevToClip = new Matrix4f();
@@ -355,7 +334,7 @@ public final class RtComposite {
         if (RtTerrain.currentOrNull() == null || !frameCaptured || Minecraft.getInstance().level == null) {
             // No world this frame (incl. after quitting to the title — terrain residency + frameCaptured can
             // linger until an explicit invalidate, which would otherwise present a stale/empty HDR image as a
-            // black menu background). Skip RT so the present path falls back to vanilla SDR / the scRGB SDR
+            // black menu background). Skip RT so the present path falls back to vanilla SDR / the PQ SDR
             // convert path, which shows the menu + panorama correctly.
             return false;
         }
@@ -629,7 +608,7 @@ public final class RtComposite {
         // (vkCmdCopyImage requires texel-size-compatible formats).
         output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
-        // scRGB-linear HDR display image, written in parallel by display.comp when HDR mode is active.
+        // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
@@ -818,7 +797,7 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, UpscalerConfig.Rt.Hdr.enabled(),
-                        UpscalerConfig.Rt.Hdr.paperWhiteScale(), UpscalerConfig.Rt.Hdr.headroom());
+                        UpscalerConfig.Rt.Hdr.paperWhiteNits(), UpscalerConfig.Rt.Hdr.headroom());
             }
             hdrWrittenThisFrame = UpscalerConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1030,32 +1009,6 @@ public final class RtComposite {
         fgInterpW = -1;
         fgInterpH = -1;
         fgInterpFormat = Integer.MIN_VALUE;
-        for (RtImage img : fgInterpScrgb) {
-            if (img != null) {
-                img.destroy();
-            }
-        }
-        fgInterpScrgb = new RtImage[0];
-        fgInterpScrgbW = -1;
-        fgInterpScrgbH = -1;
-        if (fgPqBackbufferImage != null) {
-            fgPqBackbufferImage.destroy();
-            fgPqBackbufferImage = null;
-        }
-        if (pqHudlessEncodePipeline != null) {
-            pqHudlessEncodePipeline.destroy();
-            pqHudlessEncodePipeline = null;
-        }
-        if (pqBackbufferEncodePipeline != null) {
-            pqBackbufferEncodePipeline.destroy();
-            pqBackbufferEncodePipeline = null;
-        }
-        for (RtPqDecodePipeline p : pqDecodePipelines) {
-            if (p != null) {
-                p.destroy();
-            }
-        }
-        pqDecodePipelines = new RtPqDecodePipeline[0];
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;
@@ -1128,18 +1081,19 @@ public final class RtComposite {
         return region;
     }
 
-    /** Whether the world-only HDR present (HDR image -> scRGB swapchain) should replace the vanilla SDR blit. */
+    /** Whether the world-only HDR present (HDR image -> PQ swapchain) should replace the vanilla SDR blit. */
     public boolean isHdrPresentActive() {
-        return UpscalerConfig.Rt.Hdr.SCRGB_SWAPCHAIN.value()
+        return UpscalerConfig.Rt.Hdr.PQ_SWAPCHAIN.value()
                 && UpscalerConfig.Rt.Hdr.enabled()
                 && hdrWrittenThisFrame
                 && hdrDisplayImage != null;
     }
 
     /**
-     * DLSS-FG: the scRGB HDR backbuffer (view/image), valid only right after {@link #presentHdr} has run this
-     * frame (it's the same image {@code presentHdr} just composited UI into and blitted to the swapchain) —
-     * used as the interpolation source for HDR frame generation instead of the SDR main target. 0 if HDR isn't
+     * DLSS-FG: the PQ-encoded HDR backbuffer (view/image), valid only right after {@link #presentHdr} has run
+     * this frame (it's the same image {@code presentHdr} just composited UI into and blitted to the
+     * swapchain) — used as the interpolation source for HDR frame generation instead of the SDR main target.
+     * Already display-ready PQ, so it's fed to DLSSG directly with no extra encode step. 0 if HDR isn't
      * active this frame.
      */
     public long hdrBackbufferView() {
@@ -1151,7 +1105,7 @@ public final class RtComposite {
     }
 
     /**
-     * Blit this frame's scRGB-linear HDR image straight into the swapchain image, replacing Minecraft's SDR
+     * Blit this frame's PQ-encoded HDR image straight into the swapchain image, replacing Minecraft's SDR
      * blit. Replicates {@code VulkanGpuSurface.blitFromTexture}'s barrier + acquire-wait/present-signal
      * sequence with the HDR {@link RtImage} as the (GENERAL-layout) source; an added memory barrier makes the
      * display-compute writes visible to the blit read. World-only — the SDR main target (and its UI) is
@@ -1187,7 +1141,7 @@ public final class RtComposite {
                     VkDependencyInfo preDep = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(pre);
                     KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, preDep);
                     hdrCompositePipeline.setImages(hdrDisplayImage.view, overlayView, hdrUiSampler);
-                    hdrCompositePipeline.dispatch(cmd, src.width, src.height, UpscalerConfig.Rt.Hdr.paperWhiteScale());
+                    hdrCompositePipeline.dispatch(cmd, src.width, src.height, UpscalerConfig.Rt.Hdr.paperWhiteNits());
                 }
                 RtUiOverlay.markConsumed();
             }
@@ -1266,24 +1220,24 @@ public final class RtComposite {
     }
 
     /**
-     * Whether a non-RT frame (menu, title panorama, loading screen) should be SDR-&gt;scRGB converted for
-     * present instead of vanilla's raw SDR blit. True when the scRGB swapchain is active but this frame did
+     * Whether a non-RT frame (menu, title panorama, loading screen) should be SDR-&gt;PQ converted for
+     * present instead of vanilla's raw SDR blit. True when the PQ swapchain is active but this frame did
      * not produce an HDR image ({@link #isHdrPresentActive()} false).
      */
-    public boolean isScrgbSdrPresentActive() {
-        return UpscalerConfig.Rt.Hdr.SCRGB_SWAPCHAIN.value()
+    public boolean isPqSdrPresentActive() {
+        return UpscalerConfig.Rt.Hdr.PQ_SWAPCHAIN.value()
                 && UpscalerConfig.Rt.Hdr.enabled()
                 && !isHdrPresentActive();
     }
 
     /**
-     * Present a non-RT (menu/loading) frame to the scRGB swapchain: convert the SDR main target (sRGB-encoded
-     * rgba8, GENERAL layout, already holding the composited panorama + UI) to scRGB-linear at paper white via
+     * Present a non-RT (menu/loading) frame to the PQ swapchain: convert the SDR main target (sRGB-encoded
+     * rgba8, GENERAL layout, already holding the composited panorama + UI) to PQ-encoded at paper white via
      * a compute pass into {@link #sdrPresentImage}, then blit that into the swapchain. Mirrors
      * {@link #presentHdr} barrier-for-barrier; returns false (keep vanilla SDR blit) if resources are
      * unavailable.
      */
-    public boolean presentSdrToScrgb(VulkanCommandEncoder enc, long swapchainImage, int swapW, int swapH,
+    public boolean presentSdrToPq(VulkanCommandEncoder enc, long swapchainImage, int swapW, int swapH,
             long sdrMainView, long acquireSem, long presentSem) {
         if (sdrMainView == 0L || failed) {
             return false;
@@ -1300,7 +1254,7 @@ public final class RtComposite {
                 sdrPresentImage.destroy();
             }
             sdrPresentImage = ctx.createStorageImage(swapW, swapH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                    "RT SDR->scRGB present image " + swapW + "x" + swapH);
+                    "RT SDR->PQ present image " + swapW + "x" + swapH);
         }
         RtImage dst = sdrPresentImage;
         int copyW = Math.min(swapW, dst.width);
@@ -1315,7 +1269,7 @@ public final class RtComposite {
             KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, preDep);
 
             sdrPresentPipeline.setImages(dst.view, sdrMainView, hdrUiSampler);
-            sdrPresentPipeline.dispatch(cmd, dst.width, dst.height, UpscalerConfig.Rt.Hdr.paperWhiteScale());
+            sdrPresentPipeline.dispatch(cmd, dst.width, dst.height, UpscalerConfig.Rt.Hdr.paperWhiteNits());
 
             // Swapchain UNDEFINED -> TRANSFER_DST, plus make the compute write visible to the blit read.
             VkImageMemoryBarrier2.Buffer toDst = VkImageMemoryBarrier2.calloc(1, stack).sType$Default();
@@ -1328,7 +1282,7 @@ public final class RtComposite {
             VkDependencyInfo dep1 = VkDependencyInfo.calloc(stack).sType$Default().pImageMemoryBarriers(toDst).pMemoryBarriers(srcVis);
             KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, dep1);
 
-            // Blit converted scRGB image (GENERAL) -> swapchain (TRANSFER_DST), Y-flipped like vanilla.
+            // Blit converted PQ image (GENERAL) -> swapchain (TRANSFER_DST), Y-flipped like vanilla.
             VkImageBlit.Buffer region = VkImageBlit.calloc(1, stack);
             region.get(0).srcSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
             region.get(0).dstSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
@@ -1423,13 +1377,12 @@ public final class RtComposite {
     }
 
     /**
-     * HDR counterpart of {@link #captureFgHudless} — PQ-encodes {@code src} (this frame's
-     * {@code hdrDisplayImage}, world+hand+screen-effects only, no UI yet) into {@link #fgHdrHudlessImage} for
-     * {@link #fgInterpolate}'s HDR path to feed DLSSG as the "hudless" resource. Unlike the SDR version this
-     * isn't a raw copy — the DLSS-FG programming guide's HDR section states scRGB is "not suitable as an
-     * input to DLSS-FG" (only a display-ready EOTF-encoded [0,1] signal is), so the capture doubles as the PQ
-     * re-encode via {@link RtPqEncodePipeline}. Called from {@link #presentHdr} using its already-open
-     * {@code cmd}/{@code stack}, right before that method's own UI-overlay composite dispatch overwrites
+     * HDR counterpart of {@link #captureFgHudless} — copies {@code src} (this frame's {@code hdrDisplayImage},
+     * world+hand+screen-effects only, no UI yet) into {@link #fgHdrHudlessImage} for {@link #fgInterpolate}'s
+     * HDR path to feed DLSSG as the "hudless" resource. A plain copy, not a format conversion: both images are
+     * already PQ-encoded (the display-ready EOTF-encoded [0,1] signal DLSS-FG's programming guide requires),
+     * so no encode step is needed. Called from {@link #presentHdr} using its already-open {@code cmd}/
+     * {@code stack}, right before that method's own UI-overlay composite dispatch overwrites
      * {@code hdrDisplayImage} in place — same "capture before the UI gets baked back in" timing as the SDR
      * version, just within a single method instead of split across a mixin hook.
      */
@@ -1445,18 +1398,12 @@ public final class RtComposite {
             fgHdrHudlessImage = ctx.createStorageImage(src.width, src.height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                     "FG HDR hudless capture (PQ) " + src.width + "x" + src.height);
         }
-        if (pqHudlessEncodePipeline == null) {
-            pqHudlessEncodePipeline = RtPqEncodePipeline.create(ctx);
-        }
-        if (!ensureUiSampler(ctx)) {
-            return; // fgInterpolate's hudlessReady size check catches the stale/missing image and skips it
-        }
-        // Make composite()'s writes to hdrDisplayImage (an earlier submit this frame) visible to this read;
-        // the encode's write is then made visible to the UI-composite dispatch that follows (and to DLSSG's
+        // Make composite()'s writes to hdrDisplayImage (an earlier submit this frame) visible to this copy;
+        // the copy's write is then made visible to the UI-composite dispatch that follows (and to DLSSG's
         // read, in a later command buffer) by the same idiom.
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        pqHudlessEncodePipeline.setImages(fgHdrHudlessImage.view, src.view, hdrUiSampler);
-        pqHudlessEncodePipeline.dispatch(cmd, src.width, src.height);
+        VK10.vkCmdCopyImage(cmd, src.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                fgHdrHudlessImage.image, VK10.VK_IMAGE_LAYOUT_GENERAL, copyRegion(stack, src.width, src.height));
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
     }
 
@@ -1478,15 +1425,14 @@ public final class RtComposite {
      *
      * <p>{@code hdrBackbuffer} selects the HDR path. Per the DLSS-FG programming guide's HDR section, scRGB is
      * explicitly unsupported as a DLSS-FG input ("not suitable as inputs to DLSS-FG" — it wants a
-     * display-ready, EOTF-encoded [0,1] signal, recommending HDR10/ST.2084). So none of the images actually
-     * fed to {@code RtDlssFg.evaluate} in HDR mode are the raw scRGB ones: the backbuffer is
-     * {@link #fgPqBackbufferImage} (PQ-encoded here, each generated-frame batch, from the raw
-     * {@code backbufferView}/{@code backbufferImage} the caller passed in — {@link #hdrBackbufferView()},
-     * already UI-composited by {@link #presentHdr}); the hudless resource is {@link #fgHdrHudlessImage}
-     * (PQ-encoded by {@link #presentHdr} <em>before</em> its own UI composite ran, mirroring
-     * {@link #captureFgHudless}'s pre-UI timing); and DLSSG's own (also PQ-encoded) output is decoded back to
-     * scRGB into {@code fgInterpScrgb[]} before being returned, so the caller can blit it into the scRGB
-     * swapchain exactly like a real frame. The UI resource itself needs no HDR-specific handling — it's the
+     * display-ready, EOTF-encoded [0,1] signal, recommending HDR10/ST.2084) — since the renderer's whole HDR
+     * pipeline is natively PQ-encoded, every image fed to {@code RtDlssFg.evaluate} in HDR mode is already in
+     * that format with no extra conversion needed: the backbuffer is the raw {@code backbufferView}/
+     * {@code backbufferImage} the caller passed in ({@link #hdrBackbufferView()}, already PQ + UI-composited
+     * by {@link #presentHdr}); the hudless resource is {@link #fgHdrHudlessImage} (copied by {@link
+     * #presentHdr} <em>before</em> its own UI composite ran, mirroring {@link #captureFgHudless}'s pre-UI
+     * timing); and DLSSG's own (also PQ-encoded) output is returned as-is, since the swapchain itself is
+     * PQ-native and can blit it directly. The UI resource itself needs no HDR-specific handling — it's the
      * same {@link RtUiOverlay} texture used by both present paths (only the *compositing* math that consumes
      * it differs, done separately by {@code presentHdr}/{@code RtUiOverlay}, not here).
      */
@@ -1505,9 +1451,6 @@ public final class RtComposite {
                 throw new IllegalStateException("DLSSG feature not ready (ensureFgFeature failed)");
             }
             ensureFgInterp(ctx, count, swapW, swapH, fmt);
-            if (hdrBackbuffer) {
-                ensureFgPqBackbuffer(ctx, swapW, swapH);
-            }
             // clipToPrevClip = prevVP * inverse(curVP); prevClipToClip = curVP * inverse(prevVP). Both from
             // the (rotation-only, camera-relative) MV view-projections, so jitter-free.
             fgMatTmp.set(mvCurProjView).invert();
@@ -1533,15 +1476,8 @@ public final class RtComposite {
         long uiImg = uiReady ? RtUiOverlay.overlayColorImage() : 0L;
 
         VkCommandBuffer cmd = enc.allocateAndBeginTransientCommandBuffer();
-        long fedBackbufferView = backbufferView;
-        long fedBackbufferImage = backbufferImage;
-        if (hdrBackbuffer) {
-            encodeFgBackbufferPq(ctx, cmd, backbufferView, swapW, swapH);
-            fedBackbufferView = fgPqBackbufferImage.view;
-            fedBackbufferImage = fgPqBackbufferImage.image;
-        }
         boolean ok = RtDlssFg.INSTANCE.evaluate(cmd.address(),
-                fedBackbufferView, fedBackbufferImage, fmt,
+                backbufferView, backbufferImage, fmt,
                 gDepth.view, gDepth.image, VK10.VK_FORMAT_R32_SFLOAT,
                 gMotion.view, gMotion.image, VK10.VK_FORMAT_R16G16_SFLOAT,
                 hudlessView, hudlessImg, hudlessReady ? hudlessFmt : 0,
@@ -1551,10 +1487,6 @@ public final class RtComposite {
                 true /* depthInverted (reversed-Z) */, hdrBackbuffer /* colorBuffersHDR */,
                 true /* cameraMotionIncluded (in mvecs) */, fgReset,
                 fgClipToPrev, fgPrevToClip);
-        RtImage result = out;
-        if (ok && hdrBackbuffer) {
-            result = decodeFgInterpPq(ctx, cmd, out, index - 1, swapW, swapH);
-        }
         if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
             throw new IllegalStateException("vkEndCommandBuffer(fg interpolate) failed");
         }
@@ -1563,91 +1495,7 @@ public final class RtComposite {
             throw new IllegalStateException("ngxshim_evaluate_dlssg failed (RtDlssFg.evaluate returned false)");
         }
         enc.execute(cmd);
-        return result;
-    }
-
-    /**
-     * PQ-encode {@code scrgbView} (this frame's HDR backbuffer) into {@link #fgPqBackbufferImage}. Uses its
-     * own dedicated {@link #pqBackbufferEncodePipeline} (never shared with {@link #pqHudlessEncodePipeline})
-     * — see the field comment on {@link #pqHudlessEncodePipeline} for why sharing one descriptor set across
-     * different image targets within the same unflushed frame corrupts an already-recorded command buffer.
-     */
-    private void encodeFgBackbufferPq(RtContext ctx, VkCommandBuffer cmd, long scrgbView, int w, int h) {
-        if (pqBackbufferEncodePipeline == null) {
-            pqBackbufferEncodePipeline = RtPqEncodePipeline.create(ctx);
-        }
-        if (!ensureUiSampler(ctx)) {
-            // fgPqBackbufferImage keeps whatever it last held (or garbage on the very first frame) — acceptable
-            // degradation, matches the existing "resources not ready yet" tolerance elsewhere.
-            return;
-        }
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            // Make presentHdr's UI-composited write to hdrDisplayImage visible to this read.
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
-            pqBackbufferEncodePipeline.setImages(fgPqBackbufferImage.view, scrgbView, hdrUiSampler);
-            pqBackbufferEncodePipeline.dispatch(cmd, w, h);
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        }
-    }
-
-    /**
-     * PQ-decode DLSSG's output ({@code pqOut}, one of {@link #fgInterp}) into the matching
-     * {@link #fgInterpScrgb} slot and return it, so the caller blits a scRGB image into the scRGB swapchain
-     * instead of DLSSG's raw PQ output. Falls back to returning {@code pqOut} itself (visibly wrong but not a
-     * crash) if the decode pipeline/sampler couldn't be created. Uses a dedicated pipeline instance per
-     * generated-frame {@code slot} ({@link #pqDecodePipelines}) — each slot's (source, destination) pair is
-     * stable across frames, but with multi-frame generation (&gt;1 generated frame per real frame) different
-     * slots are decoded within the SAME unflushed batch, so they can't share one descriptor set either.
-     */
-    private RtImage decodeFgInterpPq(RtContext ctx, VkCommandBuffer cmd, RtImage pqOut, int slot, int w, int h) {
-        if (pqDecodePipelines.length <= slot) {
-            pqDecodePipelines = Arrays.copyOf(pqDecodePipelines, slot + 1);
-        }
-        if (pqDecodePipelines[slot] == null) {
-            pqDecodePipelines[slot] = RtPqDecodePipeline.create(ctx);
-        }
-        if (!ensureUiSampler(ctx)) {
-            return pqOut;
-        }
-        RtPqDecodePipeline pipeline = pqDecodePipelines[slot];
-        RtImage scrgbOut = ensureFgInterpScrgbSlot(ctx, slot, w, h);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            // Make DLSSG's write to pqOut visible to this decode read.
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
-            pipeline.setImages(scrgbOut.view, pqOut.view, hdrUiSampler);
-            pipeline.dispatch(cmd, w, h);
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        }
-        return scrgbOut;
-    }
-
-    private void ensureFgPqBackbuffer(RtContext ctx, int w, int h) {
-        if (fgPqBackbufferImage != null && fgPqBackbufferImage.width == w && fgPqBackbufferImage.height == h) {
-            return;
-        }
-        if (fgPqBackbufferImage != null) {
-            fgPqBackbufferImage.destroy();
-        }
-        fgPqBackbufferImage = ctx.createStorageImage(w, h, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                "FG PQ backbuffer " + w + "x" + h);
-    }
-
-    private RtImage ensureFgInterpScrgbSlot(RtContext ctx, int slot, int w, int h) {
-        if (fgInterpScrgb.length != fgInterp.length || fgInterpScrgbW != w || fgInterpScrgbH != h) {
-            for (RtImage img : fgInterpScrgb) {
-                if (img != null) {
-                    img.destroy();
-                }
-            }
-            fgInterpScrgb = new RtImage[fgInterp.length];
-            fgInterpScrgbW = w;
-            fgInterpScrgbH = h;
-        }
-        if (fgInterpScrgb[slot] == null) {
-            fgInterpScrgb[slot] = ctx.createStorageImage(w, h, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                    "FG interp scRGB " + slot + " " + w + "x" + h);
-        }
-        return fgInterpScrgb[slot];
+        return out;
     }
 
     private boolean ensureFgFeature(RtContext ctx, int w, int h, int rw, int rh, int fmt) {

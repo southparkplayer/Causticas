@@ -38,23 +38,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.nio.LongBuffer;
 
 /**
- * HDR Phase 0 capability logging + Phase 2 step B scRGB swapchain selection.
+ * HDR Phase 0 capability logging + PQ swapchain selection.
  *
  * <p>The {@link VulkanGpuSurface} constructor holds both the live {@code VkSurfaceKHR} and the physical
  * device, so we enumerate the surface's formats/color spaces there (once) for diagnostics.
  *
- * <p>When {@code upscaler.rt.hdr.scrgbSwapchain} is on and the surface advertises scRGB
- * (R16G16B16A16_SFLOAT / EXTENDED_SRGB_LINEAR), we steer Minecraft's swapchain to it: vanilla
- * {@code pickSwapchainSurfaceFormat} only accepts SDR (color space 0, format 37/44) and {@code configure}
- * hardcodes {@code imageColorSpace(0)}. We override the picked format and the color-space arg. Falls back to
- * the vanilla SDR path when the flag is off or scRGB is unavailable. NOTE: this only creates the swapchain
- * in scRGB — the presented content is still Minecraft's SDR main target blitted in, so the image looks wrong
- * until the HDR compositor (step C) writes correct scRGB; default off.
+ * <p>When {@code upscaler.rt.hdr.pqSwapchain} is on and the surface advertises HDR10_ST2084 (ST.2084/PQ,
+ * paired with whatever pixel format the surface offers for it — commonly a 10-bit UNORM, but this is
+ * discovered by scanning the surface's advertised formats rather than assumed), we steer Minecraft's
+ * swapchain to it: vanilla {@code pickSwapchainSurfaceFormat} only accepts SDR (color space 0, format 37/44)
+ * and {@code configure} hardcodes {@code imageColorSpace(0)}. We override the picked format and the
+ * color-space arg. Falls back to the vanilla SDR path when the flag is off or PQ is unavailable; default off.
  */
 @Mixin(VulkanGpuSurface.class)
 public abstract class VulkanGpuSurfaceMixin {
-	private static final int VK_FORMAT_R16G16B16A16_SFLOAT = 97;
-	private static final int VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT = 1000104002;
+	private static final int VK_COLOR_SPACE_HDR10_ST2084_EXT = 1000104008;
 
 	@Shadow
 	@Final
@@ -111,27 +109,29 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Pick an scRGB surface format when requested + available, before vanilla's SDR-only selection runs.
-	 * Sets {@link #upscaler$colorSpace} so {@code configure} can pass the matching color space.
+	 * Pick a PQ (HDR10_ST2084) surface format when requested + available, before vanilla's SDR-only selection
+	 * runs. Scans for any format the surface pairs with that color space rather than assuming a specific one
+	 * (IHVs commonly pair it with a 10-bit UNORM like A2R10G10B10, but this must not be hardcoded). Sets
+	 * {@link #upscaler$colorSpace} so {@code configure} can pass the matching color space.
 	 */
 	@Inject(method = "pickSwapchainSurfaceFormat", at = @At("HEAD"), cancellable = true)
-	private void upscaler$pickScrgbFormat(VkSurfaceFormatKHR.Buffer formats, CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
-		if (!UpscalerConfig.Rt.Hdr.SCRGB_SWAPCHAIN.value()) {
+	private void upscaler$pickPqFormat(VkSurfaceFormatKHR.Buffer formats, CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
+		if (!UpscalerConfig.Rt.Hdr.PQ_SWAPCHAIN.value()) {
 			return;
 		}
 		for (int i = 0; i < formats.capacity(); i++) {
 			VkSurfaceFormatKHR f = formats.get(i);
-			if (f.format() == VK_FORMAT_R16G16B16A16_SFLOAT && f.colorSpace() == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-				this.upscaler$colorSpace = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
-				UpscalerMod.LOGGER.info("HDR: selecting scRGB swapchain (format=R16G16B16A16_SFLOAT, colorSpace=EXTENDED_SRGB_LINEAR)");
+			if (f.colorSpace() == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+				this.upscaler$colorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+				UpscalerMod.LOGGER.info("HDR: selecting PQ swapchain (format={}, colorSpace=HDR10_ST2084)", f.format());
 				cir.setReturnValue(f);
 				return;
 			}
 		}
-		UpscalerMod.LOGGER.warn("HDR: scRGB swapchain requested but EXTENDED_SRGB_LINEAR not advertised by the surface; using SDR (enable Windows HDR / check VK_EXT_swapchain_colorspace)");
+		UpscalerMod.LOGGER.warn("HDR: PQ swapchain requested but HDR10_ST2084 not advertised by the surface; using SDR (enable Windows HDR / check VK_EXT_swapchain_colorspace)");
 	}
 
-	/** Replace the hardcoded {@code imageColorSpace(0)} with the scRGB color space when one was selected. */
+	/** Replace the hardcoded {@code imageColorSpace(0)} with the PQ color space when one was selected. */
 	@ModifyArg(method = "configure",
 			at = @At(value = "INVOKE",
 					target = "Lorg/lwjgl/vulkan/VkSwapchainCreateInfoKHR;imageColorSpace(I)Lorg/lwjgl/vulkan/VkSwapchainCreateInfoKHR;"),
@@ -232,8 +232,8 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Step C — world-only HDR present. When the RT renderer has a fresh scRGB HDR image and the swapchain is
-	 * scRGB, blit that image straight into the swapchain instead of Minecraft's SDR main target. Replaces the
+	 * Step C — world-only HDR present. When the RT renderer has a fresh PQ HDR image and the swapchain is
+	 * PQ, blit that image straight into the swapchain instead of Minecraft's SDR main target. Replaces the
 	 * vanilla blit entirely (the SDR target + its UI are bypassed for now; UI compositing is a later step).
 	 *
 	 * <p>Because this cancels {@code blitFromTexture} at HEAD, the normal {@code upscaler$presentGeneratedFrames}
@@ -257,13 +257,12 @@ public abstract class VulkanGpuSurfaceMixin {
 			ci.cancel();
 			return;
 		}
-		// Non-RT frame (menu, title panorama, loading screen) on an scRGB swapchain: vanilla's raw SDR blit
-		// would wash out (SDR bytes reinterpreted as scRGB-linear). Convert sRGB -> scRGB at paper white
-		// instead. Falls through to vanilla SDR if conversion resources aren't ready or the source view is
-		// not a Vulkan view.
-		if (rt.isScrgbSdrPresentActive()) {
+		// Non-RT frame (menu, title panorama, loading screen) on a PQ swapchain: vanilla's raw SDR blit would
+		// misdisplay (SDR bytes reinterpreted as PQ codes). Convert sRGB -> PQ at paper white instead. Falls
+		// through to vanilla SDR if conversion resources aren't ready or the source view is not a Vulkan view.
+		if (rt.isPqSdrPresentActive()) {
 			long sdrView = upscaler$vkImageView(textureView);
-			if (sdrView != 0L && rt.presentSdrToScrgb((VulkanCommandEncoder) commandEncoder, swapchainImage,
+			if (sdrView != 0L && rt.presentSdrToPq((VulkanCommandEncoder) commandEncoder, swapchainImage,
 					this.swapchainWidth, this.swapchainHeight, sdrView, acquireSem, presentSem)) {
 				ci.cancel();
 			}
@@ -279,7 +278,7 @@ public abstract class VulkanGpuSurfaceMixin {
 	 * DLSS Frame Generation (slice 2): after Minecraft blits the real frame into its acquired swapchain image
 	 * (but before {@code present()} shows it), present the generated frame(s) into additional swapchain images
 	 * via {@link RtFramePresenter}, so the display order is generated-then-real. Runs only on the normal
-	 * present path — the HDR/scRGB present hooks cancel {@code blitFromTexture} at HEAD, so this TAIL is
+	 * present path — the HDR/PQ present hooks cancel {@code blitFromTexture} at HEAD, so this TAIL is
 	 * skipped there (HDR+FG deferred). Iteration 1 duplicates the final frame (no DLSSG eval yet).
 	 */
 	@Inject(method = "blitFromTexture", at = @At("TAIL"))

@@ -11,10 +11,9 @@ import dev.upscaler.UpscalerConfig;
 import dev.upscaler.UpscalerMod;
 
 /**
- * HDR display support — Phase 0 capability detection/logging. This class does not change any rendering
- * behavior; it only enumerates and logs what the swapchain surface can present so the later swapchain-
- * ownership phase knows whether scRGB/HDR10 color spaces are actually available on this driver + monitor +
- * Windows-HDR state.
+ * HDR display support — capability detection/logging. This class does not change any rendering behavior; it
+ * only enumerates and logs what the swapchain surface can present so the swapchain-ownership code knows
+ * whether HDR10 (PQ) is actually available on this driver + monitor + Windows-HDR state.
  *
  * <p>Important: extended color spaces (scRGB linear, HDR10 PQ, …) are only reported by
  * {@code vkGetPhysicalDeviceSurfaceFormatsKHR} when the instance was created with
@@ -49,11 +48,11 @@ public final class RtHdr {
     /** Logs the resolved HDR config once (cheap; safe to call repeatedly — guarded by the surface log). */
     public static void logConfig() {
         UpscalerMod.LOGGER.info(
-                "HDR config: mode={} forceSdr={} paperWhite={}nits peak={}nits -> {} (scRGB paperWhiteScale={}, headroom={})",
+                "HDR config: mode={} forceSdr={} paperWhite={}nits peak={}nits -> {} (headroom={})",
                 UpscalerConfig.Rt.Hdr.MODE.get(), UpscalerConfig.Rt.Hdr.FORCE_SDR.value(),
                 UpscalerConfig.Rt.Hdr.PAPER_WHITE_NITS.value(), UpscalerConfig.Rt.Hdr.PEAK_NITS.value(),
                 UpscalerConfig.Rt.Hdr.enabled() ? "HDR display path active" : "SDR display path",
-                UpscalerConfig.Rt.Hdr.paperWhiteScale(), UpscalerConfig.Rt.Hdr.headroom());
+                UpscalerConfig.Rt.Hdr.headroom());
     }
 
     /**
@@ -90,7 +89,7 @@ public final class RtHdr {
                         i, f.format(), formatName(f.format()), cs, colorSpaceName(cs), hdr ? "  <-- HDR-capable" : "");
             }
             if (anyHdr) {
-                UpscalerMod.LOGGER.info("HDR: at least one HDR-capable color space is exposed; scRGB/HDR10 presentation is feasible once the swapchain is owned by the mod.");
+                UpscalerMod.LOGGER.info("HDR: at least one HDR-capable color space is exposed; PQ/HDR10 presentation is feasible once the swapchain is owned by the mod.");
             } else {
                 UpscalerMod.LOGGER.info("HDR: only SDR (SRGB_NONLINEAR) color spaces exposed. This is expected on a stock Minecraft Vulkan instance — VK_EXT_swapchain_colorspace must be enabled at instance-creation time (a later phase) before extended color spaces appear here.");
             }

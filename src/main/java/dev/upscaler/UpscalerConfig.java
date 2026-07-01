@@ -624,12 +624,12 @@ public final class UpscalerConfig {
         }
 
         /**
-         * HDR display output (Phase 0/1 scaffolding). {@code mode} selects the presentation convention:
-         * {@code off} keeps the SDR AgX path, {@code scrgb} targets scRGB/linear extended range, {@code auto}
-         * picks scRGB when the swapchain supports it (resolution happens in the later swapchain-ownership
-         * phase). {@code forceSdr} is a debug override that pins SDR even when a mode is selected. The nit
-         * values drive the scene-HDR → display mapping: SDR paper white maps to {@code paperWhiteNits}, and
-         * highlights roll off toward {@code peakNits}.
+         * HDR display output. {@code mode} selects the presentation convention: {@code off} keeps the SDR
+         * AgX path, {@code pq} targets ST.2084/PQ (the display-ready encoding both HDR10 swapchains and DLSS
+         * Frame Generation require), {@code auto} picks PQ when the swapchain supports it. {@code forceSdr}
+         * is a debug override that pins SDR even when a mode is selected. The nit values drive the
+         * scene-HDR → display mapping: SDR paper white maps to {@code paperWhiteNits}, and highlights roll
+         * off toward {@code peakNits}.
          */
         public static final class Hdr {
             public static final StringSetting MODE = string("upscaler.rt.hdr.mode", "off", Hdr::sanitizeMode);
@@ -645,12 +645,11 @@ public final class UpscalerConfig {
              */
             public static final BooleanSetting UI_OVERLAY = bool("upscaler.rt.hdr.uiOverlay", false);
             /**
-             * Phase 2 step B: create Minecraft's swapchain in scRGB (R16G16B16A16_SFLOAT /
-             * EXTENDED_SRGB_LINEAR) instead of SDR, when the surface advertises it. Default off, falls back to
-             * SDR when unavailable. NOTE: until the HDR compositor (step C) writes correct scRGB content, the
-             * presented image will look wrong with this on — it only proves the swapchain path.
+             * Create Minecraft's swapchain in PQ (ST.2084/HDR10, whatever pixel format the surface pairs with
+             * that color space — commonly a 10-bit UNORM) instead of SDR, when the surface advertises it.
+             * Default off, falls back to SDR when unavailable.
              */
-            public static final BooleanSetting SCRGB_SWAPCHAIN = bool("upscaler.rt.hdr.scrgbSwapchain", false);
+            public static final BooleanSetting PQ_SWAPCHAIN = bool("upscaler.rt.hdr.pqSwapchain", false);
 
             private Hdr() {
             }
@@ -660,9 +659,9 @@ public final class UpscalerConfig {
                 return !FORCE_SDR.value() && !"off".equals(MODE.get());
             }
 
-            /** scRGB linear scale for SDR paper white (scRGB defines 1.0 = 80 nits). */
-            public static float paperWhiteScale() {
-                return PAPER_WHITE_NITS.value() / 80.0f;
+            /** Absolute nits SDR paper white maps to in the PQ encode (ST.2084 is referenced to 10000 nits). */
+            public static float paperWhiteNits() {
+                return PAPER_WHITE_NITS.value();
             }
 
             /** Highlight headroom above paper white, in paper-white-referred units ({@code >= 1}). */
@@ -671,7 +670,7 @@ public final class UpscalerConfig {
             }
 
             private static String sanitizeMode(String value) {
-                if ("scrgb".equalsIgnoreCase(value) || "auto".equalsIgnoreCase(value)) {
+                if ("pq".equalsIgnoreCase(value) || "auto".equalsIgnoreCase(value)) {
                     return value.toLowerCase();
                 }
                 return "off";

@@ -29,14 +29,14 @@ import dev.upscaler.rt.RtDebugLabels;
 import static dev.upscaler.rt.RtContext.check;
 
 /**
- * Compute pass that converts Minecraft's SDR main target (rgba8, sRGB-encoded, sampled) to a scRGB-linear
+ * Compute pass that converts Minecraft's SDR main target (rgba8, sRGB-encoded, sampled) to a PQ-encoded
  * rgba16f image at paper white. Used by the HDR present path for non-RT frames (menus, loading screen, title
- * panorama) so they present correctly to the scRGB swapchain instead of being raw-copied (washed out). Same
+ * panorama) so they present correctly to the PQ swapchain instead of being raw-copied (misdisplayed). Same
  * descriptor shape as {@link RtHdrCompositePipeline}: binding 0 = storage out, binding 1 = sampled SDR in.
  */
 public final class RtSdrPresentPipeline {
     private static final String SHADER_DIR = "/upscaler/rt/";
-    private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteScale
+    private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteNits
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -112,7 +112,7 @@ public final class RtSdrPresentPipeline {
         }
     }
 
-    /** Bind the destination scRGB image (storage) and the SDR source (combined image sampler, GENERAL layout). */
+    /** Bind the destination PQ image (storage) and the SDR source (combined image sampler, GENERAL layout). */
     public void setImages(long outImageView, long sdrImageView, long sampler) {
         if (boundOutView == outImageView && boundSdrView == sdrImageView && boundSampler == sampler) {
             return;
@@ -135,12 +135,12 @@ public final class RtSdrPresentPipeline {
         boundSampler = sampler;
     }
 
-    public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteScale) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteNits) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "sdr present")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
-            push.putFloat(0, paperWhiteScale);
+            push.putFloat(0, paperWhiteNits);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

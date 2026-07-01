@@ -78,7 +78,7 @@ public final class RtUiOverlay {
 
     /** HDR present mode: the UI must go through the overlay since the SDR main target isn't presented. */
     private static boolean hdrUiActive() {
-        return UpscalerConfig.Rt.Hdr.SCRGB_SWAPCHAIN.value() && UpscalerConfig.Rt.Hdr.enabled();
+        return UpscalerConfig.Rt.Hdr.PQ_SWAPCHAIN.value() && UpscalerConfig.Rt.Hdr.enabled();
     }
 
     /** Whether the overlay holds this frame's UI (for the HDR present path to composite + consume). */
@@ -185,7 +185,7 @@ public final class RtUiOverlay {
             return;
         }
         if (RtComposite.INSTANCE.isHdrPresentActive()) {
-            // HDR path composites the overlay over the scRGB HDR image at present; leave usedThisFrame set so
+            // HDR path composites the overlay over the PQ HDR image at present; leave usedThisFrame set so
             // presentHdr can consume it. Do NOT composite over the SDR main target (it isn't presented).
             return;
         }

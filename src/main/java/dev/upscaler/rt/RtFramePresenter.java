@@ -45,7 +45,7 @@ import java.nio.LongBuffer;
  * {@code interpFallbackDuplicate} in the present-rate log), but a genuine FG failure is fatal (see that
  * method's docs) rather than silently duplicating forever. Called from both present paths — the normal SDR
  * {@code blitFromTexture} TAIL, and (via {@code hdrBackbuffer=true}) explicitly from inside the HDR present
- * hook, since the HDR/scRGB path cancels {@code blitFromTexture} at HEAD and never reaches the TAIL inject.
+ * hook, since the HDR/PQ path cancels {@code blitFromTexture} at HEAD and never reaches the TAIL inject.
  * Gated by {@code upscaler.rt.fg} (default off).
  */
 public final class RtFramePresenter {
@@ -89,7 +89,7 @@ public final class RtFramePresenter {
      * simply isn't producing frames this tick (routine). A genuine DLSSG failure latches FG off for the
      * session — see {@link RtComposite#fgInterpolate}.
      *
-     * @param hdrBackbuffer whether {@code backbufferView}/{@code srcImage} is the scRGB HDR backbuffer
+     * @param hdrBackbuffer whether {@code backbufferView}/{@code srcImage} is the PQ HDR backbuffer
      *     ({@link RtComposite#hdrBackbufferView()}, already UI-composited) rather than the SDR main target —
      *     selects DLSSG's HDR backbuffer format/flag in {@link RtComposite#fgInterpolate}.
      */
