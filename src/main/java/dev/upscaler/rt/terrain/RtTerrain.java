@@ -13,6 +13,7 @@ import dev.upscaler.rt.RtFrameStats;
 import dev.upscaler.rt.accel.RtAccel;
 import dev.upscaler.rt.accel.RtBuffer;
 import dev.upscaler.rt.accel.RtBufferPool;
+import dev.upscaler.rt.lod.RtLodWorld;
 import dev.upscaler.rt.material.RtBlockMaterials;
 import dev.upscaler.rt.material.RtMaterials;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -1248,6 +1249,10 @@ public final class RtTerrain {
                 CpuSection cpu = buildCpuSection(region, dispatch.modelSet(), renderer, ws.capture,
                         fluidRenderer, ws.fluidCapture, ws.mesh, ws.pos, sx, sy, sz);
                 enqueueCompleted(job, cpu, null);
+                // LOD sidecar ingest piggybacks the snapshot this job already holds (docs/LOD_PLAN.md M0).
+                // Runs after the terrain result is enqueued so it never delays visible fill, and is total
+                // (never throws — a throw here would enqueueCompleted twice via the catch below).
+                RtLodWorld.ingestFromWorker(region, sx, sy, sz, token);
             } catch (Throwable t) {
                 enqueueCompleted(job, null, t);
                 throw t;

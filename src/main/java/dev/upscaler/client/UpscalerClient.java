@@ -5,6 +5,7 @@ import dev.upscaler.rt.RtContext;
 import dev.upscaler.rt.RtDeviceBringup;
 import dev.upscaler.rt.RtComposite;
 import dev.upscaler.rt.entity.RtEntities;
+import dev.upscaler.rt.lod.RtLodWorld;
 import dev.upscaler.rt.terrain.RtTerrain;
 import dev.upscaler.rt.terrain.RtWorkerPool;
 import net.fabricmc.api.ClientModInitializer;
@@ -47,6 +48,8 @@ public final class UpscalerClient implements ClientModInitializer {
 					// until we're in a world with the block atlas loaded, or once already created.
 					RtComposite.INSTANCE.ensureResourcesReady(ctx);
 					RtTerrain.update(ctx);
+					// LOD sidecar apply/retention pass (no-op unless -Dupscaler.rt.lodWorld).
+					RtLodWorld.update();
 					// Log DLSS-FG availability once when frame generation is enabled (capability query only;
 					// the present-loop integration that consumes it is built separately).
 					if (dev.upscaler.rt.pipeline.RtDlssFg.enabled()) {
@@ -83,6 +86,7 @@ public final class UpscalerClient implements ClientModInitializer {
 			RtTerrain.shutdown(ctx);
 			RtEntities.INSTANCE.shutdown();
 		}
+		RtLodWorld.reset(); // CPU-only sidecar: drop retained sections + queued ingests
 		RtComposite.INSTANCE.destroy();
 		dev.upscaler.rt.pipeline.RtDlssFg.INSTANCE.destroy();
 		if (ctx != null) {

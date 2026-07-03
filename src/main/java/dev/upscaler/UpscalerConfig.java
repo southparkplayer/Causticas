@@ -508,6 +508,28 @@ public final class UpscalerConfig {
             }
         }
 
+        public static final class Lod {
+            // M0 in-memory LOD world (docs/LOD_PLAN.md): data sidecar only, no rendering.
+            public static final BooleanSetting WORLD = bool("upscaler.rt.lodWorld", false);
+            public static final BooleanSetting DEBUG = bool("upscaler.rt.lodDebug", false);
+            // Mip levels above level 0. Capped at 4: a vanilla section's footprint stays
+            // 2×2×2-aligned through level 4, so the worker can build the whole pyramid without
+            // neighbour reads (see RtLodMipper).
+            public static final IntSetting MAX_LEVEL = clampedInt("upscaler.rt.lodMaxLevel", 4, 1, 4);
+            // Main-thread apply caps: ingest count and wall clock per client tick.
+            public static final IntSetting APPLY_PER_TICK = intAtLeast("upscaler.rt.lodApplyPerTick", 256, 1);
+            public static final FloatSetting APPLY_BUDGET_MS =
+                    clampedFloat("upscaler.rt.lodApplyBudgetMs", 2f, 0.05f, 100f);
+            // RAM budget for retained levels ≥ 1 (the far-field trail); farthest sections evicted first.
+            public static final IntSetting RETAIN_BUDGET_MB = intAtLeast("upscaler.rt.lodBudgetMb", 256, 16);
+            // Level 0 is dropped once its chunks are this far outside render distance.
+            public static final IntSetting DEMOTE_MARGIN_CHUNKS =
+                    intAtLeast("upscaler.rt.lodDemoteMarginChunks", 2, 0);
+
+            private Lod() {
+            }
+        }
+
         public static final class Omm {
             public static final BooleanSetting ENABLED = bool("upscaler.rt.omm", true);
             public static final IntSetting SUBDIVISION = clampedInt("upscaler.rt.ommSubdivision", 4, 0, 12);
