@@ -595,7 +595,6 @@ public final class UpscalerConfig {
 
         public static final class Exposure {
             public static final StringSetting MODE = string("upscaler.rt.exposure.mode", "auto", Exposure::sanitizeMode);
-            public static final FloatSetting FIXED = exposureScale("upscaler.rt.exposure.fixed", 1.1f);
             public static final FloatSetting MANUAL_EV = finiteFloat("upscaler.rt.exposure.manualEv", 0.0f);
             public static final FloatSetting KEY = exposureScale("upscaler.rt.exposure.key", 0.18f);
             public static final FloatSetting MIN_EV = finiteFloat("upscaler.rt.exposure.minEv", -0.5f);
@@ -619,10 +618,13 @@ public final class UpscalerConfig {
             }
 
             private static String sanitizeMode(String value) {
-                if ("manual".equalsIgnoreCase(value) || "auto".equalsIgnoreCase(value)) {
-                    return value.toLowerCase();
+                if ("auto".equalsIgnoreCase(value)) {
+                    return "auto";
                 }
-                return "fixed";
+                if ("manual".equalsIgnoreCase(value)) {
+                    return "manual";
+                }
+                return "auto";
             }
         }
 

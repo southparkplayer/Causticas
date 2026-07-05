@@ -60,7 +60,7 @@ public final class RtExposure {
             recordAuto(ctx, cmd, stack, traceColor);
             return;
         }
-        try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure fixed write")) {
+        try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
             VkClearColorValue color = VkClearColorValue.calloc(stack);
             color.float32(0, exposureScale());
             VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
@@ -92,8 +92,7 @@ public final class RtExposure {
     private float exposureScale() {
         return switch (mode()) {
             case MANUAL -> UpscalerConfig.Rt.Exposure.clampScale((float) Math.pow(2.0, manualEv()));
-            case FIXED -> fixedExposure();
-            case AUTO -> fixedExposure();
+            case AUTO -> UpscalerConfig.Rt.Exposure.clampScale((float) Math.pow(2.0, manualEv()));
         };
     }
 
@@ -123,7 +122,7 @@ public final class RtExposure {
         if (state == null || state.mapped == 0L) {
             return;
         }
-        MemoryUtil.memPutFloat(state.mapped, fixedExposure());
+        MemoryUtil.memPutFloat(state.mapped, exposureScale());
         MemoryUtil.memPutInt(state.mapped + 4, 0);
         lastFrameNanos = 0L;
     }
@@ -148,10 +147,6 @@ public final class RtExposure {
         return Mode.parse(UpscalerConfig.Rt.Exposure.MODE.get());
     }
 
-    private static float fixedExposure() {
-        return UpscalerConfig.Rt.Exposure.FIXED.value();
-    }
-
     private static float manualEv() {
         return UpscalerConfig.Rt.Exposure.MANUAL_EV.value();
     }
@@ -170,7 +165,6 @@ public final class RtExposure {
     }
 
     private enum Mode {
-        FIXED("fixed"),
         MANUAL("manual"),
         AUTO("auto");
 
@@ -188,7 +182,7 @@ public final class RtExposure {
                     }
                 }
             }
-            return FIXED;
+            return AUTO;
         }
     }
 }

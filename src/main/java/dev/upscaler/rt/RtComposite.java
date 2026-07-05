@@ -887,7 +887,7 @@ public final class RtComposite {
             // Sun: fades out as it sets; warm at the horizon, white overhead.
             float strength = smoothstep(-0.06f, 0.18f, sunY);
             float warmth = smoothstep(0.0f, 0.30f, sunY);
-            float sunPeak = 4.6f;
+            float sunPeak = 20.0f;
             lx = sunX; ly = sunY; lz = sunZ;
             rr = 1.00f * sunPeak * strength;
             rg = Mth.lerp(warmth, 0.42f, 0.96f) * sunPeak * strength;

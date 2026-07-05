@@ -7,6 +7,7 @@ import dev.upscaler.UpscalerConfig.FloatSetting;
 import dev.upscaler.UpscalerConfig.IntSetting;
 import dev.upscaler.UpscalerConfig.StringSetting;
 import java.util.List;
+import java.util.Locale;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
 import net.minecraft.network.chat.Component;
@@ -45,7 +46,7 @@ public final class RtVideoOptions {
             "upscaler.options.rt.exposureMode",
             OptionInstance.cachedConstantTooltip(Component.translatable("upscaler.options.rt.exposureMode.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption, Component.translatable("upscaler.options.rt.exposureMode." + value)),
-            new OptionInstance.Enum<>(List.of("auto", "fixed", "manual"), Codec.STRING),
+            new OptionInstance.Enum<>(List.of("auto", "manual"), Codec.STRING),
             setting.get(),
             setting::set);
     }
@@ -55,10 +56,15 @@ public final class RtVideoOptions {
         return new OptionInstance<>(
             "upscaler.options.rt.manualEv",
             OptionInstance.cachedConstantTooltip(Component.translatable("upscaler.options.rt.manualEv.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption, Component.literal((value > 0 ? "+" : "") + value + " EV")),
-            new OptionInstance.IntRange(-5, 5),
-            Math.clamp(Math.round(setting.value()), -5, 5),
-            value -> setting.set((float) value));
+            (caption, tenths) -> {
+                float ev = tenths / 10.0f;
+                String sign = ev > 0.0f ? "+" : "";
+                return Options.genericValueLabel(caption,
+                        Component.literal(sign + String.format(Locale.ROOT, "%.1f EV", ev)));
+            },
+            new OptionInstance.IntRange(-50, 50),
+            Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
+            tenths -> setting.set(tenths / 10.0f));
     }
 
     private static OptionInstance<Integer> spp() {

@@ -111,7 +111,7 @@ const float INV_PI = 0.31830988618;
 // here — post-P6.4 the miss shader can read the pushed sun/moon directions via `pc`. On a miss raygen
 // reads payload.albedo (the sky radiance world.rmiss wrote) and accumulates it. The directional NEE
 // light (sun by day, moon by night) is still pushed as pc.lightDir / pc.lightRadiance / pc.sunDir.
-const float EMISSIVE_STRENGTH = 4.0; // HDR radiance of a full (level-15) emitter, modulated by albedo
+const float EMISSIVE_STRENGTH = 3.0; // HDR radiance of a full (level-15) emitter, modulated by albedo
 const int MAX_BOUNCES = 4;      // indirect bounces before the path is cut
 const int RR_START = 2;         // begin Russian roulette after this bounce index
 const float FIREFLY_MAX = 8.0;  // clamp per-path radiance to tame sampling spikes

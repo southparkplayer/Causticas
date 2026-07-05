@@ -2,13 +2,12 @@
 	"upscaler.options.rt.header": "Ray Tracing",
 
 	"upscaler.options.rt.exposureMode": "Exposure",
-	"upscaler.options.rt.exposureMode.tooltip": "How the ray-traced image is mapped to display brightness. Auto adapts to scene luminance; Manual applies a fixed EV offset.",
+	"upscaler.options.rt.exposureMode.tooltip": "How the ray-traced image is mapped to display brightness. Auto adapts to scene luminance; Manual uses the exposure value directly.",
 	"upscaler.options.rt.exposureMode.auto": "Auto",
-	"upscaler.options.rt.exposureMode.fixed": "Fixed",
 	"upscaler.options.rt.exposureMode.manual": "Manual",
 
-	"upscaler.options.rt.manualEv": "Manual Exposure",
-	"upscaler.options.rt.manualEv.tooltip": "Exposure compensation in stops (EV), used when Exposure is set to Manual.",
+	"upscaler.options.rt.manualEv": "Exposure EV",
+	"upscaler.options.rt.manualEv.tooltip": "Exposure compensation in stops. In Manual, this is the fixed exposure. In Auto, this biases the auto exposure brighter or darker.",
 
 	"upscaler.options.rt.spp": "Samples Per Pixel",
 	"upscaler.options.rt.spp.tooltip": "Path-tracing samples taken per pixel each frame. Higher is cleaner but more demanding.",
