@@ -40,6 +40,11 @@ public final class RtBlockMaterials {
         atlas.flush();
     }
 
+    /** Free the block parallel material atlases on renderer shutdown. */
+    public void destroy() {
+        atlas.close();
+    }
+
     /** Vulkan image-view handle of the {@code _s} atlas, or 0 if not created. Stable across uploads. */
     public long viewS() {
         return atlas.viewS();

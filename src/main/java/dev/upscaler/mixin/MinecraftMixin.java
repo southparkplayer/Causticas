@@ -4,6 +4,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 
 import dev.upscaler.rt.RtReflex;
+import dev.upscaler.rt.RtUiOverlay;
 
 import net.minecraft.client.Minecraft;
 
@@ -27,6 +28,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(Minecraft.class)
 public abstract class MinecraftMixin {
+	@Inject(method = "close", at = @At("HEAD"))
+	private void upscaler$destroyUiOverlayBeforeRendererShutdown(CallbackInfo ci) {
+		RtUiOverlay.destroy();
+	}
+
 	@Inject(method = "runTick", at = @At("HEAD"))
 	private void upscaler$reflexSleepAndSimStart(boolean advanceGameTime, CallbackInfo ci) {
 		VulkanDevice device = upscaler$reflexDevice();

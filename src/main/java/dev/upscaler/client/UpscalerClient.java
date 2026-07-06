@@ -5,7 +5,10 @@ import dev.upscaler.rt.RtContext;
 import dev.upscaler.rt.RtDeviceBringup;
 import dev.upscaler.rt.RtComposite;
 import dev.upscaler.rt.RtFrameStats;
+import dev.upscaler.rt.RtUiOverlay;
 import dev.upscaler.rt.entity.RtEntities;
+import dev.upscaler.rt.entity.RtEntityTextures;
+import dev.upscaler.rt.material.RtBlockMaterials;
 import dev.upscaler.rt.terrain.RtTerrain;
 import dev.upscaler.rt.terrain.RtWorkerPool;
 import net.fabricmc.api.ClientModInitializer;
@@ -75,6 +78,7 @@ public final class UpscalerClient implements ClientModInitializer {
 	private static void shutdownRt() {
 		WorldRenderScaler.INSTANCE.destroy();
 		RtWorkerPool.INSTANCE.shutdown(); // no-op if never started; stops worker threads on teardown
+		RtUiOverlay.destroy(); // GUI redirect is not gated by rtInitDone; always release its TextureTarget
 		if (!rtInitDone) {
 			return;
 		}
@@ -86,6 +90,8 @@ public final class UpscalerClient implements ClientModInitializer {
 			RtEntities.INSTANCE.shutdown();
 		}
 		RtComposite.INSTANCE.destroy();
+		RtEntityTextures.INSTANCE.reset();
+		RtBlockMaterials.INSTANCE.destroy();
 		dev.upscaler.rt.pipeline.RtDlssFg.INSTANCE.destroy();
 		if (ctx != null) {
 			dev.upscaler.rt.RtFramePresenter.INSTANCE.destroy(ctx.device());
