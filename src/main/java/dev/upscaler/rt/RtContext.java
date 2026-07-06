@@ -175,6 +175,16 @@ public final class RtContext {
     }
 
     public RtImage createStorageImage(int width, int height, int format, String label) {
+        return createStorageImage(width, height, format, label, 0);
+    }
+
+    /**
+     * Same as {@link #createStorageImage(int, int, int, String)} plus caller-supplied usage bits — e.g.
+     * {@code VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT} for an image a graphics pipeline renders into via
+     * dynamic rendering (a plain storage image is invalid as a {@code VkRenderingInfo} colour attachment;
+     * see {@code VUID-VkRenderingInfo-colorAttachmentCount-06087}).
+     */
+    public RtImage createStorageImage(int width, int height, int format, String label, int extraUsage) {
         long image;
         long allocation;
         long view;
@@ -185,7 +195,7 @@ public final class RtContext {
                     // SAMPLED so DLSS-RR can read these as input textures (color + guide buffers);
                     // STORAGE for raygen/compute writes; TRANSFER for the world-target copies.
                     .usage(VK10.VK_IMAGE_USAGE_STORAGE_BIT | VK10.VK_IMAGE_USAGE_SAMPLED_BIT
-                            | VK10.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                            | VK10.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT | extraUsage)
                     .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
             ici.extent().set(width, height, 1);
             VmaAllocationCreateInfo iaci = VmaAllocationCreateInfo.calloc(stack).usage(Vma.VMA_MEMORY_USAGE_AUTO);

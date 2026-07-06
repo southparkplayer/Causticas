@@ -21,6 +21,9 @@
 	"upscaler.options.rt.particles": "Ray-Traced Particles",
 	"upscaler.options.rt.particles.tooltip": "Draw particles as camera-ray billboards inside the traced scene.",
 
+	"upscaler.options.rt.glow": "Entity Glow Outline",
+	"upscaler.options.rt.glow.tooltip": "Draw the vanilla Glowing-effect outline (through walls) around glowing entities.",
+
 	"upscaler.options.rt.waterWaves": "Animated Water",
 	"upscaler.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 

@@ -57,7 +57,7 @@ public final class UpscalerConfig {
         @SuppressWarnings("unused")
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
-            Rt.Entities.ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
+            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.BufferPool.STATS, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
@@ -581,6 +581,8 @@ public final class UpscalerConfig {
             public static final BooleanSetting ENABLED = bool("upscaler.rt.entities", "entities.enabled", true);
             public static final BooleanSetting PARTICLES_ENABLED =
                     bool("upscaler.rt.particles", "particles.enabled", true);
+            public static final BooleanSetting GLOW_ENABLED =
+                    bool("upscaler.rt.glow", "entities.glow.enabled", true);
             public static final IntSetting MAX_ENTITIES =
                     intAtLeast("upscaler.rt.maxEntities", "entities.max-entities", 1024, 1);
             public static final IntSetting BE_VIEW_CHUNKS =

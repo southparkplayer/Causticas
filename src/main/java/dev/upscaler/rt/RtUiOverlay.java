@@ -20,8 +20,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BindGroupLayouts;
 import net.minecraft.client.renderer.RenderPipelines;
 
-import dev.upscaler.UpscalerConfig;
-
 /**
  * HDR Phase 2 (step A) — transparent vanilla-UI overlay. The vanilla GUI/HUD is redirected (via
  * {@code GuiRendererMixin}) into a separate transparent {@code RGBA8} target instead of the main render
@@ -67,13 +65,15 @@ public final class RtUiOverlay {
     }
 
     /**
-     * Active only once the game has finished loading: the composite pipeline lazily compiles its shaders,
-     * which are not available during the loading screen (would crash with "Couldn't find source for
-     * core/screenquad"). Gating the redirect here keeps the loading-screen GUI on the normal path.
+     * Runs regardless of HDR mode (the GUI redirect + composite-back reproduces vanilla exactly in SDR —
+     * GPU-verified during HDR Phase 2 step A) since {@code RtGlowOutline}'s composite point is this same
+     * seam and needs it to fire every frame. Active only once the game has finished loading: the composite
+     * pipeline lazily compiles its shaders, which are not available during the loading screen (would crash
+     * with "Couldn't find source for core/screenquad"). Gating the redirect here keeps the loading-screen
+     * GUI on the normal path.
      */
     public static boolean enabled() {
-        return UpscalerConfig.Rt.Hdr.enabled()
-                && !compositeFailed && Minecraft.getInstance().isGameLoadFinished();
+        return !compositeFailed && Minecraft.getInstance().isGameLoadFinished();
     }
 
     /** Whether the overlay holds this frame's UI (for the HDR present path to composite + consume). */

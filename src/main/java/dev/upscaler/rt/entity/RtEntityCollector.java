@@ -70,10 +70,26 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     private int pendingOrder;
     private final RtTextVertexConsumer textVertexConsumer = new RtTextVertexConsumer();
     private final TextGlyphVisitor textGlyphVisitor = new TextGlyphVisitor();
+    // Vanilla already computes the Glowing-effect outline colour (opaque team colour, or 0 when not
+    // glowing) per submitModel call — see EntityRenderer.extractCommon's outlineColor. Every submitModel
+    // call for one entity carries the same value, so the last non-zero one seen this entity is enough.
+    private int outlineColor;
 
-    /** Point the collector at the capture buffer for the next {@code dispatcher.submit}. */
+    /**
+     * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
+     * outline colour for the entity about to be captured. The end-of-entity {@code begin(null)} detach
+     * call must NOT reset it — {@link RtEntities} reads {@link #outlineColor()} after that detach.
+     */
     public void begin(RtEntityCapture capture) {
         this.capture = capture;
+        if (capture != null) {
+            this.outlineColor = 0;
+        }
+    }
+
+    /** This entity's Glowing-effect outline colour (opaque ARGB), or 0 if it isn't glowing. */
+    public int outlineColor() {
+        return outlineColor;
     }
 
     @Override
@@ -82,6 +98,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
                                 int outlineColor, ModelFeatureRenderer.CrumblingOverlay crumblingOverlay) {
         if (capture == null) {
             return;
+        }
+        if (outlineColor != 0) {
+            this.outlineColor = outlineColor;
         }
         capture.currentOrder = pendingOrder; // banner/shield pattern-layer stacking rank; consumed once
         pendingOrder = 0;

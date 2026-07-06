@@ -38,6 +38,7 @@ public final class RtVideoOptions {
             sunSize(),
             entities(),
             particles(),
+            glow(),
             waterWaves(),
             dlssQuality(),
             hdrEnabled(),
@@ -106,6 +107,10 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> particles() {
         return bool("upscaler.options.rt.particles", UpscalerConfig.Rt.Entities.PARTICLES_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> glow() {
+        return bool("upscaler.options.rt.glow", UpscalerConfig.Rt.Entities.GLOW_ENABLED);
     }
 
     private static OptionInstance<Boolean> waterWaves() {

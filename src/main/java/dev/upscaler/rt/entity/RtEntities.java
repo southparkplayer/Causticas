@@ -81,6 +81,9 @@ public final class RtEntities {
     public static boolean particlesEnabled() {
         return UpscalerConfig.Rt.Entities.PARTICLES_ENABLED.value();
     }
+    public static boolean glowEnabled() {
+        return UpscalerConfig.Rt.Entities.GLOW_ENABLED.value();
+    }
 
     private static int maxEntities() {
         return UpscalerConfig.Rt.Entities.MAX_ENTITIES.value();
@@ -186,6 +189,28 @@ public final class RtEntities {
     private Map<Integer, EntityPrev> prevVerts = new HashMap<>(entityMapCapacity());
     private Map<Integer, EntityPrev> curVerts = new HashMap<>(entityMapCapacity());
 
+    // This frame's glowing entities (see GlowEntity) + the camera-relative offset (camera pos - rebase
+    // origin) their positions are captured against, for RtGlowOutline's raster pass. Rebuilt every frame.
+    private final List<GlowEntity> glowBatches = new ArrayList<>();
+    private float glowCamOffsetX, glowCamOffsetY, glowCamOffsetZ;
+
+    /** This frame's glowing entities, or an empty list if none (or glow is disabled). */
+    public List<GlowEntity> glowBatches() {
+        return glowBatches;
+    }
+
+    public float glowCamOffsetX() {
+        return glowCamOffsetX;
+    }
+
+    public float glowCamOffsetY() {
+        return glowCamOffsetY;
+    }
+
+    public float glowCamOffsetZ() {
+        return glowCamOffsetZ;
+    }
+
     /** Last frame's posed mesh for one entity: rebase-space vertex positions + the rebase origin they were
      *  captured against (needed to convert the inter-frame delta to world space when the rebase moved). */
     private static final class EntityPrev {
@@ -263,6 +288,12 @@ public final class RtEntities {
     /** This frame's entity contribution: the full instance list (terrain + entities), the entity BLAS to
      *  build inline this frame, and the geometry-table device address the hit shader reads. */
     public record FrameEntities(List<RtAccel.Instance> instances, List<RtAccel.PreparedBlas> blas, long geomTableAddr) {
+    }
+
+    /** One glowing entity's body mesh (rebased-space positions, copied out of {@link #capture} before the
+     *  next entity resets it) plus its vanilla outline colour, for {@code RtGlowOutline}'s full-res raster
+     *  mask pass. Captured as a side effect of the normal RT capture — no extra posing/animation work. */
+    public record GlowEntity(float[] verts, int[] idx, int color) {
     }
 
     private record Deferred(long freeFrame, Runnable free) {
@@ -422,6 +453,11 @@ public final class RtEntities {
         // In F5 third person it renders fully, like any other entity.
         boolean firstPerson = mc.options.getCameraType().isFirstPerson();
         curVerts.clear();
+        glowBatches.clear();
+        boolean glow = glowEnabled();
+        glowCamOffsetX = (float) (cameraState.pos.x - rbx);
+        glowCamOffsetY = (float) (cameraState.pos.y - rby);
+        glowCamOffsetZ = (float) (cameraState.pos.z - rbz);
         for (Entity entity : level.entitiesForRendering()) {
             if (build.full()) {
                 break;
@@ -429,7 +465,8 @@ public final class RtEntities {
             if (entity.isInvisible()) {
                 continue;
             }
-            int mask = entity == cameraEntity && firstPerson ? MASK_SECONDARY : MASK_ALL;
+            boolean firstPersonSelf = entity == cameraEntity && firstPerson;
+            int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
             float ix = (float) Mth.lerp(partial, entity.xo, entity.getX());
             float iy = (float) Mth.lerp(partial, entity.yo, entity.getY());
             float iz = (float) Mth.lerp(partial, entity.zo, entity.getZ());
@@ -451,6 +488,16 @@ public final class RtEntities {
             }
             if (capture.isEmpty()) {
                 continue; // non-model entity (arrow/etc.) — no body geometry captured
+            }
+            if (glow && !firstPersonSelf) {
+                // Vanilla never draws the local player's own body in first person (no model to outline —
+                // only the held-item hand), so it never shows the Glowing outline on yourself either. Our
+                // capture still meshes the first-person self (for reflections/shadows/GI), so the glow mask
+                // must explicitly skip it to match — otherwise it'd show an outline vanilla never would.
+                int glowColor = collector.outlineColor();
+                if (glowColor != 0) {
+                    glowBatches.add(new GlowEntity(capture.verts.toFloatArray(), capture.idx.toIntArray(), glowColor));
+                }
             }
             // Motion vs last frame's posed mesh. New/topology-changed entities get one frame of camera-only
             // MV; rigid translation is packed into the table, deformation gets a disp buffer.
