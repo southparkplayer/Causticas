@@ -103,7 +103,7 @@
               export DLSS_SDK="${dlssSdk}"
               export PATH="$VULKAN_SDK/bin:$PATH"
 
-              echo "dlss-mod dev shell"
+              echo "candela dev shell"
               echo "  Java:       $JAVA_HOME"
               echo "  C compiler: $CC"
               echo "  C++ compiler: $CXX"

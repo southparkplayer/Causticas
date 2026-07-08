@@ -58,6 +58,10 @@ Candela is not a finished renderer yet. Current work focuses on visual
 correctness, world coverage, stability, and making the SDR/HDR presentation
 paths behave consistently.
 
+## License
+
+Candela is licensed under the MIT License. See [LICENSE.md](LICENSE.md).
+
 ## TODO List
 
 - [ ] NRD + FSR for non-NVIDIA GPUs
