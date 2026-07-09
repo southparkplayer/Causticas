@@ -139,7 +139,7 @@ jobs:
           DLSS_SDK: ${{ github.workspace }}/${{ env.DLSS_SDK_PATH }}
           VULKAN_SDK: /usr
         run: >
-          ./gradlew build
+          bash ./gradlew build
           -PngxPlatforms=windows-x64,linux-x64
           -PngxVendorConfig=${{ env.NGX_VENDOR_CONFIG }}
           -PngxShimConfig=${{ env.NGX_SHIM_CONFIG }}
