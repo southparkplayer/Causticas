@@ -175,7 +175,7 @@ float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDi
                            : (an.y >= an.z) ? local.xz
                            : local.xy;
             float decalLod = rayConeUnitUvLod(rayCone, texSizePx(entityTex[NonUniformResourceIndex(ps.w)]));
-            float3 crack = entityTex[NonUniformResourceIndex(ps.w)].SampleLevel(decalUv, decalLod).rgb;
+            float3 crack = srgbToLinear(entityTex[NonUniformResourceIndex(ps.w)].SampleLevel(decalUv, decalLod).rgb);
             return clamp(crack * albedo, 0.0, 1.0);
         }
     }
@@ -212,7 +212,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (dot(pn, WorldRayDirection()) > 0.0) {
             pn = -pn;
         }
-        payload.albedo = entityTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb * pr.tint.rgb;
+        payload.albedo = srgbToLinear(entityTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb) * pr.tint.rgb;
         payload.normal = pn;
         payload.hitT = RayTCurrent();
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across
@@ -264,7 +264,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float blockEntityLod = rayConeTextureLod(rayCone, texSizePx(blockAtlas),
                 ep0, ep1, ep2, euv[e0], euv[e1], euv[e2]);
 
-        float3 albedo = entityTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod).rgb * pr.tint.rgb;
+        float3 albedo = srgbToLinear(entityTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod).rgb) * pr.tint.rgb;
         float rough = pr.mat.x;          // heuristic material default
         float metal = pr.mat.y;
         float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metal);
@@ -350,9 +350,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // so a more opaque texel tints transmitted light more strongly.
     if (pr.tint.w > 1.5) {
         float4 gtex = blockAtlas.SampleLevel(uv, blockLod);
+        float3 gtexRgb = srgbToLinear(gtex.rgb);
         // Translucent blocks (glass, ice, …) are breakable too — apply the same overlay here, reusing
         // gtex (already sampled above) rather than re-fetching blockAtlas.
-        payload.albedo = applyBreaking(lerp(float3(1.0, 1.0, 1.0), gtex.rgb * tint * ao, gtex.a),
+        payload.albedo = applyBreaking(lerp(float3(1.0, 1.0, 1.0), gtexRgb * tint * ao, gtex.a),
                 rayCone, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), n);
         payload.normal = n;
         payload.hitT = RayTCurrent();
@@ -365,7 +366,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // Water (tint.w == 1) carries the pure biome water tint (no grey water-texture multiply): raygen
     // shades the surface as a clear dielectric and only needs the tint to derive the per-channel
     // Beer–Lambert absorption. Opaque terrain uses textured albedo.
-    payload.albedo = (pr.tint.w > 0.5) ? tint : blockAtlas.SampleLevel(uv, blockLod).rgb * tint * ao;
+    payload.albedo = (pr.tint.w > 0.5) ? tint : srgbToLinear(blockAtlas.SampleLevel(uv, blockLod).rgb) * tint * ao;
     payload.normal = n;
     payload.hitT = RayTCurrent();
     payload.motionPrev = float3(0.0, 0.0, 0.0); // static terrain: camera-only motion vector
