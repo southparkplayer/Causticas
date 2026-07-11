@@ -932,6 +932,8 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.hdr.paperWhiteNits", "hdr.paper-white-nits", 200.0f, 80.0f, 1000.0f);
             public static final FloatSetting PEAK_NITS =
                     clampedFloat("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000.0f, 80.0f, 10000.0f);
+            // Shared by the SDR and HDR PsychoV output paths. Keep the existing hdr.psychov TOML paths
+            // for configuration compatibility even though these controls are no longer presented as HDR-only.
             public static final FloatSetting PSYCHO_HIGHLIGHTS =
                     clampedFloat("caustica.rt.hdr.psychov.highlights", "hdr.psychov.highlights", 1.0f, 0.0f, 3.0f);
             public static final FloatSetting PSYCHO_SHADOWS =

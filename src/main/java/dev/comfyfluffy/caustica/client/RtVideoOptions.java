@@ -145,7 +145,7 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] hdrPsychoOptions() {
+    public static OptionInstance<?>[] psychoOptions() {
         return new OptionInstance<?>[] {
             percent("caustica.options.rt.hdrPsychoHighlights", CausticaConfig.Rt.Hdr.PSYCHO_HIGHLIGHTS, 0, 300),
             percent("caustica.options.rt.hdrPsychoShadows", CausticaConfig.Rt.Hdr.PSYCHO_SHADOWS, 0, 300),
@@ -155,7 +155,7 @@ public final class RtVideoOptions {
             percent("caustica.options.rt.hdrPsychoHueRestore", CausticaConfig.Rt.Hdr.PSYCHO_HUE_RESTORE, 0, 100),
             percent("caustica.options.rt.hdrPsychoAdaptContrast", CausticaConfig.Rt.Hdr.PSYCHO_ADAPT_CONTRAST, 0, 300),
             scaledFloat("caustica.options.rt.hdrPsychoClipPoint", CausticaConfig.Rt.Hdr.PSYCHO_CLIP_POINT, 10, 10, 10000, 1),
-            hdrPsychoWhiteCurve(),
+            psychoWhiteCurve(),
             scaledFloat("caustica.options.rt.hdrPsychoConeExponent", CausticaConfig.Rt.Hdr.PSYCHO_CONE_EXPONENT, 100, 10, 300, 2),
         };
     }
@@ -286,7 +286,7 @@ public final class RtVideoOptions {
             setting::set);
     }
 
-    private static OptionInstance<String> hdrPsychoWhiteCurve() {
+    private static OptionInstance<String> psychoWhiteCurve() {
         StringSetting setting = CausticaConfig.Rt.Hdr.PSYCHO_WHITE_CURVE;
         return new OptionInstance<>(
             "caustica.options.rt.hdrPsychoWhiteCurve",

@@ -98,7 +98,7 @@
 	"caustica.options.rt.tonemapping.section.sdrUncharted2": "SDR - Uncharted 2",
 	"caustica.options.rt.tonemapping.section.sdrGt": "SDR - GT",
 	"caustica.options.rt.tonemapping.section.sdrPsycho": "SDR - PsychoV",
-	"caustica.options.rt.tonemapping.section.hdrPsycho": "HDR - PsychoV",
+	"caustica.options.rt.tonemapping.section.psychoShared": "PsychoV - Shared Controls",
 
 	"caustica.options.rt.sdrAgxContrast": "AgX Contrast",
 	"caustica.options.rt.sdrAgxContrast.tooltip": "Contrast applied after AgX tone mapping. 1.0 preserves the original Caustica SDR look.",
@@ -159,17 +159,17 @@
 	"caustica.options.rt.sdrGtBlackLift.tooltip": "Black-level lift applied by the GT tone-mapping curve.",
 
 	"caustica.options.rt.hdrPsychoBleaching": "PsychoV Bleaching",
-	"caustica.options.rt.hdrPsychoBleaching.tooltip": "Amount of bright-color bleaching in HDR PsychoV.",
+	"caustica.options.rt.hdrPsychoBleaching.tooltip": "Amount of bright-color bleaching in PsychoV.",
 	"caustica.options.rt.hdrPsychoHueRestore": "PsychoV Hue Restore",
-	"caustica.options.rt.hdrPsychoHueRestore.tooltip": "Amount of source hue restored after HDR PsychoV compression.",
+	"caustica.options.rt.hdrPsychoHueRestore.tooltip": "Amount of source hue restored after PsychoV compression.",
 	"caustica.options.rt.hdrPsychoAdaptContrast": "PsychoV Adapt Contrast",
-	"caustica.options.rt.hdrPsychoAdaptContrast.tooltip": "Adaptation contrast used by HDR PsychoV.",
+	"caustica.options.rt.hdrPsychoAdaptContrast.tooltip": "Adaptation contrast used by PsychoV.",
 	"caustica.options.rt.hdrPsychoClipPoint": "PsychoV Clip Point",
-	"caustica.options.rt.hdrPsychoClipPoint.tooltip": "Scene-linear clip reference for HDR PsychoV.",
+	"caustica.options.rt.hdrPsychoClipPoint.tooltip": "Scene-linear clip reference for PsychoV.",
 	"caustica.options.rt.hdrPsychoWhiteCurve": "PsychoV White Curve",
-	"caustica.options.rt.hdrPsychoWhiteCurve.tooltip": "White compression curve used by HDR PsychoV.",
+	"caustica.options.rt.hdrPsychoWhiteCurve.tooltip": "White compression curve used by PsychoV.",
 	"caustica.options.rt.hdrPsychoWhiteCurve.naka-rushton": "Naka-Rushton",
 	"caustica.options.rt.hdrPsychoWhiteCurve.neutwo": "NeuTWO",
 	"caustica.options.rt.hdrPsychoConeExponent": "PsychoV Cone Exponent",
-	"caustica.options.rt.hdrPsychoConeExponent.tooltip": "Exponent applied in the HDR PsychoV cone-response stage."
+	"caustica.options.rt.hdrPsychoConeExponent.tooltip": "Exponent applied in the PsychoV cone-response stage."
 }

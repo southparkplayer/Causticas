@@ -44,8 +44,8 @@ public final class RtTonemapOptionsScreen extends OptionsSubScreen {
         this.list.addHeader(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho"));
         this.list.addSmall(RtVideoOptions.sdrPsychoOptions());
 
-        this.list.addHeader(Component.translatable("caustica.options.rt.tonemapping.section.hdrPsycho"));
-        this.list.addSmall(RtVideoOptions.hdrPsychoOptions());
+        this.list.addHeader(Component.translatable("caustica.options.rt.tonemapping.section.psychoShared"));
+        this.list.addSmall(RtVideoOptions.psychoOptions());
     }
 
     @Override
