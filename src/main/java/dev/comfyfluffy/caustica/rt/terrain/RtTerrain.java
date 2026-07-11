@@ -12,7 +12,6 @@ import dev.comfyfluffy.caustica.rt.RtDeviceBringup;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
-import dev.comfyfluffy.caustica.rt.accel.RtBufferPool;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtMaterials;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -172,7 +171,6 @@ public final class RtTerrain {
     // may run on different frames, so evicted geometry waits here until a build kick retires it.
     private final List<SectionGeom> removed = new ArrayList<>();
     private final List<PreparedSection> prepared = new ArrayList<>();
-    private final RtBufferPool pool = new RtBufferPool();
     private final List<Deferred> deferred = new ArrayList<>(); // frames-in-flight-safe frees
     // Worker tessellation bookkeeping (render-thread only). `inFlight` maps a dispatched section key to a
     // monotonic token; a completed job whose token no longer matches (section re-dirtied / unloaded /
@@ -971,9 +969,9 @@ public final class RtTerrain {
                         continue;
                     }
                     // Fluids (water/lava, incl. waterlogged blocks): separate mesher, INVISIBLE render
-                    // shape, so handled independently of the block model below. FluidRenderer emits
-                    // section-local coords + atlas sprite UVs straight into the capturing consumer.
-                    // Lava's block light (15) rides the emission channel (water emits 0).
+                    // shape, so handled independently of the block model below. Emits section-local
+                    // coords + atlas sprite UVs straight into the capturing consumer. Lava's block light
+                    // (15) rides the emission channel (water emits 0).
                     FluidState fluid = state.getFluidState();
                     if (!fluid.isEmpty()) {
                         fluidCapture.emission = state.getLightEmission() / 15f;
@@ -981,7 +979,7 @@ public final class RtTerrain {
                         // so the path tracer can branch (see emitQuad).
                         fluidCapture.water = fluid.is(FluidTags.WATER);
                         try {
-                            fluidRenderer.tesselate(region, m, fluidCapture, state, fluid);
+                            RtFluidMesher.tesselate(region, m, fluidCapture, fluidRenderer.fluidModels, state, fluid);
                         } catch (Throwable t) {
                             warnMeshOnce("fluid", t); // skip a fluid whose meshing throws, don't fail the section
                         }
@@ -1029,13 +1027,16 @@ public final class RtTerrain {
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         String label = "terrain section " + sox + "," + soy + "," + soz;
-        RtBuffer positions = pool.acquire(ctx, (long) packed.positions().length * Float.BYTES, asInput, true,
+        // Terrain sections are long-lived and stream only as the residency window changes. Keep their
+        // resources as direct VMA allocations so an eviction returns the allocation to VMA instead of
+        // retaining the peak render-distance working set in the per-frame buffer cache.
+        RtBuffer positions = ctx.createBuffer((long) packed.positions().length * Float.BYTES, asInput, true,
                 label + " positions");
-        RtBuffer indices = pool.acquire(ctx, (long) packed.indices().length * Integer.BYTES, asInput | storage, true,
+        RtBuffer indices = ctx.createBuffer((long) packed.indices().length * Integer.BYTES, asInput | storage, true,
                 label + " indices");
-        RtBuffer uvs = pool.acquire(ctx, (long) packed.uvs().length * Float.BYTES, storage, true,
+        RtBuffer uvs = ctx.createBuffer((long) packed.uvs().length * Float.BYTES, storage, true,
                 label + " uvs");
-        RtBuffer material = pool.acquire(ctx, (long) packed.material().length * Float.BYTES, storage, true,
+        RtBuffer material = ctx.createBuffer((long) packed.material().length * Float.BYTES, storage, true,
                 label + " material");
 
         resolveMaterials(packed.material(), packed.materialSprites());
@@ -1046,7 +1047,7 @@ public final class RtTerrain {
 
         // Split BLAS: geom for each non-empty bucket — solid (OPAQUE, any-hit skipped), cutout (alpha test),
         // water (shadow passthrough). Build is deferred — the caller batches all sections into one submission.
-        RtAccel.PreparedBlas blas = RtAccel.prepareTerrainBlasPooled(ctx, pool, positions, vertCount, indices, packed.bucketTris(), ommInput,
+        RtAccel.PreparedBlas blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices, packed.bucketTris(), ommInput,
                 label + " BLAS");
         return new PreparedSection(key, positions, indices, uvs, material, blas, packed.triBase(), sox, soy, soz);
     }
@@ -1477,10 +1478,10 @@ public final class RtTerrain {
     }
 
     private void destroyPreparedSection(PreparedSection ps) {
-        RtAccel.freeBlasScratch(pool, List.of(ps.blas()));
+        RtAccel.freeBlasScratch(List.of(ps.blas()));
         SectionGeom g = new SectionGeom(ps.key(), ps.positions(), ps.indices(), ps.uvs(), ps.material(),
-                ps.blas().accel, ps.blas().pooledBacking(), ps.triBase(), ps.sx(), ps.sy(), ps.sz());
-        g.destroy(pool);
+                ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz());
+        g.destroy();
     }
 
     /** Pure-CPU worker result: tessellated mesh plus optional opacity micromap input for its cutout bucket. */
@@ -1582,7 +1583,7 @@ public final class RtTerrain {
         Pending p = pending;
         pending = null;
         ctx.freeAsync(p.op());
-        RtAccel.freeBlasScratch(pool, p.blas()); // build done -> BLAS scratch safe to reuse
+        RtAccel.freeBlasScratch(p.blas()); // build done -> BLAS scratch safe to destroy
         applyBuildChanges(ctx, p.prepared(), p.removed(), p.rebase(), p.rbx(), p.rby(), p.rbz());
     }
 
@@ -1611,7 +1612,7 @@ public final class RtTerrain {
 
         for (PreparedSection ps : prepared) {
             SectionGeom g = new SectionGeom(ps.key(), ps.positions(), ps.indices(), ps.uvs(), ps.material(),
-                    ps.blas().accel, ps.blas().pooledBacking(), ps.triBase(), ps.sx(), ps.sy(), ps.sz());
+                    ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz());
             if (!desired.contains(ps.key())) {
                 // Left the window while its batched BLAS build was in flight (window sync keeps running
                 // during builds). Never published — retire the fresh, unreferenced geometry.
@@ -1707,7 +1708,7 @@ public final class RtTerrain {
             capacity <<= 1;
         }
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        RtBuffer newTable = pool.acquire(ctx, (long) capacity * SECTION_ENTRY_BYTES, storage, true,
+        RtBuffer newTable = ctx.createBuffer((long) capacity * SECTION_ENTRY_BYTES, storage, true,
                 "terrain section table " + capacity + " slots");
         RtBuffer oldTable = sectionTable;
         int oldCapacity = sectionTableCapacity;
@@ -1730,7 +1731,7 @@ public final class RtTerrain {
     private void ensureEmptyTableReady(RtContext ctx) {
         if (sectionTable == null) {
             int capacity = sectionTableInitialCapacity();
-            sectionTable = pool.acquire(ctx, (long) capacity * SECTION_ENTRY_BYTES,
+            sectionTable = ctx.createBuffer((long) capacity * SECTION_ENTRY_BYTES,
                     org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
                     "terrain section table " + capacity + " slots (empty)");
             sectionTableCapacity = capacity;
@@ -1801,10 +1802,10 @@ public final class RtTerrain {
     /** Queue old GPU resources for a frames-in-flight-safe free at {@code freeFrame}. */
     private void retire(long freeFrame, RtBuffer oldTable, List<SectionGeom> removed) {
         if (oldTable != null) {
-            deferred.add(new Deferred(freeFrame, () -> pool.release(oldTable)));
+            deferred.add(new Deferred(freeFrame, oldTable::destroy));
         }
         for (SectionGeom g : removed) {
-            deferred.add(new Deferred(freeFrame, () -> g.destroy(pool)));
+            deferred.add(new Deferred(freeFrame, g::destroy));
         }
     }
 
@@ -1844,7 +1845,7 @@ public final class RtTerrain {
     }
 
     /** Full teardown (world exit / shutdown): drain the GPU, then free everything incl. an in-flight build. */
-    private void clear(RtContext ctx, boolean destroyPool) {
+    private void clear(RtContext ctx, boolean shutdown) {
         cancelJobs();
         cancelAllDirtyGroups();
         synchronized (dirtyLock) {
@@ -1878,8 +1879,7 @@ public final class RtTerrain {
             staticInstanceList.clear();
             removed.clear();
             prepared.clear();
-            if (destroyPool) {
-                pool.destroyAll();
+            if (shutdown) {
                 ready = false;
             } else {
                 ensureEmptyTableReady(ctx);
@@ -1889,14 +1889,14 @@ public final class RtTerrain {
         ctx.waitIdle();
         if (pending != null) {
             ctx.freeAsync(pending.op());
-            RtAccel.freeBlasScratch(pool, pending.blas());
+            RtAccel.freeBlasScratch(pending.blas());
             for (PreparedSection ps : pending.prepared()) {
                 SectionGeom g = new SectionGeom(ps.key(), ps.positions(), ps.indices(), ps.uvs(), ps.material(),
-                        ps.blas().accel, ps.blas().pooledBacking(), ps.triBase(), ps.sx(), ps.sy(), ps.sz());
-                g.destroy(pool);
+                        ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz());
+                g.destroy();
             }
             for (SectionGeom g : pending.removed()) {
-                g.destroy(pool);
+                g.destroy();
             }
             pending = null;
         }
@@ -1905,7 +1905,7 @@ public final class RtTerrain {
         }
         deferred.clear();
         if (sectionTable != null) {
-            pool.release(sectionTable);
+            sectionTable.destroy();
             sectionTable = null;
         }
         sectionTableCapacity = 0;
@@ -1914,7 +1914,7 @@ public final class RtTerrain {
         sectionSlots.clear();
         staticInstanceList.clear();
         for (SectionGeom g : resident.values()) {
-            g.destroy(pool);
+            g.destroy();
         }
         resident.clear();
         empty.clear();
@@ -1923,15 +1923,14 @@ public final class RtTerrain {
         // The accumulators can hold evicted-but-not-yet-retired geometry (window sync fills `removed`
         // between streaming passes) and uploaded-but-unbuilt sections; the GPU is idle here, free them.
         for (SectionGeom g : removed) {
-            g.destroy(pool);
+            g.destroy();
         }
         removed.clear();
         for (PreparedSection ps : prepared) {
             destroyPreparedSection(ps);
         }
         prepared.clear();
-        if (destroyPool) {
-            pool.destroyAll();
+        if (shutdown) {
             ready = false;
         } else {
             ensureEmptyTableReady(ctx);
@@ -1975,7 +1974,6 @@ public final class RtTerrain {
         final RtBuffer uvs;
         final RtBuffer material;
         final RtAccel blas;
-        final RtBuffer blasBacking;
         final int[] triBase;  // per-fixed-bucket triangle offset; hit shaders add triBase[gl_GeometryIndexEXT] to pid
         final int sx;
         final int sy;
@@ -1984,30 +1982,25 @@ public final class RtTerrain {
         int instanceIndex = -1;
 
         SectionGeom(long key, RtBuffer positions, RtBuffer indices, RtBuffer uvs, RtBuffer material,
-                    RtAccel blas, RtBuffer blasBacking, int[] triBase, int sx, int sy, int sz) {
+                    RtAccel blas, int[] triBase, int sx, int sy, int sz) {
             this.key = key;
             this.positions = positions;
             this.indices = indices;
             this.uvs = uvs;
             this.material = material;
             this.blas = blas;
-            this.blasBacking = blasBacking;
             this.triBase = triBase;
             this.sx = sx;
             this.sy = sy;
             this.sz = sz;
         }
 
-        void destroy(RtBufferPool pool) {
-            if (blasBacking != null) {
-                RtAccel.destroyPooledAccel(pool, blas, blasBacking);
-            } else {
-                blas.destroy();
-            }
-            pool.release(material);
-            pool.release(uvs);
-            pool.release(indices);
-            pool.release(positions);
+        void destroy() {
+            blas.destroy();
+            material.destroy();
+            uvs.destroy();
+            indices.destroy();
+            positions.destroy();
         }
     }
 

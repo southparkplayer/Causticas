@@ -38,7 +38,6 @@ import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
-import dev.comfyfluffy.caustica.rt.accel.RtBufferPool;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -63,7 +62,9 @@ import java.util.Queue;
  * ignores) are skipped.
  *
  * <p>Per-frame cost is real (per-entity capture + buffer uploads + a BLAS build); capped by {@code
- * -Dcaustica.rt.maxEntities}. A reusable mesh/BLAS pool is a deferred perf item.
+ * -Dcaustica.rt.maxEntities}. Per-frame mesh/BLAS buffers allocate and free directly through VMA every
+ * frame — a size-bucketed recycling free-list was tried and measured slower per-call than trusting VMA's
+ * own allocator (see git history), so it was removed rather than kept as a deferred perf item.
  */
 public final class RtEntities {
     public static final RtEntities INSTANCE = new RtEntities();
@@ -186,9 +187,6 @@ public final class RtEntities {
     private int tableCapacity;
     private int tableSlot;
 
-    // Recycle per-frame entity mesh buffers + BLAS backing/scratch instead of alloc/free churning
-    // ~6 VMA buffers per entity per frame. See RtBufferPool.
-    private final RtBufferPool pool = new RtBufferPool(() -> RtFrameStats.FRAME.count("vmaBufferCreates", 1));
     private final FrameLists[] frameLists = new FrameLists[FRAME_LIST_RING];
 
     // Previous frame's captured (rebase-space) vertex positions + that frame's rebase origin, keyed by
@@ -265,21 +263,22 @@ public final class RtEntities {
     /**
      * Cached block-entity geometry. The mesh is captured in <b>block-local</b> space (identity submit pose),
      * so it is rebase-independent — only the per-frame TLAS instance transform ({@code blockPos − rebase})
-     * changes, exactly like a terrain section. The BLAS + mesh buffers are pool-owned and persist until the
-     * BE is evicted (out of window / unloaded) or rebuilt (its mesh changed); {@code idx/uv/prim} are read
-     * by the hit shader every frame via the geometry table, so they must stay alive while traced.
+     * changes, exactly like a terrain section. The BLAS + mesh buffers are this entry's own VMA allocations
+     * and persist until the BE is evicted (out of window / unloaded) or rebuilt (its mesh changed);
+     * {@code idx/uv/prim} are read by the hit shader every frame via the geometry table, so they must stay
+     * alive while traced.
      */
     private static final class BeEntry {
         RtAccel accel;
-        RtBuffer backing;                        // pool-owned AS backing
-        RtBuffer positions, indices, uvs, prim;  // pool-owned mesh buffers
+        RtBuffer backing;                        // this entry's own AS backing
+        RtBuffer positions, indices, uvs, prim;  // this entry's own mesh buffers
         int bx, by, bz;                          // block position (drives the per-frame instance transform)
         long meshHash;                           // hash of the captured mesh — rebuild only when it changes
         long lastSeen;                           // last frame this BE was in the scan window — for eviction
         float[] prevVerts;                       // block-local verts at this build, for the per-vertex MV diff
     }
 
-    /** One persistent updatable AS in an entity's ring: its backing buffer (pool-owned) + the topology it
+    /** One persistent updatable AS in an entity's ring: its own backing buffer + the topology it
      *  was built for (refit is valid only while vert/tri counts are unchanged) + refit bookkeeping. */
     private static final class EntitySlot {
         RtAccel accel;
@@ -386,15 +385,15 @@ public final class RtEntities {
             buffers.clear();
         }
 
-        void releaseDeferred(RtBufferPool pool) {
+        void releaseDeferred() {
             for (RtAccel.PreparedBlas b : pooledBlas) {
-                RtAccel.releaseBlasToPool(pool, b);
+                RtAccel.releaseEntityBlas(b);
             }
             for (RtBuffer s : refitScratch) {
-                pool.release(s);
+                s.destroy();
             }
             for (RtBuffer buf : buffers) {
-                pool.release(buf);
+                buf.destroy();
             }
             instances.release();
             blas.clear();
@@ -410,9 +409,9 @@ public final class RtEntities {
         FrameLists lists;
         List<RtAccel.Instance> instances;
         List<RtAccel.PreparedBlas> blas;        // all BLAS ops to record this frame (BUILD + refit UPDATE)
-        List<RtAccel.PreparedBlas> pooledBlas;  // pooled-BUILD ops (block entities) → releaseBlasToPool
-        List<RtBuffer> refitScratch;            // per-frame scratch from refit ops → pool.release (AS persists)
-        List<RtBuffer> buffers;                 // per-frame mesh buffers (both paths) → pool.release
+        List<RtAccel.PreparedBlas> pooledBlas;  // transient one-shot entity BLAS ops → releaseEntityBlas
+        List<RtBuffer> refitScratch;            // per-frame scratch from refit ops → destroy() (AS persists)
+        List<RtBuffer> buffers;                 // per-frame mesh buffers (both paths) → destroy()
         long tableBase;
         long geomTableAddr;
         int count;
@@ -435,7 +434,6 @@ public final class RtEntities {
     public FrameEntities beginFrame(RtContext ctx, List<RtAccel.Instance> base, int rbx, int rby, int rbz,
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
         processDeferred();
-        pool.maybeLogStats();
         if (!enabled()) {
             return new FrameEntities(base, List.of(), 0L);
         }
@@ -468,9 +466,8 @@ public final class RtEntities {
         long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
         FrameLists listsForFree = build.lists;
         deferred.add(new Deferred(freeAt, () -> {
-            // Recycle (don't destroy): the deferred horizon guarantees these are off all queues, so the
-            // pool can hand them straight back to the next frame's appendCapture.
-            listsForFree.releaseDeferred(pool);
+            // The deferred horizon guarantees these are off all queues, so destroying them now is safe.
+            listsForFree.releaseDeferred();
         }));
         return new FrameEntities(build.instances, build.blas, build.geomTableAddr);
     }
@@ -633,7 +630,7 @@ public final class RtEntities {
 
         beginBuildIfNeeded(ctx, build);
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        RtBuffer dispBuf = pool.acquire(ctx, (long) vc * 4L * Float.BYTES, storage, true, label + " disp");
+        RtBuffer dispBuf = allocBuffer(ctx, (long) vc * 4L * Float.BYTES, storage, true, label + " disp");
         long out = dispBuf.mapped;
         for (int i = 0; i < vc; i++) {
             MemoryUtil.memPutFloat(out, (curVerts[i * 3] - prevVerts[i * 3]) + sx);
@@ -900,7 +897,7 @@ public final class RtEntities {
         emitBe(ctx, build, entry, disp, rbx, rby, rbz);
     }
 
-    /** Upload the already-captured BE mesh to persistent pooled buffers and build its BLAS (block-local). */
+    /** Upload the already-captured BE mesh to fresh buffers and build its BLAS (block-local). */
     private BeEntry buildBe(RtContext ctx, FrameBuild build, BlockEntity be, long hash) {
         beginBuildIfNeeded(ctx, build);
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
@@ -909,24 +906,24 @@ public final class RtEntities {
         int idxCount = capture.idx.size();
         BlockPos p = be.getBlockPos();
         String label = "block entity " + p.getX() + "," + p.getY() + "," + p.getZ();
-        RtBuffer positions = pool.acquire(ctx, (long) capture.verts.size() * Float.BYTES, asInput, true,
+        RtBuffer positions = allocBuffer(ctx, (long) capture.verts.size() * Float.BYTES, asInput, true,
                 label + " positions");
-        RtBuffer indices = pool.acquire(ctx, (long) capture.idx.size() * Integer.BYTES, asInput | storage, true,
+        RtBuffer indices = allocBuffer(ctx, (long) capture.idx.size() * Integer.BYTES, asInput | storage, true,
                 label + " indices");
-        RtBuffer uvs = pool.acquire(ctx, (long) capture.uvList.size() * Float.BYTES, storage, true,
+        RtBuffer uvs = allocBuffer(ctx, (long) capture.uvList.size() * Float.BYTES, storage, true,
                 label + " uvs");
-        RtBuffer prim = pool.acquire(ctx, (long) capture.prim.size() * Float.BYTES, storage, true,
+        RtBuffer prim = allocBuffer(ctx, (long) capture.prim.size() * Float.BYTES, storage, true,
                 label + " prim");
         MemoryUtil.memFloatBuffer(positions.mapped, capture.verts.size()).put(capture.verts.elements(), 0, capture.verts.size());
         MemoryUtil.memIntBuffer(indices.mapped, capture.idx.size()).put(capture.idx.elements(), 0, capture.idx.size());
         MemoryUtil.memFloatBuffer(uvs.mapped, capture.uvList.size()).put(capture.uvList.elements(), 0, capture.uvList.size());
         MemoryUtil.memFloatBuffer(prim.mapped, capture.prim.size()).put(capture.prim.elements(), 0, capture.prim.size());
 
-        // Persistent pooled BLAS reused every frame the mesh is unchanged. UpdatableBuild keeps the AS +
-        // backing and exposes the build scratch separately (released at the frames-in-flight horizon). We
-        // never refit it — a changed BE gets a fresh AS and the old one is defer-freed — so no in-place
-        // write can race an in-flight trace.
-        RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableBlasBuild(ctx, pool, positions, vertCount, indices, idxCount, false,
+        // Persistent BLAS reused every frame the mesh is unchanged. UpdatableBuild keeps the AS + backing
+        // and exposes the build scratch separately (released at the frames-in-flight horizon). We never
+        // refit it — a changed BE gets a fresh AS and the old one is defer-freed — so no in-place write can
+        // race an in-flight trace.
+        RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableBlasBuild(ctx, positions, vertCount, indices, idxCount, false,
                 label + " BLAS");
         build.blas.add(ub.op());
         build.refitScratch.add(ub.scratch());
@@ -991,11 +988,11 @@ public final class RtEntities {
     private void deferDestroyBe(BeEntry e) {
         long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
         deferred.add(new Deferred(freeAt, () -> {
-            RtAccel.destroyPooledAccel(pool, e.accel, e.backing);
-            pool.release(e.positions);
-            pool.release(e.indices);
-            pool.release(e.uvs);
-            pool.release(e.prim);
+            RtAccel.destroyEntityAccel(e.accel, e.backing);
+            e.positions.destroy();
+            e.indices.destroy();
+            e.uvs.destroy();
+            e.prim.destroy();
         }));
     }
 
@@ -1014,6 +1011,16 @@ public final class RtEntities {
             deferDestroyBe(e);
             it.remove();
         }
+    }
+
+    // Vulkan requires buffer size > 0; a few zero-length captures (empty entity mesh, etc.) can otherwise
+    // reach allocBuffer() with minSize == 0.
+    private static final long MIN_BUFFER_SIZE = 256;
+
+    /** Allocate one of this frame's ~6-per-entity VMA buffers (mesh/BLAS scratch), counted for RtFrameStats. */
+    private RtBuffer allocBuffer(RtContext ctx, long minSize, int usage, boolean hostVisible, String label) {
+        RtFrameStats.FRAME.count("vmaBufferCreates", 1);
+        return ctx.createBuffer(Math.max(minSize, MIN_BUFFER_SIZE), usage, hostVisible, label);
     }
 
     /** Lazily initialise this frame's build (instance list seeded with terrain, fresh free-lists, table ring slot). */
@@ -1163,7 +1170,7 @@ public final class RtEntities {
     /**
      * Upload the current {@link #capture} as a per-object mesh + BLAS, add its instance + geom-table entry.
      * {@code entityId} ≥ 0 → refit path (persistent updatable AS keyed by id); {@code < 0} (refit disabled)
-     * → pooled full BUILD. Used by the animated-entity pass; block entities use {@link #buildBe}.
+     * → transient one-shot full BUILD. Used by the animated-entity pass; block entities use {@link #buildBe}.
      */
     private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
@@ -1177,16 +1184,14 @@ public final class RtEntities {
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         int vertCount = capture.verts.size() / 3;
         int idxCount = capture.idx.size();
-        // Pooled: acquire returns capacity ≥ requested (power-of-two bucket); we write only the exact
-        // prefix and pass exact counts to the BLAS/geom-table, so the unused tail is harmless.
         String label = entityId >= 0 ? "entity " + entityId : "entity mesh " + build.count;
-        RtBuffer positions = pool.acquire(ctx, (long) capture.verts.size() * Float.BYTES, asInput, true,
+        RtBuffer positions = allocBuffer(ctx, (long) capture.verts.size() * Float.BYTES, asInput, true,
                 label + " positions");
-        RtBuffer indices = pool.acquire(ctx, (long) capture.idx.size() * Integer.BYTES, asInput | storage, true,
+        RtBuffer indices = allocBuffer(ctx, (long) capture.idx.size() * Integer.BYTES, asInput | storage, true,
                 label + " indices");
-        RtBuffer uvs = pool.acquire(ctx, (long) capture.uvList.size() * Float.BYTES, storage, true,
+        RtBuffer uvs = allocBuffer(ctx, (long) capture.uvList.size() * Float.BYTES, storage, true,
                 label + " uvs");
-        RtBuffer prim = pool.acquire(ctx, (long) capture.prim.size() * Float.BYTES, storage, true,
+        RtBuffer prim = allocBuffer(ctx, (long) capture.prim.size() * Float.BYTES, storage, true,
                 label + " prim");
         MemoryUtil.memFloatBuffer(positions.mapped, capture.verts.size()).put(capture.verts.elements(), 0, capture.verts.size());
         MemoryUtil.memIntBuffer(indices.mapped, capture.idx.size()).put(capture.idx.elements(), 0, capture.idx.size());
@@ -1198,7 +1203,7 @@ public final class RtEntities {
         if (entityId >= 0) {
             accel = refitOrBuild(ctx, build, entityId, positions, indices, vertCount, idxCount, label);
         } else {
-            RtAccel.PreparedBlas blas = RtAccel.prepareTrianglesBlasPooled(ctx, pool, positions, vertCount, indices, idxCount, false,
+            RtAccel.PreparedBlas blas = RtAccel.prepareEntityBlas(ctx, positions, vertCount, indices, idxCount, false,
                     label + " BLAS");
             build.blas.add(blas);
             build.pooledBlas.add(blas);
@@ -1251,24 +1256,24 @@ public final class RtEntities {
         long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
         deferred.add(new Deferred(freeAt, () -> {
             if (idx != null) {
-                pool.release(idx);
+                idx.destroy();
             }
             if (uv != null) {
-                pool.release(uv);
+                uv.destroy();
             }
             if (pr != null) {
-                pool.release(pr);
+                pr.destroy();
             }
         }));
     }
 
-    /** Upload a per-vertex displacement array to a pooled per-frame buffer; returns its address (0 if null). */
+    /** Upload a per-vertex displacement array to a fresh per-frame buffer; returns its address (0 if null). */
     private long uploadDisp(RtContext ctx, FrameBuild build, float[] disp, String label) {
         if (disp == null) {
             return 0L;
         }
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        RtBuffer dispBuf = pool.acquire(ctx, (long) disp.length * Float.BYTES, storage, true, label + " disp");
+        RtBuffer dispBuf = allocBuffer(ctx, (long) disp.length * Float.BYTES, storage, true, label + " disp");
         MemoryUtil.memFloatBuffer(dispBuf.mapped, disp.length).put(disp, 0, disp.length);
         build.buffers.add(dispBuf);
         return dispBuf.deviceAddress;
@@ -1307,7 +1312,7 @@ public final class RtEntities {
                 && slot.updatesSinceBuild < refitRebuildInterval();
         if (canUpdate) {
             RtFrameStats.FRAME.count("refits", 1);
-            RtBuffer scratch = pool.acquire(ctx, slot.updateScratchSize, storage, false, label + " refit scratch");
+            RtBuffer scratch = allocBuffer(ctx, slot.updateScratchSize, storage, false, label + " refit scratch");
             build.blas.add(RtAccel.refitUpdate(slot.accel, scratch, positions.deviceAddress, indices.deviceAddress, vertCount, idxCount, false,
                     label + " BLAS refit"));
             build.refitScratch.add(scratch);
@@ -1322,7 +1327,7 @@ public final class RtEntities {
         } else if (slot.accel != null) {
             deferDestroyAccel(slot.accel, slot.backing);
         }
-        RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableBlasBuild(ctx, pool, positions, vertCount, indices, idxCount, false,
+        RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableBlasBuild(ctx, positions, vertCount, indices, idxCount, false,
                 label + " BLAS");
         slot.accel = ub.accel();
         slot.backing = ub.backing();
@@ -1335,10 +1340,10 @@ public final class RtEntities {
         return slot.accel;
     }
 
-    /** Retire a per-entity AS once it is off all queues; its backing buffer returns to the pool. */
+    /** Retire a per-entity AS once it is off all queues, destroying its backing buffer too. */
     private void deferDestroyAccel(RtAccel accel, RtBuffer backing) {
         long freeAt = RtComposite.frameCounter() + KEEP_FRAMES;
-        deferred.add(new Deferred(freeAt, () -> RtAccel.destroyPooledAccel(pool, accel, backing)));
+        deferred.add(new Deferred(freeAt, () -> RtAccel.destroyEntityAccel(accel, backing)));
     }
 
     /** Drop persistent AS for entities not captured within the last KEEP_FRAMES frames (off all queues). */
@@ -1355,7 +1360,7 @@ public final class RtEntities {
             }
             for (EntitySlot slot : ea.ring) {
                 if (slot != null && slot.accel != null) {
-                    RtAccel.destroyPooledAccel(pool, slot.accel, slot.backing);
+                    RtAccel.destroyEntityAccel(slot.accel, slot.backing);
                     slot.accel = null;
                     slot.backing = null;
                 }
@@ -1365,19 +1370,19 @@ public final class RtEntities {
         }
     }
 
-    /** Immediately return an evicted entity's rigid-reuse cache buffers to the pool (already off-queue). */
+    /** Immediately destroy an evicted entity's rigid-reuse cache buffers (already off-queue). */
     private void releaseCacheBuffersNow(EntityAccel ea) {
         ea.refAccel = null;
         if (ea.refIndices != null) {
-            pool.release(ea.refIndices);
+            ea.refIndices.destroy();
             ea.refIndices = null;
         }
         if (ea.refUvs != null) {
-            pool.release(ea.refUvs);
+            ea.refUvs.destroy();
             ea.refUvs = null;
         }
         if (ea.refPrim != null) {
-            pool.release(ea.refPrim);
+            ea.refPrim.destroy();
             ea.refPrim = null;
         }
     }
@@ -1440,8 +1445,8 @@ public final class RtEntities {
 
     /** Free the geometry-table ring + any outstanding per-frame entity resources (teardown; GPU idle). */
     public void shutdown() {
-        // Drain outstanding deferred releases first (they return buffers/AS to the pool), then destroy the
-        // persistent per-entity AS, then the pool itself. Runs after waitIdle, so immediate destruction is safe.
+        // Drain outstanding deferred releases first (they destroy buffers/AS), then destroy the persistent
+        // per-entity AS. Runs after waitIdle, so immediate destruction is safe.
         for (Deferred d : deferred) {
             d.free().run();
         }
@@ -1449,7 +1454,7 @@ public final class RtEntities {
         for (EntityAccel ea : entityAccels.values()) {
             for (EntitySlot slot : ea.ring) {
                 if (slot != null && slot.accel != null) {
-                    RtAccel.destroyPooledAccel(pool, slot.accel, slot.backing);
+                    RtAccel.destroyEntityAccel(slot.accel, slot.backing);
                     slot.accel = null;
                     slot.backing = null;
                 }
@@ -1458,14 +1463,13 @@ public final class RtEntities {
         }
         entityAccels.clear();
         for (BeEntry e : beCache.values()) {
-            RtAccel.destroyPooledAccel(pool, e.accel, e.backing);
-            pool.release(e.positions);
-            pool.release(e.indices);
-            pool.release(e.uvs);
-            pool.release(e.prim);
+            RtAccel.destroyEntityAccel(e.accel, e.backing);
+            e.positions.destroy();
+            e.indices.destroy();
+            e.uvs.destroy();
+            e.prim.destroy();
         }
         beCache.clear();
-        pool.destroyAll();
         if (tableRing != null) {
             for (RtBuffer b : tableRing) {
                 b.destroy();

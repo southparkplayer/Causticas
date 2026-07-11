@@ -106,7 +106,7 @@ public final class RtAccel {
         if (opacityMicromap != null) {
             opacityMicromap.destroy();
         }
-        // A pooled BLAS's backing is owned by RtBufferPool (recycled, not destroyed here).
+        // An entity BLAS's backing is caller-owned (released via releaseEntityBlas, not destroyed here).
         if (ownsBacking) {
             backing.destroy();
         }
@@ -149,7 +149,6 @@ public final class RtAccel {
         RtBuffer data;
         RtBuffer triangles;
         RtBuffer scratch;
-        final RtBufferPool pool;
         final long dataAddress;
         final long triangleArrayAddress;
         final int triangleCount;
@@ -159,14 +158,13 @@ public final class RtAccel {
 
         OpacityMicromap(VkDevice vk, long handle, RtBuffer backing, RtBuffer data, RtBuffer triangles,
                         RtBuffer scratch, long dataAddress, long triangleArrayAddress, int triangleCount,
-                        int subdivisionLevel, int bytesPerTriangle, RtBufferPool pool) {
+                        int subdivisionLevel, int bytesPerTriangle) {
             this.vk = vk;
             this.handle = handle;
             this.backing = backing;
             this.data = data;
             this.triangles = triangles;
             this.scratch = scratch;
-            this.pool = pool;
             this.dataAddress = dataAddress;
             this.triangleArrayAddress = triangleArrayAddress;
             this.triangleCount = triangleCount;
@@ -176,15 +174,15 @@ public final class RtAccel {
 
         void freeBuildInputs() {
             if (scratch != null) {
-                releaseOrDestroy(scratch);
+                scratch.destroy();
                 scratch = null;
             }
             if (triangles != null) {
-                releaseOrDestroy(triangles);
+                triangles.destroy();
                 triangles = null;
             }
             if (data != null) {
-                releaseOrDestroy(data);
+                data.destroy();
                 data = null;
             }
         }
@@ -197,16 +195,8 @@ public final class RtAccel {
                 vkDestroyMicromapEXT(vk, handle, null);
             }
             freeBuildInputs();
-            releaseOrDestroy(backing);
+            backing.destroy();
             destroyed = true;
-        }
-
-        private void releaseOrDestroy(RtBuffer buffer) {
-            if (pool != null) {
-                pool.release(buffer);
-            } else {
-                buffer.destroy();
-            }
         }
     }
 
@@ -221,9 +211,9 @@ public final class RtAccel {
     public static final class PreparedBlas {
         public final RtAccel accel;
         private final RtBuffer scratch;
-        // Non-null only for a pooled BLAS (see prepareTrianglesBlasPooled): the AS backing buffer, owned
-        // by RtBufferPool, so releaseBlasToPool can return it rather than destroying it.
-        private final RtBuffer pooledBacking;
+        // Non-null only for an entity BLAS (see prepareEntityBlas): the AS backing buffer, caller-owned,
+        // so releaseEntityBlas destroys it explicitly rather than accel.destroy() doing so.
+        private final RtBuffer externalBacking;
         private final long vertexAddr;
         private final long indexAddr;
         private final int maxVertex;
@@ -232,7 +222,7 @@ public final class RtAccel {
         private final String label;
         // Refit support. {@code updatable} = built with ALLOW_UPDATE (so it can be refit later);
         // {@code update} = this recorded op is an in-place UPDATE (refit) rather than a full BUILD.
-        // Set for the entity refit path; false for terrain + pooled block entities.
+        // Set for the entity refit path; false for terrain + transient block entities.
         private final boolean updatable;
         private final boolean update;
         // Terrain multi-geometry split (any-hit opt): one geometry per material bucket, in the fixed packed
@@ -240,23 +230,23 @@ public final class RtAccel {
         // VK_GEOMETRY_OPAQUE_BIT. The fixed geometry indices are also SBT material indices: radiance rays
         // use closest-hit-only records for solid/translucent/water and an any-hit record for true cutout;
         // shadow rays use any-hit records for cutout/translucent/water.
-        // terrainSplit == false ⇒ the single-geometry path (entities / pooled / refit) keyed on triangleCount.
+        // terrainSplit == false ⇒ the single-geometry path (entities / refit) keyed on triangleCount.
         private final boolean terrainSplit;
         private final int[] terrainTris; // per-bucket triangle counts in TERRAIN_BUCKETS order (null if !terrainSplit)
         private final OpacityMicromap opacityMicromap; // optional, terrain cutout bucket only
 
-        private PreparedBlas(RtAccel accel, RtBuffer scratch, RtBuffer pooledBacking, long vertexAddr, long indexAddr,
+        private PreparedBlas(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr, long indexAddr,
                              int maxVertex, int triangleCount, boolean opaque, String label, boolean updatable, boolean update) {
-            this(accel, scratch, pooledBacking, vertexAddr, indexAddr, maxVertex, triangleCount, opaque, label,
+            this(accel, scratch, externalBacking, vertexAddr, indexAddr, maxVertex, triangleCount, opaque, label,
                     updatable, update, false, null, null);
         }
 
-        private PreparedBlas(RtAccel accel, RtBuffer scratch, RtBuffer pooledBacking, long vertexAddr, long indexAddr,
+        private PreparedBlas(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr, long indexAddr,
                              int maxVertex, int triangleCount, boolean opaque, String label, boolean updatable, boolean update,
                              boolean terrainSplit, int[] terrainTris, OpacityMicromap opacityMicromap) {
             this.accel = accel;
             this.scratch = scratch;
-            this.pooledBacking = pooledBacking;
+            this.externalBacking = externalBacking;
             this.vertexAddr = vertexAddr;
             this.indexAddr = indexAddr;
             this.maxVertex = maxVertex;
@@ -271,34 +261,21 @@ public final class RtAccel {
         }
 
         /** A terrain section BLAS split into fixed per-bucket geometries in {@link RtAccel#TERRAIN_BUCKETS} order. */
-        static PreparedBlas terrain(RtAccel accel, RtBuffer scratch, RtBuffer pooledBacking, long vertexAddr, long indexAddr, int maxVertex,
+        static PreparedBlas terrain(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr, long indexAddr, int maxVertex,
                                     int[] terrainTris, OpacityMicromap opacityMicromap, String label) {
             int total = 0;
             for (int t : terrainTris) {
                 total += t;
             }
-            return new PreparedBlas(accel, scratch, pooledBacking, vertexAddr, indexAddr, maxVertex,
+            return new PreparedBlas(accel, scratch, externalBacking, vertexAddr, indexAddr, maxVertex,
                     total, false, label, false, false, true, terrainTris, opacityMicromap);
         }
 
         private void freeTransientBuildResources() {
-            freeTransientBuildResources(null);
-        }
-
-        private void freeTransientBuildResources(RtBufferPool pool) {
-            if (pool != null && pooledBacking != null) {
-                pool.release(scratch);
-            } else {
-                scratch.destroy();
-            }
+            scratch.destroy();
             if (opacityMicromap != null) {
                 opacityMicromap.freeBuildInputs();
             }
-        }
-
-        /** Non-null when the acceleration-structure backing came from an {@link RtBufferPool}. */
-        public RtBuffer pooledBacking() {
-            return pooledBacking;
         }
     }
 
@@ -353,7 +330,7 @@ public final class RtAccel {
         VkDevice vk = ctx.vk();
         String debugLabel = labelOr(label, "terrain BLAS");
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            OpacityMicromap opacityMicromap = prepareOpacityMicromap(ctx, null, opacityMicromapInput, debugLabel);
+            OpacityMicromap opacityMicromap = prepareOpacityMicromap(ctx, opacityMicromapInput, debugLabel);
             VkAccelerationStructureBuildSizesInfoKHR sizes = queryTerrainBlasSizes(vk, stack, positions, indices,
                     vertexCount, bucketTris, opacityMicromap);
             RtBuffer backing = ctx.createBuffer(sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
@@ -366,27 +343,7 @@ public final class RtAccel {
         }
     }
 
-    /** Pooled terrain BLAS allocation; the caller keeps {@link PreparedBlas#pooledBacking()} alive with the section. */
-    public static PreparedBlas prepareTerrainBlasPooled(RtContext ctx, RtBufferPool pool, RtBuffer positions, int vertexCount,
-                                                        RtBuffer indices, int[] bucketTris, OpacityMicromapInput opacityMicromapInput,
-                                                        String label) {
-        VkDevice vk = ctx.vk();
-        String debugLabel = labelOr(label, "pooled terrain BLAS");
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            OpacityMicromap opacityMicromap = prepareOpacityMicromap(ctx, pool, opacityMicromapInput, debugLabel);
-            VkAccelerationStructureBuildSizesInfoKHR sizes = queryTerrainBlasSizes(vk, stack, positions, indices,
-                    vertexCount, bucketTris, opacityMicromap);
-            RtBuffer backing = pool.acquire(ctx, sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
-                    debugLabel + " backing");
-            RtBuffer scratch = pool.acquire(ctx, sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
-                    debugLabel + " build scratch");
-            RtAccel accel = createBlasOn(ctx, stack, backing, sizes.accelerationStructureSize(), false, debugLabel, opacityMicromap);
-            return PreparedBlas.terrain(accel, scratch, backing, positions.deviceAddress, indices.deviceAddress, vertexCount - 1,
-                    bucketTris, opacityMicromap, debugLabel);
-        }
-    }
-
-    private static OpacityMicromap prepareOpacityMicromap(RtContext ctx, RtBufferPool pool, OpacityMicromapInput input,
+    private static OpacityMicromap prepareOpacityMicromap(RtContext ctx, OpacityMicromapInput input,
                                                           String blasLabel) {
         if (input == null || input.triangleCount() <= 0) {
             return null;
@@ -394,13 +351,13 @@ public final class RtAccel {
         VkDevice vk = ctx.vk();
         String label = blasLabel + " opacity micromap";
         int inputUsage = VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
-        RtBuffer data = createOrAcquire(ctx, pool, input.data().length + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1,
+        RtBuffer data = ctx.createBuffer(input.data().length + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1,
                 inputUsage, true, label + " data");
         long dataOffset = alignUp(data.deviceAddress, MICROMAP_INPUT_ADDRESS_ALIGNMENT) - data.deviceAddress;
         long dataAddress = data.deviceAddress + dataOffset;
         MemoryUtil.memByteBuffer(data.mapped + dataOffset, input.data().length).put(input.data());
         long triangleBytes = input.triangles().length;
-        RtBuffer triangles = createOrAcquire(ctx, pool, triangleBytes + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1, inputUsage, true,
+        RtBuffer triangles = ctx.createBuffer(triangleBytes + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1, inputUsage, true,
                 label + " triangles");
         long triangleOffset = alignUp(triangles.deviceAddress, MICROMAP_INPUT_ADDRESS_ALIGNMENT) - triangles.deviceAddress;
         long triangleArrayAddress = triangles.deviceAddress + triangleOffset;
@@ -412,7 +369,7 @@ public final class RtAccel {
             VkMicromapBuildSizesInfoEXT sizes = VkMicromapBuildSizesInfoEXT.calloc(stack).sType$Default();
             vkGetMicromapBuildSizesEXT(vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, build, sizes);
 
-            RtBuffer backing = createOrAcquire(ctx, pool, sizes.micromapSize(), VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT, false,
+            RtBuffer backing = ctx.createBuffer(sizes.micromapSize(), VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT, false,
                     label + " backing");
             VkMicromapCreateInfoEXT ci = VkMicromapCreateInfoEXT.calloc(stack).sType$Default()
                     .buffer(backing.handle).offset(0).size(sizes.micromapSize()).type(VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT);
@@ -421,34 +378,28 @@ public final class RtAccel {
             long handle = pMicromap.get(0);
             RtDebugLabels.nameMicromap(ctx, handle, label);
 
-            RtBuffer scratch = createOrAcquire(ctx, pool, sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+            RtBuffer scratch = ctx.createBuffer(sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                     label + " build scratch");
             return new OpacityMicromap(vk, handle, backing, data, triangles, scratch,
-                    dataAddress, triangleArrayAddress, input.triangleCount(), input.subdivisionLevel(), input.bytesPerTriangle(), pool);
+                    dataAddress, triangleArrayAddress, input.triangleCount(), input.subdivisionLevel(), input.bytesPerTriangle());
         }
     }
 
-    private static RtBuffer createOrAcquire(RtContext ctx, RtBufferPool pool, long size, int usage, boolean hostVisible,
-                                            String label) {
-        return pool != null ? pool.acquire(ctx, size, usage, hostVisible, label) : ctx.createBuffer(size, usage, hostVisible, label);
-    }
-
     /**
-     * Pooled variant of {@link #prepareTrianglesBlas} for the per-frame entity path: the AS backing +
-     * scratch buffers come from {@code pool} (recycled, not freshly allocated). The BLAS is reclaimed with
-     * {@link #releaseBlasToPool} (NOT {@code freeBlasScratch} + {@code accel.destroy()}). Used only by
+     * Entity-path variant of {@link #prepareTrianglesBlas}: fully transient, rebuilt fresh every frame (no
+     * persistent per-entity ring), so the AS backing is caller-owned rather than accel-owned. Reclaimed with
+     * {@link #releaseEntityBlas} (NOT {@code freeBlasScratch} + {@code accel.destroy()}). Used only by
      * {@link RtEntities}; the terrain path keeps {@link #prepareTrianglesBlas}.
      */
-    public static PreparedBlas prepareTrianglesBlasPooled(RtContext ctx, RtBufferPool pool, RtBuffer positions, int vertexCount,
-                                                          RtBuffer indices, int indexCount, boolean opaque, String label) {
+    public static PreparedBlas prepareEntityBlas(RtContext ctx, RtBuffer positions, int vertexCount,
+                                                 RtBuffer indices, int indexCount, boolean opaque, String label) {
         VkDevice vk = ctx.vk();
-        String debugLabel = labelOr(label, "pooled BLAS");
+        String debugLabel = labelOr(label, "entity BLAS");
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkAccelerationStructureBuildSizesInfoKHR sizes = queryBlasSizes(vk, stack, positions, indices, vertexCount, indexCount, opaque, false);
-            // acquire() returns capacity ≥ requested size; the AS is created with the exact queried size.
-            RtBuffer backing = pool.acquire(ctx, sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
+            RtBuffer backing = ctx.createBuffer(sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
                     debugLabel + " backing");
-            RtBuffer scratch = pool.acquire(ctx, sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+            RtBuffer scratch = ctx.createBuffer(sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                     debugLabel + " build scratch");
             RtAccel accel = createBlasOn(ctx, stack, backing, sizes.accelerationStructureSize(), false, debugLabel);
             return new PreparedBlas(accel, scratch, backing, positions.deviceAddress, indices.deviceAddress, vertexCount - 1,
@@ -457,13 +408,12 @@ public final class RtAccel {
     }
 
     /**
-     * Create a new <em>updatable</em> (ALLOW_UPDATE) BLAS sized for this mesh and a pool-backed backing
-     * buffer, and prepare its initial full BUILD. The {@code accel} + {@code backing} persist in the
-     * caller's per-entity ring (NOT released per frame); later frames refit it with {@link #refitUpdate}
-     * (cheap in-place UPDATE) while the topology is stable, and free it with {@link #destroyPooledAccel}
-     * on eviction / topology change.
+     * Create a new <em>updatable</em> (ALLOW_UPDATE) BLAS sized for this mesh, and prepare its initial full
+     * BUILD. The {@code accel} + {@code backing} persist in the caller's per-entity ring (NOT released per
+     * frame); later frames refit it with {@link #refitUpdate} (cheap in-place UPDATE) while the topology is
+     * stable, and free it with {@link #destroyEntityAccel} on eviction / topology change.
      */
-    public static UpdatableBuild prepareUpdatableBlasBuild(RtContext ctx, RtBufferPool pool, RtBuffer positions, int vertexCount,
+    public static UpdatableBuild prepareUpdatableBlasBuild(RtContext ctx, RtBuffer positions, int vertexCount,
                                                            RtBuffer indices, int indexCount, boolean opaque, String label) {
         VkDevice vk = ctx.vk();
         String debugLabel = labelOr(label, "updatable BLAS");
@@ -471,9 +421,9 @@ public final class RtAccel {
             VkAccelerationStructureBuildSizesInfoKHR sizes = queryBlasSizes(vk, stack, positions, indices, vertexCount, indexCount, opaque, true);
             long accelSize = sizes.accelerationStructureSize();
             long updateScratch = sizes.updateScratchSize();
-            RtBuffer backing = pool.acquire(ctx, accelSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
+            RtBuffer backing = ctx.createBuffer(accelSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
                     debugLabel + " backing");
-            RtBuffer scratch = pool.acquire(ctx, sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+            RtBuffer scratch = ctx.createBuffer(sizes.buildScratchSize(), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                     debugLabel + " build scratch");
             RtAccel accel = createBlasOn(ctx, stack, backing, accelSize, false, debugLabel);
             PreparedBlas op = new PreparedBlas(accel, scratch, backing, positions.deviceAddress, indices.deviceAddress,
@@ -495,17 +445,17 @@ public final class RtAccel {
                 opaque, debugLabel, true, true);
     }
 
-    /** Reclaim a pooled BLAS: destroy its AS handle and return its backing + scratch buffers to the pool. */
-    public static void releaseBlasToPool(RtBufferPool pool, PreparedBlas blas) {
+    /** Reclaim a transient entity BLAS: destroy its AS handle, then its backing + scratch buffers. */
+    public static void releaseEntityBlas(PreparedBlas blas) {
         blas.accel.destroy(); // ownsBacking == false → destroys only the AS handle, not the backing buffer
-        pool.release(blas.pooledBacking);
-        pool.release(blas.scratch);
+        blas.externalBacking.destroy();
+        blas.scratch.destroy();
     }
 
-    /** Destroy a pool-backed (updatable-entity) AS: destroy the handle, return its backing buffer to the pool. */
-    public static void destroyPooledAccel(RtBufferPool pool, RtAccel accel, RtBuffer backing) {
+    /** Destroy a caller-owned-backing (updatable-entity) AS: destroy the handle, then its backing buffer. */
+    public static void destroyEntityAccel(RtAccel accel, RtBuffer backing) {
         accel.destroy(); // ownsBacking == false → handle only
-        pool.release(backing);
+        backing.destroy();
     }
 
     private static VkAccelerationStructureBuildSizesInfoKHR queryBlasSizes(VkDevice vk, MemoryStack stack, RtBuffer positions,
@@ -838,13 +788,6 @@ public final class RtAccel {
     public static void freeBlasScratch(List<PreparedBlas> blas) {
         for (PreparedBlas b : blas) {
             b.freeTransientBuildResources();
-        }
-    }
-
-    /** Free transient build scratch, returning pooled scratch buffers to {@code pool}. */
-    public static void freeBlasScratch(RtBufferPool pool, List<PreparedBlas> blas) {
-        for (PreparedBlas b : blas) {
-            b.freeTransientBuildResources(pool);
         }
     }
 

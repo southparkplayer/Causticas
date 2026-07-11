@@ -12,11 +12,11 @@ public final class RtBuffer {
     public final long deviceAddress;
     /** Host pointer if created host-visible, else 0. */
     public final long mapped;
-    /** Allocated capacity in bytes; used by {@link RtBufferPool} to satisfy reuse. */
+    /** Allocated capacity in bytes. */
     public final long size;
-    /** Original usage flags passed to {@code createBuffer} (pre {@code SHADER_DEVICE_ADDRESS}); pool key. */
+    /** Original usage flags passed to {@code createBuffer} (pre {@code SHADER_DEVICE_ADDRESS}). */
     public final int usage;
-    /** Whether this buffer is host-visible+mapped; pool key. */
+    /** Whether this buffer is host-visible+mapped. */
     public final boolean hostVisible;
 
     private final long vma;
