@@ -33,10 +33,9 @@ public final class RtFrameStats {
             new String[] {
                     "terrain.windowSync",
                     "terrain.dirtyDrain",
-                    "terrain.finalize",
-                    "terrain.drainUpload",
+                    "terrain.drainCompletion",
                     "terrain.snapshotDispatch",
-                    "terrain.startBuild",
+                    "terrain.publish",
                     "entity.capture",
                     "entity.blockEntities",
                     "entity.particles",
@@ -50,7 +49,7 @@ public final class RtFrameStats {
                     "frame.displayMap",
                     "frame.copyOutput"
             },
-            new String[] {"sectionsSnapshotted", "sectionsUploaded", "entitiesCaptured", "refits",
+            new String[] {"sectionsSnapshotted", "sectionCopies", "terrainBuildsCompleted", "entitiesCaptured", "refits",
                     "entityReuse", "vmaBufferCreates"},
             true);
 

@@ -56,7 +56,7 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
@@ -86,12 +86,9 @@ public final class CausticaConfig {
                 " Caustica RT renderer configuration.\n"
                         + " A matching -Dcaustica.* system property overrides the value below.");
         FILE.setComment("terrain",
-                " Wall-clock budget for one streaming pass (snapshot dispatch + upload drain). The per-frame\n"
-                        + " slice scales with queue pressure from stream-budget-ms (near-idle) up to\n"
-                        + " stream-budget-max-ms (big backlog: initial fill, F3+A, teleport, fast flight) so fill\n"
-                        + " throughput recovers when it matters and the cost drops back once the queue clears.\n"
-                        + " stream-fallback-budget-ms is the per-tick slice used only when no world frame is\n"
-                        + " streaming (loading screens), where a long pass hitches nothing.");
+                " Render-thread terrain work is bounded by dispatch/result counts per streaming pass.\n"
+                        + " Buffer fill and BLAS/OMM preparation run on workers. max-inflight-sections bounds\n"
+                        + " the complete snapshot -> worker -> GPU build -> publication lifecycle.");
         FILE.setComment("frame-generation",
                 " DLSS Frame Generation. Default off; gated additionally by hardware/driver availability.\n"
                         + " multi-frame-count: frames generated per rendered frame (1 = 2x, 2 = 3x, ...), clamped\n"
@@ -548,18 +545,14 @@ public final class CausticaConfig {
         }
 
         public static final class Terrain {
-            public static final IntSetting ASYNC_DISPATCH_PER_TICK =
+            // External keys retain their historical "per-tick" names for config compatibility; terrain
+            // streaming is render-pass driven and these Java names reflect the actual scheduling unit.
+            public static final IntSetting ASYNC_DISPATCH_PER_PASS =
                     intAtLeast("caustica.rt.asyncDispatchPerTick", "terrain.async-dispatch-per-tick", 64, 0);
-            public static final IntSetting SECTION_RESULTS_PER_TICK =
+            public static final IntSetting COMPLETION_RESULTS_PER_PASS =
                     intAtLeast("caustica.rt.sectionResultsPerTick", "terrain.section-results-per-tick", 64, 0);
-            public static final FloatSetting STREAM_BUDGET_MS =
-                    clampedFloat("caustica.rt.streamBudgetMs", "terrain.stream-budget-ms", 1.5f, 0.05f, 100f);
-            public static final FloatSetting STREAM_BUDGET_MAX_MS =
-                    clampedFloat("caustica.rt.streamBudgetMaxMs", "terrain.stream-budget-max-ms", 6f, 0.05f, 100f);
-            public static final FloatSetting STREAM_FALLBACK_BUDGET_MS =
-                    clampedFloat("caustica.rt.streamFallbackBudgetMs", "terrain.stream-fallback-budget-ms", 8f, 0.05f, 100f);
             public static final IntSetting MAX_INFLIGHT_SECTIONS =
-                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 192, 0);
+                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 128, 0);
             public static final IntSetting SECTION_TABLE_INITIAL_CAPACITY =
                     intAtLeast("caustica.rt.sectionTableInitialCapacity", "terrain.section-table-initial-capacity", 512, 1);
             public static final IntSetting REBASE_DISTANCE_BLOCKS =
