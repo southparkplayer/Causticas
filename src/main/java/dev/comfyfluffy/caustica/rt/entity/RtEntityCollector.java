@@ -12,6 +12,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.font.TextRenderable;
 import net.minecraft.client.model.Model;
+import net.minecraft.client.model.HumanoidModel;
+import net.minecraft.client.model.object.skull.SkullModelBase;
+import net.minecraft.client.model.player.PlayerModel;
+import net.minecraft.client.model.player.PlayerEarsModel;
+import net.minecraft.client.model.player.PlayerCapeModel;
 import net.minecraft.client.renderer.OrderedSubmitNodeCollector;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.block.BlockQuadOutput;
@@ -61,9 +66,16 @@ import java.util.List;
  * EntityRenderDispatcher.submit} fans out into {@code submitModel} here. Reused across entities.
  */
 public final class RtEntityCollector implements SubmitNodeCollector {
+    public enum CaptureMode {
+        FULL,
+        FIRST_PERSON_BODY,
+        FIRST_PERSON_HEAD
+    }
+
     private static final Direction[] DIRECTIONS = Direction.values();
 
     private RtEntityCapture capture;
+    private CaptureMode captureMode = CaptureMode.FULL;
     private ModelBlockRenderer blockRenderer; // lazily-built mesher for moving (falling) blocks
     // Set by order(int) for the very next submitModel call (banner/shield pattern-layer stacking), then
     // consumed. Baked-quad paths (addQuad) don't use ordering and always reset the capture's order to 0.
@@ -74,6 +86,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     // glowing) per submitModel call — see EntityRenderer.extractCommon's outlineColor. Every submitModel
     // call for one entity carries the same value, so the last non-zero one seen this entity is enough.
     private int outlineColor;
+    private int textureSubmissions;
+    private int fallbackTextureSubmissions;
 
     /**
      * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
@@ -81,15 +95,30 @@ public final class RtEntityCollector implements SubmitNodeCollector {
      * call must NOT reset it — {@link RtEntities} reads {@link #outlineColor()} after that detach.
      */
     public void begin(RtEntityCapture capture) {
+        begin(capture, CaptureMode.FULL);
+    }
+
+    public void begin(RtEntityCapture capture, CaptureMode mode) {
         this.capture = capture;
+        this.captureMode = capture != null ? mode : CaptureMode.FULL;
         if (capture != null) {
             this.outlineColor = 0;
+            this.textureSubmissions = 0;
+            this.fallbackTextureSubmissions = 0;
         }
     }
 
     /** This entity's Glowing-effect outline colour (opaque ARGB), or 0 if it isn't glowing. */
     public int outlineColor() {
         return outlineColor;
+    }
+
+    public int textureSubmissions() {
+        return textureSubmissions;
+    }
+
+    public int fallbackTextureSubmissions() {
+        return fallbackTextureSubmissions;
     }
 
     @Override
@@ -99,11 +128,14 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         if (capture == null) {
             return;
         }
+        capture.currentOrder = pendingOrder;
+        pendingOrder = 0;
+        if (!capturesModel(model)) {
+            return;
+        }
         if (outlineColor != 0) {
             this.outlineColor = outlineColor;
         }
-        capture.currentOrder = pendingOrder; // banner/shield pattern-layer stacking rank; consumed once
-        pendingOrder = 0;
         // Resolve this submission's texture to a bindless slot; the capture stamps it on every prim.
         // Block-entity models (chests/signs/beds) texture from an atlas SPRITE: use that atlas + remap
         // the ModelPart 0..1 UVs into the sprite's region. Mobs use a full texture (sprite == null).
@@ -130,6 +162,10 @@ public final class RtEntityCollector implements SubmitNodeCollector {
             capture.currentHasN = RtEntityTextures.INSTANCE.slotHasNormal(slot);
             capture.clearUvRemap();
         }
+        textureSubmissions++;
+        if (sprite == null && capture.currentTexSlot == 0) {
+            fallbackTextureSubmissions++;
+        }
         // Alpha-blended model layers (slime / sulfur-cube shells, ghosts, spectral overlays, …) get
         // stochastic transparency in world.rahit so the inner content shows through; opaque/cutout mob
         // surfaces keep the binary cutout. Block-entity sprite submissions (chests/signs) are opaque.
@@ -139,7 +175,74 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         // PoseStack to every vertex/normal, so the capture receives world-/camera-relative geometry.
         model.setupAnim(state);
         int color = tintedColor == 0 ? -1 : tintedColor; // 0 would be fully transparent black; treat as white
-        model.renderToBuffer(poseStack, capture, lightCoords, overlayCoords, color);
+        if (!(model instanceof HumanoidModel<?> humanoid)) {
+            model.renderToBuffer(poseStack, capture, lightCoords, overlayCoords, color);
+            return;
+        }
+        boolean head = humanoid.head.visible;
+        boolean hat = humanoid.hat.visible;
+        boolean body = humanoid.body.visible;
+        boolean rightArm = humanoid.rightArm.visible;
+        boolean leftArm = humanoid.leftArm.visible;
+        boolean rightLeg = humanoid.rightLeg.visible;
+        boolean leftLeg = humanoid.leftLeg.visible;
+        PlayerModel playerModel = humanoid instanceof PlayerModel player ? player : null;
+        boolean jacket = playerModel != null && playerModel.jacket.visible;
+        boolean rightSleeve = playerModel != null && playerModel.rightSleeve.visible;
+        boolean leftSleeve = playerModel != null && playerModel.leftSleeve.visible;
+        boolean rightPants = playerModel != null && playerModel.rightPants.visible;
+        boolean leftPants = playerModel != null && playerModel.leftPants.visible;
+        try {
+            if (captureMode == CaptureMode.FIRST_PERSON_BODY) {
+                humanoid.head.visible = false;
+                humanoid.hat.visible = false;
+            } else if (captureMode == CaptureMode.FIRST_PERSON_HEAD) {
+                humanoid.body.visible = false;
+                humanoid.rightArm.visible = false;
+                humanoid.leftArm.visible = false;
+                humanoid.rightLeg.visible = false;
+                humanoid.leftLeg.visible = false;
+                if (playerModel != null) {
+                    playerModel.jacket.visible = false;
+                    playerModel.rightSleeve.visible = false;
+                    playerModel.leftSleeve.visible = false;
+                    playerModel.rightPants.visible = false;
+                    playerModel.leftPants.visible = false;
+                }
+            }
+            model.renderToBuffer(poseStack, capture, lightCoords, overlayCoords, color);
+        } finally {
+            humanoid.head.visible = head;
+            humanoid.hat.visible = hat;
+            humanoid.body.visible = body;
+            humanoid.rightArm.visible = rightArm;
+            humanoid.leftArm.visible = leftArm;
+            humanoid.rightLeg.visible = rightLeg;
+            humanoid.leftLeg.visible = leftLeg;
+            if (playerModel != null) {
+                playerModel.jacket.visible = jacket;
+                playerModel.rightSleeve.visible = rightSleeve;
+                playerModel.leftSleeve.visible = leftSleeve;
+                playerModel.rightPants.visible = rightPants;
+                playerModel.leftPants.visible = leftPants;
+            }
+        }
+    }
+
+    private boolean capturesModel(Model<?> model) {
+        if (captureMode == CaptureMode.FULL) {
+            return true;
+        }
+        if (model instanceof PlayerEarsModel || model instanceof SkullModelBase) {
+            return captureMode == CaptureMode.FIRST_PERSON_HEAD;
+        }
+        if (model instanceof PlayerCapeModel) {
+            return captureMode == CaptureMode.FIRST_PERSON_BODY;
+        }
+        if (model instanceof HumanoidModel<?>) {
+            return true;
+        }
+        return captureMode == CaptureMode.FIRST_PERSON_BODY;
     }
 
     @Override
@@ -164,6 +267,13 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         capture.currentTexSlot = sprite != null
                 ? RtEntityTextures.INSTANCE.slotForAtlas(sprite.atlasLocation())
                 : 0;
+        if (captureMode != CaptureMode.FULL) {
+            textureSubmissions++;
+            boolean blockAtlas = sprite != null && TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation());
+            if (capture.currentTexSlot == 0 && !blockAtlas) {
+                fallbackTextureSubmissions++;
+            }
+        }
         setBlockMaterial(sprite); // block-atlas sprites (block items/falling/contained blocks) → terrain _s/_n
         capture.currentTranslucent = false; // block/item geometry is opaque (the inner content we want solid)
         capture.currentOrder = 0; // baked-quad paths never stack decal layers
@@ -225,7 +335,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
      * #addQuads} (block-atlas textured, opaque). Tints default to white (biome tint is a follow-up).
      */
     public void captureBlockState(BlockState blockState, Matrix4fc transform, PoseStack poseStack) {
-        if (capture == null || blockState.isAir()) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD || blockState.isAir()) {
             return;
         }
         BlockStateModel model = Minecraft.getInstance().getModelManager().getBlockStateModelSet().get(blockState);
@@ -392,6 +502,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     // [0,1] block-model quads transform straight by poseStack.last().pose(). Block-atlas textured.
     @Override
     public void submitMovingBlock(PoseStack poseStack, MovingBlockRenderState state, int outlineColor) {
+        if (captureMode == CaptureMode.FIRST_PERSON_HEAD) {
+            return;
+        }
         if (capture == null) {
             return;
         }
@@ -427,7 +540,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     @Override
     public void submitBlockModel(PoseStack poseStack, RenderType renderType, List<BlockStateModelPart> parts,
                                  int[] tintLayers, int lightCoords, int overlayCoords, int outlineColor) {
-        if (capture == null) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD) {
             return;
         }
         Matrix4f pose = poseStack.last().pose();
@@ -453,7 +566,10 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     @Override
     public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords, int overlayCoords,
                            int outlineColor, int[] tintLayers, List<BakedQuad> quads, ItemStackRenderState.FoilType foilType) {
-        if (capture == null) {
+        boolean headItem = displayContext == ItemDisplayContext.HEAD;
+        if (capture == null
+                || captureMode == CaptureMode.FIRST_PERSON_HEAD && !headItem
+                || captureMode == CaptureMode.FIRST_PERSON_BODY && headItem) {
             return;
         }
         addQuads(poseStack.last().pose(), quads, tintLayers);

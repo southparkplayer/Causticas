@@ -16,6 +16,7 @@ import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 
@@ -23,6 +24,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -162,6 +164,10 @@ public final class RtEntities {
     // transform is needed (unlike terrain sections, which carry sectionOrigin − rebase).
     private static final float[] IDENTITY = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     private static final Motion NO_MOTION = new Motion(0L, 0f, 0f, 0f);
+    private static final long NO_ENTITY_KEY = Long.MIN_VALUE;
+    private static final int CAPTURE_FULL = 0;
+    private static final int CAPTURE_BODY = 1;
+    private static final int CAPTURE_HEAD = 2;
 
     // Reusable capture pipeline (single-threaded on the render thread).
     private final RtEntityCollector collector = new RtEntityCollector();
@@ -192,8 +198,11 @@ public final class RtEntities {
     // Previous frame's captured (rebase-space) vertex positions + that frame's rebase origin, keyed by
     // entity id. Maps are swapped/reused each frame: entries not seen this frame fall out, while visible
     // entities keep their float[] backing to avoid steady-state allocation churn.
-    private Map<Integer, EntityPrev> prevVerts = new HashMap<>(entityMapCapacity());
-    private Map<Integer, EntityPrev> curVerts = new HashMap<>(entityMapCapacity());
+    private Map<Long, EntityPrev> prevVerts = new HashMap<>(entityMapCapacity());
+    private Map<Long, EntityPrev> curVerts = new HashMap<>(entityMapCapacity());
+    private IdentityHashMap<Entity, Long> prevEntityTokens = new IdentityHashMap<>();
+    private IdentityHashMap<Entity, Long> curEntityTokens = new IdentityHashMap<>();
+    private long nextEntityToken = 1L;
 
     // This frame's glowing entities (see GlowEntity) + the camera-relative offset (camera pos - rebase
     // origin) their positions are captured against, for RtGlowOutlineFeature's raster pass. Rebuilt every frame.
@@ -246,7 +255,7 @@ public final class RtEntities {
     private final List<Deferred> deferred = new ArrayList<>();
 
     // Persistent per-entity acceleration structures, keyed by entity id, for refit.
-    private final Map<Integer, EntityAccel> entityAccels = new HashMap<>();
+    private final Map<Long, EntityAccel> entityAccels = new HashMap<>();
 
     // Persistent per-block-entity geometry, keyed by BlockPos.asLong(). Built once and reused every frame.
     private final Map<Long, BeEntry> beCache = new HashMap<>();
@@ -423,6 +432,10 @@ public final class RtEntities {
         boolean full() {
             return count >= maxEntities();
         }
+
+        boolean hasCapacity(int instances) {
+            return count <= maxEntities() - instances;
+        }
     }
 
     /**
@@ -435,11 +448,17 @@ public final class RtEntities {
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
         processDeferred();
         if (!enabled()) {
+            clearEntityFrameHistory();
+            evictStaleAccels();
+            evictStaleBes();
             return new FrameEntities(base, List.of(), 0L);
         }
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         if (level == null) {
+            clearEntityFrameHistory();
+            evictStaleAccels();
+            evictStaleBes();
             return new FrameEntities(base, List.of(), 0L);
         }
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
@@ -496,13 +515,10 @@ public final class RtEntities {
                 continue;
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
-            int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
             float ix = (float) Mth.lerp(partial, entity.xo, entity.getX());
             float iy = (float) Mth.lerp(partial, entity.yo, entity.getY());
             float iz = (float) Mth.lerp(partial, entity.zo, entity.getZ());
-            int id = entity.getId();
-            EntityPrev prev = prevVerts.get(id);
-            capture.reset(prev != null ? prev.size / 3 : 0);
+            long entityToken = entityToken(entity);
             try {
                 EntityRenderState state = dispatcher.extractEntity(entity, partial);
                 // extractEntity already ran EntityRenderer.extractNameTags (shouldShowName, crosshair-look,
@@ -516,21 +532,32 @@ public final class RtEntities {
                 if (nameTags && !firstPersonSelf && state.nameTag != null) {
                     captureNameTag(level, state, ix, iy, iz, rbx, rby, rbz);
                 }
-                collector.begin(capture);
-                // Capture directly in rebased space so the TLAS instance transform is identity.
-                dispatcher.submit(state, cameraState, ix - rbx, iy - rby, iz - rbz, new PoseStack(), collector);
+                if (RtFirstPersonPose.active(mc, entity) && state instanceof AvatarRenderState avatar) {
+                    if (!build.hasCapacity(2)) {
+                        RtFrameStats.FRAME.count("firstPersonPairDropped", 1);
+                        continue;
+                    }
+                    Vec3 offset = RtFirstPersonPose.offset((Player) entity, avatar, partial, cameraState.pos);
+                    captureEntityPass(ctx, build, dispatcher, state,
+                            ix + (float) offset.x, iy + (float) offset.y, iz + (float) offset.z,
+                            rbx, rby, rbz, captureKey(entityToken, CAPTURE_BODY), MASK_SECONDARY,
+                            RtEntityCollector.CaptureMode.FIRST_PERSON_BODY, "first-person body");
+                    captureEntityPass(ctx, build, dispatcher, state,
+                            ix + (float) offset.x, iy + (float) offset.y, iz + (float) offset.z,
+                            rbx, rby, rbz, captureKey(entityToken, CAPTURE_HEAD), MASK_SECONDARY,
+                            RtEntityCollector.CaptureMode.FIRST_PERSON_HEAD, "first-person head");
+                    continue;
+                }
+                captureEntityPass(ctx, build, dispatcher, state, ix, iy, iz, rbx, rby, rbz,
+                        captureKey(entityToken, CAPTURE_FULL), firstPersonSelf ? MASK_SECONDARY : MASK_ALL,
+                        RtEntityCollector.CaptureMode.FULL, "entity");
             } catch (Throwable t) {
                 // Fail loud instead of skip-and-limp: a capture throw here is almost always our bug, and
                 // swallowing it leaves the entity invisible every frame plus a per-frame MC CrashReport.
                 // Propagate to composite(), which logs the full trace, disables RT, and reverts to vanilla.
                 throw new RuntimeException("RT entity capture failed", t);
-            } finally {
-                collector.begin(null);
             }
-            if (capture.isEmpty()) {
-                continue; // non-model entity (arrow/etc.) — no body geometry captured
-            }
-            if (glow && !firstPersonSelf) {
+            if (glow && !firstPersonSelf && !capture.isEmpty()) {
                 // Vanilla never draws the local player's own body in first person (no model to outline —
                 // only the held-item hand), so it never shows the Glowing outline on yourself either. Our
                 // capture still meshes the first-person self (for reflections/shadows/GI), so the glow mask
@@ -540,20 +567,68 @@ public final class RtEntities {
                     glowBatches.add(new GlowEntity(capture.verts.toFloatArray(), capture.idx.toIntArray(), glowColor));
                 }
             }
-            // Motion vs last frame's posed mesh. New/topology-changed entities get one frame of camera-only
-            // MV; rigid translation is packed into the table, deformation gets a disp buffer.
-            Motion motion = uploadVertexMotion(ctx, build, capture.verts, prev, rbx, rby, rbz, "entity " + id);
-            curVerts.put(id, storeEntityPrev(prev, capture.verts, rbx, rby, rbz));
-            // Rigid reuse first: a pose that is a rigid transform of the entity's last-built mesh
-            // re-references that AS through the instance transform — no upload, no refit.
-            if (!appendRigidReuse(ctx, build, motion, id, mask)) {
-                appendCapture(ctx, build, motion, id, ENTITY_BIT, mask);
-            }
-            RtFrameStats.FRAME.count("entitiesCaptured", 1);
         }
-        Map<Integer, EntityPrev> oldPrev = prevVerts;
+        Map<Long, EntityPrev> oldPrev = prevVerts;
         prevVerts = curVerts;
         curVerts = oldPrev;
+        IdentityHashMap<Entity, Long> oldTokens = prevEntityTokens;
+        prevEntityTokens = curEntityTokens;
+        curEntityTokens = oldTokens;
+        curEntityTokens.clear();
+    }
+
+    private void captureEntityPass(RtContext ctx, FrameBuild build, EntityRenderDispatcher dispatcher,
+                                   EntityRenderState state, float x, float y, float z,
+                                   int rbx, int rby, int rbz, long key, int mask,
+                                   RtEntityCollector.CaptureMode mode, String label) {
+        EntityPrev prev = prevVerts.get(key);
+        capture.reset(prev != null ? prev.size / 3 : 0);
+        try {
+            collector.begin(capture, mode);
+            dispatcher.submit(state, cameraState, x - rbx, y - rby, z - rbz, new PoseStack(), collector);
+        } finally {
+            collector.begin(null);
+        }
+        if (capture.isEmpty()) {
+            return;
+        }
+        Motion motion = uploadVertexMotion(ctx, build, capture.verts, prev, rbx, rby, rbz, label + " " + key);
+        curVerts.put(key, storeEntityPrev(prev, capture.verts, rbx, rby, rbz));
+        if (!appendRigidReuse(ctx, build, motion, key, mask)) {
+            appendCapture(ctx, build, motion, key, ENTITY_BIT, mask);
+        }
+        RtFrameStats.FRAME.count("entitiesCaptured", 1);
+        if (mode == RtEntityCollector.CaptureMode.FIRST_PERSON_BODY) {
+            RtFrameStats.FRAME.count("firstPersonBodyInstances", 1);
+            RtFrameStats.FRAME.count("firstPersonBodyTextureSubmissions", collector.textureSubmissions());
+            RtFrameStats.FRAME.count("firstPersonBodyTextureFallbacks", collector.fallbackTextureSubmissions());
+        } else if (mode == RtEntityCollector.CaptureMode.FIRST_PERSON_HEAD) {
+            RtFrameStats.FRAME.count("firstPersonHeadInstances", 1);
+            RtFrameStats.FRAME.count("firstPersonHeadTextureSubmissions", collector.textureSubmissions());
+            RtFrameStats.FRAME.count("firstPersonHeadTextureFallbacks", collector.fallbackTextureSubmissions());
+        }
+    }
+
+    private long entityToken(Entity entity) {
+        Long token = prevEntityTokens.get(entity);
+        if (token == null) {
+            token = nextEntityToken++;
+        }
+        curEntityTokens.put(entity, token);
+        return token;
+    }
+
+    private void clearEntityFrameHistory() {
+        prevVerts.clear();
+        curVerts.clear();
+        prevEntityTokens.clear();
+        curEntityTokens.clear();
+        glowBatches.clear();
+        nameTagBatches.clear();
+    }
+
+    private static long captureKey(long entityToken, int part) {
+        return (entityToken << 2) | (part & 3L);
     }
 
     /**
@@ -755,7 +830,7 @@ public final class RtEntities {
             return;
         }
         float[] disp = java.util.Arrays.copyOf(particleDisp.elements(), particleDisp.size());
-        appendCapture(ctx, build, disp, -1, PARTICLE_BIT, PARTICLE_MASK); // one combined mesh, per-particle MV
+        appendCapture(ctx, build, disp, NO_ENTITY_KEY, PARTICLE_BIT, PARTICLE_MASK); // one combined mesh, per-particle MV
     }
 
     /** Average (rebase-space) position of a captured particle's verts — approximates the particle center. */
@@ -1053,7 +1128,7 @@ public final class RtEntities {
      * Returns false (caller takes the full path) when there is no reusable AS, the topology changed, the
      * pose is non-rigid (animation), or the shading data changed under identical topology.
      */
-    private boolean appendRigidReuse(RtContext ctx, FrameBuild build, Motion motion, int entityId, int mask) {
+    private boolean appendRigidReuse(RtContext ctx, FrameBuild build, Motion motion, long entityId, int mask) {
         EntityAccel ea = entityAccels.get(entityId);
         if (ea == null || ea.refAccel == null
                 || ea.refVertCount != capture.verts.size() / 3 || ea.refIdxCount != capture.idx.size()) {
@@ -1172,19 +1247,19 @@ public final class RtEntities {
      * {@code entityId} ≥ 0 → refit path (persistent updatable AS keyed by id); {@code < 0} (refit disabled)
      * → transient one-shot full BUILD. Used by the animated-entity pass; block entities use {@link #buildBe}.
      */
-    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId, int instanceBit, int mask) {
+    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, long entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
-        String label = entityId >= 0 ? "entity " + entityId : "entity mesh " + build.count;
+        String label = entityId != NO_ENTITY_KEY ? "entity " + entityId : "entity mesh " + build.count;
         appendCapture(ctx, build, new Motion(uploadDisp(ctx, build, disp, label), 0f, 0f, 0f), entityId, instanceBit, mask);
     }
 
-    private void appendCapture(RtContext ctx, FrameBuild build, Motion motion, int entityId, int instanceBit, int mask) {
+    private void appendCapture(RtContext ctx, FrameBuild build, Motion motion, long entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         int vertCount = capture.verts.size() / 3;
         int idxCount = capture.idx.size();
-        String label = entityId >= 0 ? "entity " + entityId : "entity mesh " + build.count;
+        String label = entityId != NO_ENTITY_KEY ? "entity " + entityId : "entity mesh " + build.count;
         RtBuffer positions = allocBuffer(ctx, (long) capture.verts.size() * Float.BYTES, asInput, true,
                 label + " positions");
         RtBuffer indices = allocBuffer(ctx, (long) capture.idx.size() * Integer.BYTES, asInput | storage, true,
@@ -1200,7 +1275,7 @@ public final class RtEntities {
 
         // Non-opaque so world.rahit alpha-tests the texture (cutout). Opaque texels pass to the chit.
         RtAccel accel;
-        if (entityId >= 0) {
+        if (entityId != NO_ENTITY_KEY) {
             accel = refitOrBuild(ctx, build, entityId, positions, indices, vertCount, idxCount, label);
         } else {
             RtAccel.PreparedBlas blas = RtAccel.prepareEntityBlas(ctx, positions, vertCount, indices, idxCount, false,
@@ -1216,7 +1291,7 @@ public final class RtEntities {
         build.instances.add(new RtAccel.Instance(IDENTITY, accel.deviceAddress,
                 instanceBit | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET));
         build.buffers.add(positions); // only this frame's BLAS build consumes positions — always per-frame
-        if (entityId >= 0) {
+        if (entityId != NO_ENTITY_KEY) {
             // Hand idx/uv/prim to the entity's rigid-reuse cache (later reuse frames keep reading them via
             // the geometry table) and snapshot the verts this AS now contains as the fit reference.
             EntityAccel ea = entityAccels.get(entityId); // created by refitOrBuild above
@@ -1299,7 +1374,7 @@ public final class RtEntities {
      * AS of the same topology, else a full ALLOW_UPDATE BUILD (first use of the slot, a topology change, or
      * the periodic BVH-quality rebuild). The mesh buffers + scratch are per-frame transients; the AS persists.
      */
-    private RtAccel refitOrBuild(RtContext ctx, FrameBuild build, int entityId, RtBuffer positions, RtBuffer indices, int vertCount, int idxCount, String label) {
+    private RtAccel refitOrBuild(RtContext ctx, FrameBuild build, long entityId, RtBuffer positions, RtBuffer indices, int vertCount, int idxCount, String label) {
         int triCount = idxCount / 3;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         EntityAccel ea = entityAccels.computeIfAbsent(entityId, k -> new EntityAccel());
@@ -1352,7 +1427,7 @@ public final class RtEntities {
             return;
         }
         long now = RtComposite.frameCounter();
-        Iterator<Map.Entry<Integer, EntityAccel>> it = entityAccels.entrySet().iterator();
+        Iterator<Map.Entry<Long, EntityAccel>> it = entityAccels.entrySet().iterator();
         while (it.hasNext()) {
             EntityAccel ea = it.next().getValue();
             if (now - ea.lastSeen < KEEP_FRAMES) {
@@ -1462,6 +1537,9 @@ public final class RtEntities {
             releaseCacheBuffersNow(ea); // runs after waitIdle — immediate release is safe
         }
         entityAccels.clear();
+        prevEntityTokens.clear();
+        curEntityTokens.clear();
+        nextEntityToken = 1L;
         for (BeEntry e : beCache.values()) {
             RtAccel.destroyEntityAccel(e.accel, e.backing);
             e.positions.destroy();
@@ -1478,5 +1556,6 @@ public final class RtEntities {
             tableCapacity = 0;
         }
         prevVerts.clear();
+        curVerts.clear();
     }
 }

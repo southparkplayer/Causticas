@@ -905,6 +905,8 @@ public final class RtComposite {
                     breaking
             ).write(push);
             // Upload any entity textures registered this frame into the bindless set before the trace.
+            RtFrameStats.FRAME.count("entityTextureSlots", RtEntityTextures.INSTANCE.usedSlots());
+            RtFrameStats.FRAME.count("entityTexturePending", RtEntityTextures.INSTANCE.pendingUploads());
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Re-upload the LabPBR _s atlas if extraction added sprites since the last frame (the
             // view handle is stable, so no re-bind needed). Before the trace records, like uploadPending.

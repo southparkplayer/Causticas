@@ -64,6 +64,15 @@ public final class RtVideoOptions {
         };
     }
 
+    public static OptionInstance<?>[] firstPersonOptions() {
+        return new OptionInstance<?>[] {
+            bool("caustica.options.rt.firstPerson.enabled", CausticaConfig.Rt.FirstPerson.ENABLED),
+            offset("caustica.options.rt.firstPerson.forward", CausticaConfig.Rt.FirstPerson.FORWARD_OFFSET, -30, 30),
+            offset("caustica.options.rt.firstPerson.vertical", CausticaConfig.Rt.FirstPerson.VERTICAL_OFFSET, -30, 30),
+            offset("caustica.options.rt.firstPerson.lateral", CausticaConfig.Rt.FirstPerson.LATERAL_OFFSET, -20, 20),
+        };
+    }
+
     public static OptionInstance<?>[] tonemapOutputOptions() {
         return new OptionInstance<?>[] {
             sdrTonemap(),
@@ -332,6 +341,17 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> percent(String captionKey, FloatSetting setting, int min, int max) {
         return scaledFloat(captionKey, setting, 100, min, max, 2);
+    }
+
+    private static OptionInstance<Integer> offset(String captionKey, FloatSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, centimeters) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.2f m", centimeters / 100.0f))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() * 100.0f), min, max),
+            centimeters -> setting.set(centimeters / 100.0f));
     }
 
     private static OptionInstance<Integer> scaledFloat(

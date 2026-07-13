@@ -57,7 +57,8 @@ public final class CausticaConfig {
         @SuppressWarnings("unused")
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
-            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
+            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED, Rt.EntityTextures.MAX_TEXTURES,
+            Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE, Ngx.PATH,
         };
@@ -616,6 +617,20 @@ public final class CausticaConfig {
 
             public static int entityMapCapacity() {
                 return (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) MAX_ENTITIES.value() * 2L));
+            }
+        }
+
+        public static final class FirstPerson {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.firstPerson", "first-person.enabled", true);
+            public static final FloatSetting FORWARD_OFFSET =
+                    clampedFloat("caustica.rt.firstPerson.forwardOffset", "first-person.forward-offset", -0.20f, -0.30f, 0.30f);
+            public static final FloatSetting VERTICAL_OFFSET =
+                    clampedFloat("caustica.rt.firstPerson.verticalOffset", "first-person.vertical-offset", 0.0f, -0.30f, 0.30f);
+            public static final FloatSetting LATERAL_OFFSET =
+                    clampedFloat("caustica.rt.firstPerson.lateralOffset", "first-person.lateral-offset", 0.0f, -0.20f, 0.20f);
+
+            private FirstPerson() {
             }
         }
 

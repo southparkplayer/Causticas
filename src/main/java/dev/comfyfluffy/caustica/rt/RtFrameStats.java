@@ -51,7 +51,10 @@ public final class RtFrameStats {
                     "frame.copyOutput"
             },
             new String[] {"sectionsSnapshotted", "sectionsUploaded", "entitiesCaptured", "refits",
-                    "entityReuse", "vmaBufferCreates"},
+                    "entityReuse", "vmaBufferCreates", "firstPersonBodyInstances", "firstPersonHeadInstances",
+                    "firstPersonPairDropped", "firstPersonBodyTextureSubmissions", "firstPersonBodyTextureFallbacks",
+                    "firstPersonHeadTextureSubmissions", "firstPersonHeadTextureFallbacks", "entityTextureSlots",
+                    "entityTexturePending"},
             true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();

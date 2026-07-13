@@ -236,6 +236,14 @@ public final class RtEntityTextures {
         pending.clear();
     }
 
+    public int usedSlots() {
+        return nextSlot - 1;
+    }
+
+    public int pendingUploads() {
+        return pending.size();
+    }
+
     /** Drop the registry (call when the world pipeline / bindless set is recreated, or textures reload). */
     public void reset() {
         reset(maxTextures());

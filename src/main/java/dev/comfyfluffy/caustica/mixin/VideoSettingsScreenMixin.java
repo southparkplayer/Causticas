@@ -37,6 +37,8 @@ public abstract class VideoSettingsScreenMixin {
     }
 
     private static final Component CAUSTICA$RT_HEADER = Component.translatable("caustica.options.rt.header");
+    private static final Component CAUSTICA$FIRST_PERSON_HEADER =
+            Component.translatable("caustica.options.rt.firstPerson.header");
 
     @Redirect(
         method = "addOptions",
@@ -72,6 +74,8 @@ public abstract class VideoSettingsScreenMixin {
         list.addSmall(RtVideoOptions.exposureOptions());
         list.addBig(RtVideoOptions.tonemappingButton((Screen) (Object) this, list::applyUnsavedChanges));
         list.addSmall(RtVideoOptions.runtimeOptions());
+        list.addHeader(CAUSTICA$FIRST_PERSON_HEADER);
+        list.addSmall(RtVideoOptions.firstPersonOptions());
     }
 
     @Inject(method = "removed", at = @At("TAIL"))
