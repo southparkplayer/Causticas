@@ -114,6 +114,8 @@ public final class StreamlineAcceptanceReport {
                 .append("    \"generatedFramesConfirmed\": ").append(fg.hasGeneratedFrames()).append(",\n")
                 .append("    \"autoCapConfigured\": ").append(CausticaConfig.Rt.Fg.AUTO_CAP.configuredValue()).append(",\n")
                 .append("    \"autoCapEffective\": ").append(CausticaConfig.Rt.Fg.AUTO_CAP.value()).append(",\n")
+                .append("    \"automaticPacingActive\": ").append(fg.reflexAutomaticPacing()).append(",\n")
+                .append("    \"vsyncPacingActive\": ").append(fg.reflexVsyncPacing()).append(",\n")
                 .append("    \"vsyncRequested\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.vsyncRequested()).append(",\n")
                 .append("    \"mailboxSupported\": ")

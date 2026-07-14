@@ -1,6 +1,8 @@
 package dev.comfyfluffy.caustica.rt.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -31,5 +33,13 @@ final class DlssgPacingTest {
     void manualIntervalRemainsFallbackWhenAutoCapIsOff() {
         assertEquals(4_505, DlssgPacing.reflexIntervalUs(0, 5, 4_505));
         assertEquals(0, DlssgPacing.reflexIntervalUs(0, 5, 0));
+    }
+
+    @Test
+    void mailboxVsyncAlwaysEnablesAutomaticPacing() {
+        assertTrue(DlssgPacing.automaticPacingEnabled(true, true, false, true));
+        assertTrue(DlssgPacing.automaticPacingEnabled(true, true, true, false));
+        assertFalse(DlssgPacing.automaticPacingEnabled(false, true, true, true));
+        assertFalse(DlssgPacing.automaticPacingEnabled(true, false, true, true));
     }
 }

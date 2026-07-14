@@ -102,6 +102,8 @@ public final class RtDlssFg {
     private int reflexRefreshRateHz;
     private int reflexOutputCapFps;
     private float reflexRenderedCapFps;
+    private boolean reflexAutomaticPacing;
+    private boolean reflexVsyncPacing;
     private String unavailableReason = "Not probed";
     private String submissionStatus = "No frame submitted";
 
@@ -243,6 +245,14 @@ public final class RtDlssFg {
 
     public float reflexRenderedCapFps() {
         return reflexRenderedCapFps;
+    }
+
+    public boolean reflexAutomaticPacing() {
+        return reflexAutomaticPacing;
+    }
+
+    public boolean reflexVsyncPacing() {
+        return reflexVsyncPacing;
     }
 
     private boolean stateDynamicMfgSupported;
@@ -568,7 +578,9 @@ public final class RtDlssFg {
         int mode = requested() || CausticaConfig.Rt.Reflex.ENABLED.value()
                 ? (CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.value() ? 2 : 1) : 0;
         int refreshRateHz = DlssgPacing.currentRefreshRateHz();
-        boolean automatic = requested() && pluginForSwapchain && CausticaConfig.Rt.Fg.AUTO_CAP.value();
+        boolean vsyncPacing = StreamlineSwapchainCoordinator.INSTANCE.mailboxVsyncCompatibility();
+        boolean automatic = DlssgPacing.automaticPacingEnabled(requested(), pluginForSwapchain,
+                CausticaConfig.Rt.Fg.AUTO_CAP.value(), vsyncPacing);
         int outputCapFps = automatic ? DlssgPacing.automaticOutputCapFps(refreshRateHz) : 0;
         int limit = DlssgPacing.reflexIntervalUs(outputCapFps,
                 automatic ? effectiveMultiFrameCount() : 0,
@@ -576,6 +588,8 @@ public final class RtDlssFg {
         reflexRefreshRateHz = refreshRateHz;
         reflexOutputCapFps = outputCapFps;
         reflexRenderedCapFps = DlssgPacing.renderedFrameLimitFps(limit);
+        reflexAutomaticPacing = automatic;
+        reflexVsyncPacing = automatic && vsyncPacing;
         if (mode == lastReflexMode && limit == lastReflexLimit) {
             return;
         }
@@ -587,8 +601,9 @@ public final class RtDlssFg {
             warnResult(library.setReflexOptions(options), "slReflexSetOptions");
         }
         CausticaMod.LOGGER.info(
-                "Reflex pacing applied: mode={}, autoCap={}, refresh={}Hz, outputTarget={} FPS, multiplier={}x, renderedLimit={} FPS, interval={}us",
-                mode, automatic, refreshRateHz, outputCapFps,
+                "Reflex pacing applied: mode={}, automatic={}, source={}, refresh={}Hz, outputTarget={} FPS, multiplier={}x, renderedLimit={} FPS, interval={}us",
+                mode, automatic, reflexVsyncPacing ? "VSync" : automatic ? "Auto Cap" : "manual", refreshRateHz,
+                outputCapFps,
                 automatic ? effectiveMultiFrameCount() + 1 : 1,
                 limit > 0 ? String.format(java.util.Locale.ROOT, "%.2f", reflexRenderedCapFps) : "unlimited",
                 limit);

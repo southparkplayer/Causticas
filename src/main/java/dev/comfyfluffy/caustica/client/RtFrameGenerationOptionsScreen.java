@@ -113,7 +113,12 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                                 + " rendered (" + multiplier + "x)" + suffix
                         : "Auto Output Cap: On — refresh rate unavailable" + suffix));
             } else {
-                autoCapWidget.setMessage(Component.literal(automaticCapFps > 0
+                boolean vsyncPacing = StreamlineSwapchainCoordinator.INSTANCE.mailboxVsyncCompatibility();
+                autoCapWidget.setMessage(Component.literal(vsyncPacing && automaticCapFps > 0
+                        ? "Auto Display Cap: Off — VSync still targets " + automaticCapFps + " displayed / "
+                                + String.format(java.util.Locale.ROOT, "%.2f", automaticRenderedFps)
+                                + " rendered (" + multiplier + "x)" + suffix
+                        : automaticCapFps > 0
                         ? "Auto Display Cap: Off — would target " + automaticCapFps + " displayed at "
                                 + refreshRateHz + " Hz" + suffix
                         : "Auto Output Cap: Off — refresh rate unavailable" + suffix));
