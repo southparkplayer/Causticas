@@ -22,11 +22,10 @@ public final class DlssgPacing {
         return Math.max(1, (int) (numerator / (refreshRateHz + (long) AUTO_CAP_CONSTANT)));
     }
 
-    /** MAILBOX does not block the producer, so VSync compatibility must always supply Reflex pacing. */
+    /** Automatic pacing is explicitly opt-in; VSync never silently enables it. */
     public static boolean automaticPacingEnabled(boolean frameGenerationRequested, boolean pluginForSwapchain,
-            boolean autoCapRequested, boolean mailboxVsyncCompatibility) {
-        return frameGenerationRequested && pluginForSwapchain
-                && (autoCapRequested || mailboxVsyncCompatibility);
+            boolean autoCapRequested) {
+        return frameGenerationRequested && pluginForSwapchain && autoCapRequested;
     }
 
     /**

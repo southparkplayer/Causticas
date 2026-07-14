@@ -100,7 +100,7 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
             boolean enabled = options.enableVsync().get();
             String state = !enabled ? "Off — immediate presentation"
                     : StreamlineSwapchainCoordinator.INSTANCE.mailboxSupported()
-                            ? "On — MAILBOX + Reflex"
+                            ? "On — MAILBOX (Auto Cap " + (automaticCapEnabled ? "On" : "Off") + ")"
                             : "On — FIFO unsupported (MAILBOX unavailable)";
             vsyncWidget.setMessage(Component.literal("DLSS-G VSync: " + state));
         }
@@ -113,12 +113,7 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                                 + " rendered (" + multiplier + "x)" + suffix
                         : "Auto Output Cap: On — refresh rate unavailable" + suffix));
             } else {
-                boolean vsyncPacing = StreamlineSwapchainCoordinator.INSTANCE.mailboxVsyncCompatibility();
-                autoCapWidget.setMessage(Component.literal(vsyncPacing && automaticCapFps > 0
-                        ? "Auto Display Cap: Off — VSync still targets " + automaticCapFps + " displayed / "
-                                + String.format(java.util.Locale.ROOT, "%.2f", automaticRenderedFps)
-                                + " rendered (" + multiplier + "x)" + suffix
-                        : automaticCapFps > 0
+                autoCapWidget.setMessage(Component.literal(automaticCapFps > 0
                         ? "Auto Display Cap: Off — would target " + automaticCapFps + " displayed at "
                                 + refreshRateHz + " Hz" + suffix
                         : "Auto Output Cap: Off — refresh rate unavailable" + suffix));

@@ -36,10 +36,10 @@ final class DlssgPacingTest {
     }
 
     @Test
-    void mailboxVsyncAlwaysEnablesAutomaticPacing() {
-        assertTrue(DlssgPacing.automaticPacingEnabled(true, true, false, true));
-        assertTrue(DlssgPacing.automaticPacingEnabled(true, true, true, false));
-        assertFalse(DlssgPacing.automaticPacingEnabled(false, true, true, true));
-        assertFalse(DlssgPacing.automaticPacingEnabled(true, false, true, true));
+    void automaticPacingIsExplicitlyOptIn() {
+        assertFalse(DlssgPacing.automaticPacingEnabled(true, true, false));
+        assertTrue(DlssgPacing.automaticPacingEnabled(true, true, true));
+        assertFalse(DlssgPacing.automaticPacingEnabled(false, true, true));
+        assertFalse(DlssgPacing.automaticPacingEnabled(true, false, true));
     }
 }
