@@ -224,17 +224,13 @@
 	"caustica.options.rt.fg.reflex.off": "Off",
 	"caustica.options.rt.fg.reflex.on": "On",
 	"caustica.options.rt.fg.reflex.boost": "On + Boost",
-	"caustica.options.rt.fg.autoCap.tooltip": "Targets total displayed FPS using floor(3600 × refresh / (refresh + 3600)). Application FPS counters show the lower rendered rate; NVIDIA's DLSS-G overlay shows the real-plus-generated display target.",
-	"caustica.options.rt.fg.reflexLimit": "Manual Render Limit",
-	"caustica.options.rt.fg.reflexLimit.tooltip": "Manual rendered-frame Reflex limit used only while Auto Output Cap is off. This is not the final generated output FPS.",
-	"caustica.options.rt.fg.unlimited": "Unlimited",
 	"caustica.options.rt.fg.showInterpolated": "Show Generated Only",
 	"caustica.options.rt.fg.showInterpolated.tooltip": "Development diagnostic that displays only interpolated frames.",
 	"caustica.options.rt.fg.queueParallelism": "Queue Parallelism",
 	"caustica.options.rt.fg.queueParallelism.tooltip": "Safe blocks the presenting queue. Maximum Throughput uses Streamline's no-client-queue mode and waits on its input-consumption timeline before reuse.",
 	"caustica.options.rt.fg.queueParallelism.safe": "Safe",
 	"caustica.options.rt.fg.queueParallelism.no-client-queues": "Maximum Throughput",
-	"caustica.options.rt.fg.vsync.tooltip": "Vulkan Streamline cannot use FIFO VSync with DLSS-G. When enabled, Caustica follows RADSER: tear-free MAILBOX presentation plus Reflex below-refresh pacing keeps frame generation active.",
+	"caustica.options.rt.fg.vsync.tooltip": "When enabled with DLSS-G, use tear-free MAILBOX presentation with no application frame limiter. When disabled, use uncapped IMMEDIATE presentation.",
 	"caustica.options.rt.fg.estimateVram": "Estimate DLSS-G VRAM",
-	"caustica.options.rt.fg.vsyncConflict": "FIFO VSync is unsupported by Vulkan Streamline; MAILBOX + Reflex compatibility is used when available."
+	"caustica.options.rt.fg.vsyncConflict": "FIFO VSync is unsupported by Vulkan Streamline; MAILBOX presentation is used when available."
 }

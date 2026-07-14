@@ -1,7 +1,6 @@
 package dev.comfyfluffy.caustica.client;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
-import dev.comfyfluffy.caustica.rt.pipeline.DlssgPacing;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.streamline.StreamlineSwapchainCoordinator;
 import net.minecraft.client.OptionInstance;
@@ -20,7 +19,6 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
     private Button statusWidget;
     private Button runtimeWidget;
     private Button detailsWidget;
-    private Button autoCapWidget;
     private Button vsyncWidget;
 
     public RtFrameGenerationOptionsScreen(Screen lastScreen, Options options) {
@@ -45,14 +43,6 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                 .tooltip(Tooltip.create(Component.translatable("caustica.options.rt.fg.vsync.tooltip")))
                 .build();
         list.addBig(vsyncWidget);
-
-        autoCapWidget = Button.builder(Component.empty(), button -> {
-            CausticaConfig.Rt.Fg.AUTO_CAP.set(!CausticaConfig.Rt.Fg.AUTO_CAP.configuredValue());
-            refreshDiagnostics();
-        }).width(Button.BIG_WIDTH)
-                .tooltip(Tooltip.create(Component.translatable("caustica.options.rt.fg.autoCap.tooltip")))
-                .build();
-        list.addBig(autoCapWidget);
 
         OptionInstance<?>[] controls = RtVideoOptions.frameGenerationOptions();
         for (int i = 0; i < controls.length; i += 2) {
@@ -89,36 +79,13 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
             return;
         }
         RtDlssFg fg = RtDlssFg.INSTANCE;
-        int refreshRateHz = DlssgPacing.currentRefreshRateHz();
-        int automaticCapFps = DlssgPacing.automaticOutputCapFps(refreshRateHz);
-        boolean automaticCapEnabled = CausticaConfig.Rt.Fg.AUTO_CAP.value();
-        int multiplier = fg.effectiveMultiFrameCount() + 1;
-        int automaticIntervalUs = DlssgPacing.reflexIntervalUs(automaticCapFps,
-                fg.effectiveMultiFrameCount(), 0);
-        float automaticRenderedFps = DlssgPacing.renderedFrameLimitFps(automaticIntervalUs);
         if (vsyncWidget != null) {
             boolean enabled = options.enableVsync().get();
             String state = !enabled ? "Off — immediate presentation"
                     : StreamlineSwapchainCoordinator.INSTANCE.mailboxSupported()
-                            ? "On — MAILBOX (Auto Cap " + (automaticCapEnabled ? "On" : "Off") + ")"
+                            ? "On — MAILBOX"
                             : "On — FIFO unsupported (MAILBOX unavailable)";
             vsyncWidget.setMessage(Component.literal("DLSS-G VSync: " + state));
-        }
-        if (autoCapWidget != null) {
-            String suffix = CausticaConfig.Rt.Fg.AUTO_CAP.isOverridden() ? " (launch override)" : "";
-            if (automaticCapEnabled) {
-                autoCapWidget.setMessage(Component.literal(automaticCapFps > 0
-                        ? "Auto Display Cap: On — " + automaticCapFps + " displayed / "
-                                + String.format(java.util.Locale.ROOT, "%.2f", automaticRenderedFps)
-                                + " rendered (" + multiplier + "x)" + suffix
-                        : "Auto Output Cap: On — refresh rate unavailable" + suffix));
-            } else {
-                autoCapWidget.setMessage(Component.literal(automaticCapFps > 0
-                        ? "Auto Display Cap: Off — would target " + automaticCapFps + " displayed at "
-                                + refreshRateHz + " Hz" + suffix
-                        : "Auto Output Cap: Off — refresh rate unavailable" + suffix));
-            }
-            autoCapWidget.active = !CausticaConfig.Rt.Fg.AUTO_CAP.isOverridden();
         }
         String availability = fg.isActive() ? "Active"
                 : fg.isAvailable() && fg.hasGeneratedFrames() ? "Verified (suspended in menu)"
@@ -153,10 +120,7 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                         + " | Present " + StreamlineSwapchainCoordinator.INSTANCE.presentMode()
                         + (StreamlineSwapchainCoordinator.INSTANCE.mailboxVsyncCompatibility()
                                 ? " (VSync compatibility)" : "")
-                        + " | Pace output/rendered/interval " + fg.reflexOutputCapFps() + "/"
-                        + (fg.reflexIntervalUs() > 0
-                                ? String.format(java.util.Locale.ROOT, "%.2f", fg.reflexRenderedCapFps()) : "unlimited")
-                        + "/" + fg.reflexIntervalUs() + "us"
+                        + " | Reflex interval " + fg.reflexIntervalUs() + "us"
                         + " | DLSSD configured/effective "
                         + CausticaConfig.Rt.DlssRr.ENABLED.configuredValue() + "/"
                         + CausticaConfig.Rt.DlssRr.ENABLED.value()

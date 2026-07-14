@@ -64,7 +64,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED, Rt.EntityTextures.MAX_TEXTURES,
             Rt.DlssRr.ENABLED,
-            Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS, Rt.Fg.AUTO_CAP,
+            Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE,
         };
@@ -107,17 +107,13 @@ public final class CausticaConfig {
         FILE.setComment("frame-generation",
                 " Streamline DLSS Frame Generation. mode: off, fixed, or auto (legacy).\n"
                         + " multi-frame-count is generated frames per rendered frame (1 = 2x, 2 = 3x, ...).\n"
-                        + " auto-cap derives a total output FPS target from the active monitor using\n"
-                        + " floor(3600 * refresh / (refresh + 3600)), then divides that budget across the\n"
-                        + " rendered frame and all generated frames through Reflex.\n"
                         + " Dynamic MFG is D3D12-only and is migrated to fixed because Caustica uses Vulkan.\n"
-                        + " With VSync requested, Vulkan DLSS-G uses RADSER's MAILBOX compatibility path\n"
-                        + " because Streamline 2.12 does not support FIFO VSync on Vulkan. Auto Cap remains\n"
-                        + " an independent opt-in and is never forced by VSync.");
+                        + " With VSync requested, Vulkan DLSS-G uses MAILBOX presentation. With VSync off,\n"
+                        + " it uses IMMEDIATE presentation. DLSS-G itself is never frame-limited by Reflex.");
         FILE.setComment("reflex",
                 " Streamline Reflex Low Latency. DLSS-G forces effective On while generation is active.\n"
-                        + " minimum-interval-us is the manual rendered-frame fallback used when FG Auto Cap is off;\n"
-                        + " 0 = no manual cap. PCL markers and sleep still run when Reflex is Off.");
+                        + " minimum-interval-us applies only while DLSS-G is off; DLSS-G always submits 0 (unlimited).\n"
+                        + " PCL markers and sleep still run when Reflex is Off.");
         FILE.setComment("sdr",
                 " SDR display mapping for the vanilla main target. tonemap-mode defaults to agx to preserve\n"
                         + " Caustica's existing SDR look. Other modes are pbr-neutral, reinhard, aces, lottes,\n"
@@ -751,8 +747,6 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1, 5);
             public static final FloatSetting DYNAMIC_TARGET_FPS = clampedFloat(
                     "caustica.rt.fg.dynamicTargetFps", "frame-generation.dynamic-target-fps", 0.0f, 0.0f, 1000.0f);
-            public static final BooleanSetting AUTO_CAP = bool(
-                    "caustica.rt.fg.autoCap", "frame-generation.auto-cap", true);
             public static final BooleanSetting UI_RECOMPOSITION = bool(
                     "caustica.rt.fg.uiRecomposition", "frame-generation.ui-recomposition", true);
             public static final BooleanSetting FULLSCREEN_MENU_DETECTION = bool(

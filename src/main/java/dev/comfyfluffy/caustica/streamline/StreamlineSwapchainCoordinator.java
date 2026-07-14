@@ -63,10 +63,9 @@ public final class StreamlineSwapchainCoordinator {
     /**
      * Preserve Minecraft's VSync option while keeping Vulkan DLSS-G on a supported presentation path.
      *
-     * <p>Streamline 2.12 cannot run Vulkan DLSS-G on a FIFO swapchain. RADSER's proven low-latency
-     * compatibility contract is to use MAILBOX when VSync and Reflex are requested: MAILBOX remains
-     * tear-free because display replacement occurs at vblank. The separate Auto Cap option can provide
-     * below-refresh pacing, but VSync never forces that limiter on.
+     * <p>Streamline 2.12 cannot run Vulkan DLSS-G on a FIFO swapchain. Use MAILBOX when VSync is
+     * requested: MAILBOX remains tear-free because display replacement occurs at vblank and it owns
+     * presentation cadence without an application-side frame limiter.
      * A surface without MAILBOX stays on the requested FIFO mode and DLSS-G fails closed.</p>
      */
     public GpuSurface.Configuration normalizeConfiguration(GpuSurface.Configuration configuration,
@@ -82,7 +81,7 @@ public final class StreamlineSwapchainCoordinator {
         mailboxVsyncCompatibility = true;
         presentMode = GpuSurface.PresentMode.MAILBOX;
         CausticaMod.LOGGER.info(
-                "DLSS-G VSync compatibility: requested {} -> MAILBOX (tear-free vblank replacement; Auto Cap is independent)",
+                "DLSS-G VSync compatibility: requested {} -> MAILBOX (no application frame limiter)",
                 configuration.presentMode());
         return new GpuSurface.Configuration(configuration.width(), configuration.height(), presentMode);
     }

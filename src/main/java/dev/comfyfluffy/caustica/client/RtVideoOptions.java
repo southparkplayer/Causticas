@@ -106,7 +106,6 @@ public final class RtVideoOptions {
         options.add(bool("caustica.options.rt.fg.uiRecomposition", CausticaConfig.Rt.Fg.UI_RECOMPOSITION));
         options.add(bool("caustica.options.rt.fg.fullscreenMenu", CausticaConfig.Rt.Fg.FULLSCREEN_MENU_DETECTION));
         options.add(reflexMode());
-        options.add(reflexFrameLimit());
         options.add(new OptionInstance<>(
                 "caustica.options.rt.fg.queueParallelism",
                 OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.queueParallelism.tooltip")),
@@ -133,20 +132,6 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Reflex.ENABLED.set(!"off".equals(value));
                     CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.set("boost".equals(value));
                 });
-    }
-
-    private static OptionInstance<Integer> reflexFrameLimit() {
-        int interval = CausticaConfig.Rt.Reflex.MINIMUM_INTERVAL_US.configuredValue();
-        int fps = interval > 0 ? Math.clamp(Math.round(1_000_000.0f / interval), 1, 360) : 0;
-        return new OptionInstance<>(
-                "caustica.options.rt.fg.reflexLimit",
-                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.reflexLimit.tooltip")),
-                (caption, value) -> Options.genericValueLabel(caption,
-                        value == 0 ? Component.translatable("caustica.options.rt.fg.unlimited")
-                                : Component.literal(value + " FPS")),
-                new OptionInstance.IntRange(0, 360), fps,
-                value -> CausticaConfig.Rt.Reflex.MINIMUM_INTERVAL_US.set(
-                        value == 0 ? 0 : Math.max(1, Math.round(1_000_000.0f / value))));
     }
 
     /** Runtime-tunable RT options, in display order. Paired two-per-row by OptionsList.addSmall. */
