@@ -81,6 +81,10 @@ public final class RtDlssFg {
     private int minWidthOrHeight;
     private int runtimeStatus;
     private int framesActuallyPresented;
+    private int maxFramesActuallyPresented;
+    private int lastSubmittedGeneratedFrameCount;
+    private int lastSubmittedMode;
+    private long successfulOptionsSubmissions;
     private boolean generatedFramesConfirmed;
     private int lastGeneratedFrameCount;
     private long loggedSubmissionGeneration = -1L;
@@ -110,9 +114,7 @@ public final class RtDlssFg {
     }
 
     public boolean isAvailable() {
-        return dlssgSupported && !dlssgFailed && pluginForSwapchain && !swapchainVsync
-                && !("dynamic".equals(CausticaConfig.Rt.Fg.mode())
-                        && dlssgStateKnown && !stateDynamicMfgSupported);
+        return dlssgSupported && !dlssgFailed && pluginForSwapchain && !swapchainVsync;
     }
 
     public boolean isSupported() {
@@ -132,10 +134,6 @@ public final class RtDlssFg {
                     ? "Waiting for the Streamline swapchain reconfiguration"
                     : "Supported; choose a generated-frame mode to enable";
         }
-        if ("dynamic".equals(CausticaConfig.Rt.Fg.mode())
-                && dlssgStateKnown && !stateDynamicMfgSupported) {
-            return "Dynamic Multi Frame Generation is not supported by this system";
-        }
         return unavailableReason;
     }
 
@@ -144,8 +142,31 @@ public final class RtDlssFg {
     }
 
     public int effectiveMultiFrameCount() {
-        int requestedCount = Math.max(1, CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.value());
-        return multiFrameCountMax > 0 ? Math.min(requestedCount, multiFrameCountMax) : requestedCount;
+        return selectMultiFrameCount(CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.value(), multiFrameCountMax);
+    }
+
+    public int configuredMultiFrameCount() {
+        return Math.clamp(CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.configuredValue(), 1, 5);
+    }
+
+    public int nativeSubmittedMultiFrameCount() {
+        return lastSubmittedGeneratedFrameCount;
+    }
+
+    public int nativeSubmittedMode() {
+        return lastSubmittedMode;
+    }
+
+    public long successfulOptionsSubmissions() {
+        return successfulOptionsSubmissions;
+    }
+
+    public boolean capabilityStateValid() {
+        return dlssgSupported && multiFrameCountMax > 0;
+    }
+
+    public boolean currentStateKnown() {
+        return dlssgStateKnown;
     }
 
     public int runtimeStatus() {
@@ -154,6 +175,10 @@ public final class RtDlssFg {
 
     public int framesActuallyPresented() {
         return framesActuallyPresented;
+    }
+
+    public int maxFramesActuallyPresented() {
+        return maxFramesActuallyPresented;
     }
 
     public int generatedFramesLastPresent() {
@@ -186,6 +211,10 @@ public final class RtDlssFg {
 
     public boolean dynamicMfgSupported() {
         return stateDynamicMfgSupported;
+    }
+
+    public static String dynamicMfgLimitation() {
+        return "Dynamic Multi Frame Generation requires D3D12; Caustica uses fixed 2x-6x on Vulkan";
     }
 
     public boolean reflexAvailable() {
@@ -315,7 +344,6 @@ public final class RtDlssFg {
         dlssgStateKnown = false;
         optionsEnabled = false;
         lastAppliedOffFlags = Integer.MIN_VALUE;
-        framesActuallyPresented = 0;
         generatedFramesConfirmed = false;
         lastGeneratedFrameCount = 0;
         loggedSubmissionGeneration = -1L;
@@ -335,7 +363,6 @@ public final class RtDlssFg {
     public void onSwapchainConfigurationFailed() {
         optionsEnabled = false;
         lastAppliedOffFlags = Integer.MIN_VALUE;
-        framesActuallyPresented = 0;
         generatedFramesConfirmed = false;
         lastGeneratedFrameCount = 0;
         pluginForSwapchain = false;
@@ -600,6 +627,12 @@ public final class RtDlssFg {
                 CausticaMod.LOGGER.error(unavailableReason);
                 return;
             }
+            if (frameInputsSubmitted) {
+                ByteBuffer submitted = StreamlineAbi.bytes(options);
+                lastSubmittedMode = submitted.getInt(0);
+                lastSubmittedGeneratedFrameCount = submitted.getInt(4);
+                successfulOptionsSubmissions++;
+            }
             optionsEnabled = frameInputsSubmitted;
             lastAppliedOffFlags = frameInputsSubmitted ? Integer.MIN_VALUE : 1 << 3;
             if (frameInputsSubmitted && loggedOptionsGeneration != swapchainGeneration) {
@@ -636,6 +669,7 @@ public final class RtDlssFg {
             runtimeStatus = bytes.getInt(8);
             minWidthOrHeight = bytes.getInt(12);
             framesActuallyPresented = bytes.getInt(16);
+            maxFramesActuallyPresented = Math.max(maxFramesActuallyPresented, framesActuallyPresented);
             int generatedNow = optionsEnabled ? Math.max(0, framesActuallyPresented - 1) : 0;
             if (generatedNow > 0) {
                 if (!generatedFramesConfirmed) {
@@ -659,7 +693,12 @@ public final class RtDlssFg {
                     logNativeTrace();
                 }
             }
-            multiFrameCountMax = bytes.getInt(20);
+            int reportedMultiFrameCountMax = bytes.getInt(20);
+            // The maximum is an adapter capability. A newly recreated swapchain can temporarily return an
+            // unpopulated state packet; never let that erase a previously authoritative 2x-6x range.
+            if (reportedMultiFrameCountMax > 0) {
+                multiFrameCountMax = retainReportedMaximum(multiFrameCountMax, reportedMultiFrameCountMax);
+            }
             stateDynamicMfgSupported = bytes.getInt(28) != 0;
             inputsProcessingFence = bytes.getLong(32);
             inputsProcessingFenceValue = bytes.getLong(40);
@@ -672,6 +711,7 @@ public final class RtDlssFg {
                 unavailableReason = "";
             }
         }
+        StreamlineAcceptanceReport.publish();
     }
 
     private void logNativeTrace() {
@@ -823,10 +863,27 @@ public final class RtDlssFg {
     }
 
     private int effectiveMode() {
-        return switch (CausticaConfig.Rt.Fg.mode()) {
+        return streamlineModeForVulkan(CausticaConfig.Rt.Fg.mode());
+    }
+
+    static int selectMultiFrameCount(int requestedCount, int reportedMaximum) {
+        int configured = Math.clamp(requestedCount, 1, 5);
+        return reportedMaximum > 0 ? Math.min(configured, Math.clamp(reportedMaximum, 1, 5)) : configured;
+    }
+
+    static int retainReportedMaximum(int cachedMaximum, int newlyReportedMaximum) {
+        return newlyReportedMaximum > 0
+                ? Math.clamp(newlyReportedMaximum, 1, 5)
+                : Math.clamp(cachedMaximum, 0, 5);
+    }
+
+    static int streamlineModeForVulkan(String mode) {
+        return switch (mode) {
             case "fixed" -> 1;
             case "auto" -> 2;
-            case "dynamic" -> stateDynamicMfgSupported ? 3 : 0;
+            // Streamline Dynamic MFG is D3D12-only. Preserve the selected generated-frame count and run
+            // the supported fixed mode until the stale selection is migrated on settings save.
+            case "dynamic" -> 1;
             default -> 0;
         };
     }
@@ -985,6 +1042,7 @@ public final class RtDlssFg {
     }
 
     public void destroy() {
+        StreamlineAcceptanceReport.publishNow();
         setOff(false);
         frameToken = 0L;
         currentFrameIndex = -1;
@@ -994,7 +1052,6 @@ public final class RtDlssFg {
         pluginForSwapchain = false;
         optionsEnabled = false;
         lastAppliedOffFlags = Integer.MIN_VALUE;
-        framesActuallyPresented = 0;
         generatedFramesConfirmed = false;
         lastGeneratedFrameCount = 0;
         loggedSubmissionGeneration = -1L;
@@ -1005,6 +1062,8 @@ public final class RtDlssFg {
         lastSubmittedSwapchainGeneration = -1L;
         forceResetNextSubmission = true;
         dlssgStateKnown = false;
+        multiFrameCountMax = 0;
+        stateDynamicMfgSupported = false;
     }
 
     public void resetFailureLatch() {

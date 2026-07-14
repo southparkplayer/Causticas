@@ -66,7 +66,7 @@ public final class RtVideoOptions {
     }
 
     public static OptionInstance<?>[] frameGenerationOptions() {
-        List<String> modes = List.of("off", "fixed", "dynamic", "auto");
+        List<String> modes = List.of("off", "fixed", "auto");
         int reportedMaximum = RtDlssFg.INSTANCE.multiFrameCountMax();
         // Streamline 2.12 supports at most five generated frames (6x). Until the plugin has been attached
         // to a swapchain and reports this adapter's cap, keep the complete range discoverable; submission
@@ -78,7 +78,8 @@ public final class RtVideoOptions {
                 OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.mode.tooltip")),
                 (caption, value) -> Component.translatable("caustica.options.rt.fg.mode." + value),
                 new OptionInstance.Enum<>(modes, Codec.STRING),
-                modes.contains(CausticaConfig.Rt.Fg.mode()) ? CausticaConfig.Rt.Fg.mode() : "off",
+                modes.contains(CausticaConfig.Rt.Fg.configuredMode())
+                        ? CausticaConfig.Rt.Fg.configuredMode() : "fixed",
                 CausticaConfig.Rt.Fg::setMode));
         options.add(new OptionInstance<>(
                 "caustica.options.rt.fg.multiplier",
@@ -86,17 +87,8 @@ public final class RtVideoOptions {
                 (caption, generated) -> Options.genericValueLabel(caption,
                         Component.literal((generated + 1) + "x")),
                 new OptionInstance.IntRange(1, maximumGenerated),
-                Math.clamp(CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.value(), 1, maximumGenerated),
+                Math.clamp(CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.configuredValue(), 1, maximumGenerated),
                 CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT::set));
-        options.add(new OptionInstance<>(
-                "caustica.options.rt.fg.dynamicTarget",
-                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.dynamicTarget.tooltip")),
-                (caption, fps) -> Options.genericValueLabel(caption,
-                        fps == 0 ? Component.translatable("caustica.options.rt.fg.autoRefresh")
-                                : Component.literal(fps + " FPS")),
-                new OptionInstance.IntRange(0, 360),
-                Math.clamp(Math.round(CausticaConfig.Rt.Fg.DYNAMIC_TARGET_FPS.value()), 0, 360),
-                value -> CausticaConfig.Rt.Fg.DYNAMIC_TARGET_FPS.set(value.floatValue())));
         options.add(bool("caustica.options.rt.fg.uiRecomposition", CausticaConfig.Rt.Fg.UI_RECOMPOSITION));
         options.add(bool("caustica.options.rt.fg.fullscreenMenu", CausticaConfig.Rt.Fg.FULLSCREEN_MENU_DETECTION));
         options.add(reflexMode());
@@ -115,8 +107,8 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<String> reflexMode() {
-        String current = !CausticaConfig.Rt.Reflex.ENABLED.value() ? "off"
-                : CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.value() ? "boost" : "on";
+        String current = !CausticaConfig.Rt.Reflex.ENABLED.configuredValue() ? "off"
+                : CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.configuredValue() ? "boost" : "on";
         return new OptionInstance<>(
                 "caustica.options.rt.fg.reflex",
                 OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.reflex.tooltip")),
@@ -130,7 +122,7 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> reflexFrameLimit() {
-        int interval = CausticaConfig.Rt.Reflex.MINIMUM_INTERVAL_US.value();
+        int interval = CausticaConfig.Rt.Reflex.MINIMUM_INTERVAL_US.configuredValue();
         int fps = interval > 0 ? Math.clamp(Math.round(1_000_000.0f / interval), 1, 360) : 0;
         return new OptionInstance<>(
                 "caustica.options.rt.fg.reflexLimit",
@@ -269,7 +261,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.exposureMode.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.exposureMode." + value),
             new OptionInstance.Enum<>(List.of("auto", "manual"), Codec.STRING),
-            setting.get(),
+            setting.configuredValue(),
             setting::set);
     }
 
@@ -285,7 +277,7 @@ public final class RtVideoOptions {
                         Component.literal(sign + String.format(Locale.ROOT, "%.1f EV", ev)));
             },
             new OptionInstance.IntRange(-50, 50),
-            Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
+            Math.clamp(Math.round(setting.configuredValue() * 10.0f), -50, 50),
             tenths -> setting.set(tenths / 10.0f));
     }
 
@@ -305,7 +297,7 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Sdr.TONEMAP_UNCHARTED2,
                     CausticaConfig.Rt.Sdr.TONEMAP_GT,
                     CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV), Codec.STRING),
-            setting.get(),
+            setting.configuredValue(),
             setting::set);
     }
 
@@ -316,7 +308,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.spp.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption, value),
             new OptionInstance.IntRange(1, 8),
-            Math.clamp(setting.value(), 1, 8),
+            Math.clamp(setting.configuredValue(), 1, 8),
             setting::set);
     }
 
@@ -327,13 +319,14 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.maxBounces.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption, value),
             new OptionInstance.IntRange(2, 8),
-            Math.clamp(setting.value(), 2, 8),
+            Math.clamp(setting.configuredValue(), 2, 8),
             setting::set);
     }
 
     private static OptionInstance<Integer> sunSize() {
         FloatSetting setting = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS;
-        int initialTenths = Math.clamp(Math.round((float) Math.toDegrees(setting.value()) * 10.0f), 1, 50);
+        int initialTenths = Math.clamp(
+                Math.round((float) Math.toDegrees(setting.configuredValue()) * 10.0f), 1, 50);
         return new OptionInstance<>(
             "caustica.options.rt.sunSize",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.sunSize.tooltip")),
@@ -358,7 +351,8 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> dlssQuality() {
         IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
-        int initialQuality = DLSS_QUALITY_ORDER.contains(setting.value()) ? setting.value() : 0;
+        int initialQuality = DLSS_QUALITY_ORDER.contains(setting.configuredValue())
+                ? setting.configuredValue() : 0;
         int initialPosition = DLSS_QUALITY_ORDER.indexOf(initialQuality);
         return new OptionInstance<>(
             "caustica.options.rt.dlssQuality",
@@ -384,7 +378,7 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Hdr.TONEMAP_EETF,
                     CausticaConfig.Rt.Hdr.TONEMAP_PSYCHOV,
                     CausticaConfig.Rt.Hdr.TONEMAP_CAUSTICA), Codec.STRING),
-            setting.get(),
+            setting.configuredValue(),
             setting::set);
     }
 
@@ -395,7 +389,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPsychoWhiteCurve.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.hdrPsychoWhiteCurve." + value),
             new OptionInstance.Enum<>(List.of("naka-rushton", "neutwo"), Codec.STRING),
-            setting.get(),
+            setting.configuredValue(),
             setting::set);
     }
 
@@ -406,7 +400,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPaperWhite.tooltip")),
             (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
             new OptionInstance.IntRange(80, 1000),
-            Math.clamp(Math.round(setting.value()), 80, 1000),
+            Math.clamp(Math.round(setting.configuredValue()), 80, 1000),
             nits -> setting.set(nits.floatValue()));
     }
 
@@ -417,7 +411,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPeak.tooltip")),
             (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
             new OptionInstance.IntRange(80, 10000),
-            Math.clamp(Math.round(setting.value()), 80, 10000),
+            Math.clamp(Math.round(setting.configuredValue()), 80, 10000),
             nits -> setting.set(nits.floatValue()));
     }
 
@@ -428,7 +422,7 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.debugView.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
             new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7), Codec.INT),
-            Math.clamp(setting.value(), 0, 7),
+            Math.clamp(setting.configuredValue(), 0, 7),
             setting::set);
     }
 
@@ -443,7 +437,7 @@ public final class RtVideoOptions {
             (caption, centimeters) -> Options.genericValueLabel(caption,
                     Component.literal(String.format(Locale.ROOT, "%+.2f m", centimeters / 100.0f))),
             new OptionInstance.IntRange(min, max),
-            Math.clamp(Math.round(setting.value() * 100.0f), min, max),
+            Math.clamp(Math.round(setting.configuredValue() * 100.0f), min, max),
             centimeters -> setting.set(centimeters / 100.0f));
     }
 
@@ -455,7 +449,7 @@ public final class RtVideoOptions {
             (caption, value) -> Options.genericValueLabel(caption,
                     Component.literal(decimal(value / (float) scale, decimals))),
             new OptionInstance.IntRange(min, max),
-            Math.clamp(Math.round(setting.value() * scale), min, max),
+            Math.clamp(Math.round(setting.configuredValue() * scale), min, max),
             value -> setting.set(value / (float) scale));
     }
 
@@ -467,7 +461,7 @@ public final class RtVideoOptions {
         return OptionInstance.createBoolean(
             captionKey,
             OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
-            setting.value(),
+            setting.configuredValue(),
             setting::set);
     }
 }

@@ -26,6 +26,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 import org.lwjgl.PointerBuffer;
@@ -94,16 +95,25 @@ public final class StreamlineRuntime {
             if (stream != null) {
                 Properties properties = new Properties();
                 properties.load(stream);
-                return properties.getProperty("variant", "development").trim();
+                return normalizeVariant(properties.getProperty("variant"));
             }
         } catch (IOException exception) {
             CausticaMod.LOGGER.warn("Could not read packaged Streamline variant", exception);
         }
-        return "development";
+        return "unknown";
     }
 
     public static boolean productionVariant() {
         return "production".equalsIgnoreCase(variant());
+    }
+
+    /** Development behavior JSON is deliberately unsupported in normal packages. */
+    public static boolean behaviorOverrideActive() {
+        return false;
+    }
+
+    public static Path diagnosticsDirectory() {
+        return gameDirectory().resolve("caustica-streamline");
     }
 
     public static int vkCreateInstance(VkInstanceCreateInfo createInfo, VkAllocationCallbacks allocator,
@@ -255,6 +265,10 @@ public final class StreamlineRuntime {
         }
         boolean bridgeInitialized = false;
         try {
+            String packagedVariant = variant();
+            if ("unknown".equals(packagedVariant)) {
+                throw new IllegalStateException("Streamline variant metadata is missing or invalid");
+            }
             nativeDirectory = locateNativeDirectory();
             if (nativeDirectory == null) {
                 throw new IllegalStateException("Streamline Windows x64 natives are not bundled");
@@ -265,7 +279,7 @@ public final class StreamlineRuntime {
             }
             library = StreamlineLibrary.load(bridge);
             StreamlineAbi.validate(library);
-            int variant = productionVariant() ? VARIANT_PRODUCTION : VARIANT_DEVELOPMENT;
+            int variant = "production".equals(packagedVariant) ? VARIANT_PRODUCTION : VARIANT_DEVELOPMENT;
             int applicationId = applicationId(variant);
             Path logDirectory = gameDirectory().resolve("caustica-streamline");
             Files.createDirectories(logDirectory);
@@ -307,15 +321,15 @@ public final class StreamlineRuntime {
 
     private static int applicationId(int variant) {
         String value = System.getenv("NVIDIA_APPLICATION_ID");
-        if (variant == VARIANT_DEVELOPMENT && (value == null || value.isBlank())) {
-            return 0;
-        }
+        // The bridge always supplies Caustica's stable projectId, custom-engine identity, and version.
+        // Streamline/NGX therefore supports zero here when no separately assigned numeric application ID
+        // exists; deployments that have one can still provide it explicitly.
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("NVIDIA_APPLICATION_ID is required for Streamline production");
+            return 0;
         }
         try {
             long parsed = Long.parseLong(value.trim());
-            if (parsed < 0 || parsed > 0xFFFFFFFFL || (variant == VARIANT_PRODUCTION && parsed == 0)) {
+            if (parsed < 0 || parsed > 0xFFFFFFFFL) {
                 throw new NumberFormatException("out of uint32 range");
             }
             return (int) parsed;
@@ -327,11 +341,19 @@ public final class StreamlineRuntime {
     private static Path locateNativeDirectory() throws IOException {
         String override = System.getProperty("caustica.streamline.path", "").trim();
         if (!override.isEmpty()) {
+            if (productionVariant()) {
+                throw new IllegalStateException(
+                        "Production Streamline refuses caustica.streamline.path; use packaged natives");
+            }
             Path path = Path.of(override);
             return Files.isDirectory(path) ? path : null;
         }
-        Path directory = gameDirectory().resolve("caustica-streamline").resolve("natives").resolve("windows-x64");
+        String packagedVariant = variant();
+        Path directory = packagedNativeDirectory(gameDirectory(), packagedVariant);
         Files.createDirectories(directory);
+        // Older development builds wrote behavior-changing plugin JSON beside the DLLs. A package never
+        // creates those files, and extraction removes stale copies before Streamline sees this directory.
+        removeStaleBehaviorConfiguration(directory);
         boolean complete = true;
         for (String name : WINDOWS_NATIVE_NAMES) {
             complete &= extractBundled(name, directory.resolve(name));
@@ -373,6 +395,24 @@ public final class StreamlineRuntime {
         String os = System.getProperty("os.name", "").toLowerCase();
         String arch = System.getProperty("os.arch", "").toLowerCase();
         return os.contains("win") && (arch.equals("amd64") || arch.equals("x86_64"));
+    }
+
+    static Path packagedNativeDirectory(Path gameDirectory, String packagedVariant) {
+        return gameDirectory.resolve("caustica-streamline").resolve("natives")
+                .resolve("windows-x64").resolve(normalizeVariant(packagedVariant));
+    }
+
+    static void removeStaleBehaviorConfiguration(Path pluginDirectory) throws IOException {
+        Files.deleteIfExists(pluginDirectory.resolve("sl.dlss_g.json"));
+    }
+
+    private static String normalizeVariant(String value) {
+        if (value == null) {
+            return "unknown";
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return "production".equals(normalized) || "development".equals(normalized)
+                ? normalized : "unknown";
     }
 
     private static boolean vulkanAvailabilityProbeActive() {

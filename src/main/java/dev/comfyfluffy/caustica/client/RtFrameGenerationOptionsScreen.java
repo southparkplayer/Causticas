@@ -89,8 +89,11 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
         runtimeWidget.setMessage(Component.literal(
                 "Runtime: " + RtDlssFg.statusDescription(fg.runtimeStatus())
                         + " | Max " + maximum
-                        + " | Generated " + fg.generatedFramesLastPresent()
-                        + "/" + fg.effectiveMultiFrameCount()));
+                        + " | Count configured/effective/native " + fg.configuredMultiFrameCount()
+                        + "/" + fg.effectiveMultiFrameCount()
+                        + "/" + fg.nativeSubmittedMultiFrameCount()
+                        + " | Presented " + fg.framesActuallyPresented()
+                        + " (max " + fg.maxFramesActuallyPresented() + ")"));
         String reflex = fg.isActive()
                 ? CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.value() ? "On + Boost" : "On (required by DLSS-G)"
                 : CausticaConfig.Rt.Reflex.ENABLED.value()
@@ -99,8 +102,14 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
         String vram = fg.estimatedVramUsage() > 0L
                 ? (fg.estimatedVramUsage() / (1024L * 1024L)) + " MiB"
                 : "not estimated";
+        var overrides = CausticaConfig.activeOverrides();
+        String overrideStatus = overrides.isEmpty() ? "none"
+                : overrides.size() + " (first: " + overrides.getFirst().key() + ")";
         detailsWidget.setMessage(Component.literal(
-                "Reflex " + reflex + " | VRAM " + vram + " | " + fg.featureVersion()));
+                "Reflex " + reflex + " | DLSSD configured/effective "
+                        + CausticaConfig.Rt.DlssRr.ENABLED.configuredValue() + "/"
+                        + CausticaConfig.Rt.DlssRr.ENABLED.value()
+                        + " | Launch overrides " + overrideStatus + " | " + fg.featureVersion()));
     }
 
     private static Button diagnosticButton() {

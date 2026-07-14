@@ -45,6 +45,14 @@ public final class RtDlssRr {
     private boolean resourcesCreated;
     private boolean loggedEvaluation;
     private boolean resetHistory;
+    private int lastOptionsResult = Integer.MIN_VALUE;
+    private int lastEvaluateResult = Integer.MIN_VALUE;
+    private long javaOptionsCalls;
+    private long javaEvaluateCalls;
+    private int lastResourceCount;
+    private boolean fallbackActive;
+    private long fallbackFrames;
+    private String fallbackReason = "Not evaluated";
     private final Matrix4f worldToCameraView = new Matrix4f();
     private final Matrix4f cameraViewToWorld = new Matrix4f();
 
@@ -80,6 +88,59 @@ public final class RtDlssRr {
         return initialized && !failed && configured;
     }
 
+    public boolean isOperational() {
+        return enabled() && !failed;
+    }
+
+    public int lastOptionsResult() {
+        return lastOptionsResult;
+    }
+
+    public int lastEvaluateResult() {
+        return lastEvaluateResult;
+    }
+
+    public long javaOptionsCalls() {
+        return javaOptionsCalls;
+    }
+
+    public long javaEvaluateCalls() {
+        return javaEvaluateCalls;
+    }
+
+    public int lastResourceCount() {
+        return lastResourceCount;
+    }
+
+    public boolean fallbackActive() {
+        return fallbackActive;
+    }
+
+    public long fallbackFrames() {
+        return fallbackFrames;
+    }
+
+    public String fallbackReason() {
+        return fallbackReason;
+    }
+
+    public boolean failed() {
+        return failed;
+    }
+
+    public void requestHistoryReset() {
+        resetHistory = true;
+    }
+
+    public void resetFailureLatch() {
+        failed = false;
+        requestHistoryReset();
+    }
+
+    public static int requiredResourceCount() {
+        return RESOURCE_COUNT;
+    }
+
     /**
      * Record one Streamline DLSS-RR evaluation into {@code commandBuffer}. RR uses local render-space
      * constants because its inputs have not undergone the final Vulkan Y reversal; DLSSG later publishes
@@ -103,8 +164,9 @@ public final class RtDlssRr {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment options = StreamlineAbi.allocate(arena, StreamlineAbi.DLSSD_OPTIONS_SIZE);
             writeOptions(options, streamlineMode(), displayWidth, displayHeight, renderPreset(), viewRotation);
-            int optionsResult = library.setDlssdOptions(VIEWPORT, options);
-            check(optionsResult, "slDLSSDSetOptions");
+            javaOptionsCalls++;
+            lastOptionsResult = library.setDlssdOptions(VIEWPORT, options);
+            check(lastOptionsResult, "slDLSSDSetOptions");
 
             MemorySegment constants = StreamlineAbi.allocate(arena, StreamlineAbi.CONSTANTS_SIZE);
             RtDlssFg.INSTANCE.writeRenderSpaceConstants(constants, projection, currentViewProjection,
@@ -132,10 +194,14 @@ public final class RtDlssRr {
                     displayWidth, displayHeight, BUFFER_SCALING_OUTPUT_COLOR);
 
             resourcesCreated = true;
-            int result = library.evaluateDlssd(frameToken, VIEWPORT, resources, RESOURCE_COUNT,
+            lastResourceCount = RESOURCE_COUNT;
+            javaEvaluateCalls++;
+            lastEvaluateResult = library.evaluateDlssd(frameToken, VIEWPORT, resources, RESOURCE_COUNT,
                     constants, commandBuffer);
-            check(result, "slEvaluateFeature(DLSS-RR)");
+            check(lastEvaluateResult, "slEvaluateFeature(DLSS-RR)");
             resetHistory = false;
+            fallbackActive = false;
+            fallbackReason = "None";
             if (!loggedEvaluation) {
                 loggedEvaluation = true;
                 CausticaMod.LOGGER.info(
@@ -146,10 +212,31 @@ public final class RtDlssRr {
             return true;
         } catch (Throwable throwable) {
             failed = true;
+            fallbackActive = true;
+            fallbackReason = throwable.getMessage() == null ? throwable.getClass().getSimpleName()
+                    : throwable.getMessage();
             CausticaMod.LOGGER.error("Streamline DLSS-RR evaluate failed; RT composite continues without it",
                     throwable);
             return false;
         }
+    }
+
+    /** Records the renderer's actual post-RR fallback decision for acceptance telemetry. */
+    public void recordFallback(boolean rrRequestedForFrame, boolean evaluationCompleted) {
+        if (!rrRequestedForFrame) {
+            fallbackActive = false;
+            fallbackReason = "DLSSD disabled or debug view selected";
+        } else if (evaluationCompleted) {
+            fallbackActive = false;
+            fallbackReason = "None";
+        } else {
+            fallbackActive = true;
+            fallbackFrames++;
+            if (!failed) {
+                fallbackReason = "DLSSD evaluation did not complete";
+            }
+        }
+        StreamlineAcceptanceReport.publish();
     }
 
     /** Query the Streamline DLSS-RR plugin for the exact input size for the selected quality mode. */
@@ -157,25 +244,36 @@ public final class RtDlssRr {
         if (!enabled() || failed) {
             return null;
         }
-        if (!(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend()
-                instanceof VulkanDevice device)) {
-            return null;
-        }
-        ensureInitialized(device);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment renderWidth = arena.allocate(ValueLayout.JAVA_INT);
-            MemorySegment renderHeight = arena.allocate(ValueLayout.JAVA_INT);
-            MemorySegment sharpness = arena.allocate(ValueLayout.JAVA_FLOAT);
-            int result = library.getDlssdOptimalSettings(streamlineMode(), displayWidth, displayHeight,
-                    renderWidth, renderHeight, sharpness);
-            check(result, "slDLSSDGetOptimalSettings");
-            int width = renderWidth.get(ValueLayout.JAVA_INT, 0);
-            int height = renderHeight.get(ValueLayout.JAVA_INT, 0);
-            if (width <= 0 || height <= 0) {
-                throw new IllegalStateException("Streamline DLSS-RR returned invalid render size "
-                        + width + "x" + height);
+        try {
+            if (!(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend()
+                    instanceof VulkanDevice device)) {
+                throw new IllegalStateException("Vulkan backend unavailable for DLSSD optimal-size query");
             }
-            return new int[] { width, height };
+            ensureInitialized(device);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment renderWidth = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment renderHeight = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment sharpness = arena.allocate(ValueLayout.JAVA_FLOAT);
+                int result = library.getDlssdOptimalSettings(streamlineMode(), displayWidth, displayHeight,
+                        renderWidth, renderHeight, sharpness);
+                check(result, "slDLSSDGetOptimalSettings");
+                int width = renderWidth.get(ValueLayout.JAVA_INT, 0);
+                int height = renderHeight.get(ValueLayout.JAVA_INT, 0);
+                if (width <= 0 || height <= 0) {
+                    throw new IllegalStateException("Streamline DLSS-RR returned invalid render size "
+                            + width + "x" + height);
+                }
+                return new int[] { width, height };
+            }
+        } catch (Throwable throwable) {
+            failed = true;
+            fallbackActive = true;
+            fallbackReason = throwable.getMessage() == null ? throwable.getClass().getSimpleName()
+                    : throwable.getMessage();
+            CausticaMod.LOGGER.error(
+                    "Streamline DLSS-RR optimal-size query failed; using native-resolution fallback",
+                    throwable);
+            return null;
         }
     }
 
@@ -295,16 +393,23 @@ public final class RtDlssRr {
 
     private static void writeResource(MemorySegment resources, int index, RtImage image, int format,
             int width, int height, int bufferType) {
-        if (image == null || image.image == 0L || image.view == 0L || image.memory == 0L
+        if (image == null || image.image == 0L || image.view == 0L
                 || image.width != width || image.height != height || image.format != format) {
             throw new IllegalArgumentException("Incomplete Streamline DLSS-RR resource " + index
                     + " for " + width + "x" + height);
         }
+        writeResource(resources, index, image.image, image.view, format, width, height, bufferType, image.usage);
+    }
+
+    static void writeResource(MemorySegment resources, int index, long image, long view, int format,
+            int width, int height, int bufferType, int usage) {
         ByteBuffer bytes = StreamlineAbi.bytes(resources);
         int base = index * StreamlineAbi.RESOURCE_DESC_SIZE;
-        bytes.putLong(base, image.image);
-        bytes.putLong(base + 8, image.view);
-        bytes.putLong(base + 16, image.memory);
+        bytes.putLong(base, image);
+        bytes.putLong(base + 8, view);
+        // Streamline's Vulkan manual-hooking contract identifies textures with VkImage + VkImageView.
+        // VkDeviceMemory is intentionally null; exposing allocator backing ownership is unsupported.
+        bytes.putLong(base + 16, 0L);
         bytes.putInt(base + 24, VK10.VK_IMAGE_LAYOUT_GENERAL);
         bytes.putInt(base + 28, width);
         bytes.putInt(base + 32, height);
@@ -312,7 +417,7 @@ public final class RtDlssRr {
         bytes.putInt(base + 40, 1);
         bytes.putInt(base + 44, 1);
         bytes.putInt(base + 48, 0);
-        bytes.putInt(base + 52, image.usage);
+        bytes.putInt(base + 52, usage);
         bytes.putInt(base + 56, bufferType);
         bytes.putInt(base + 60, LIFECYCLE_VALID_UNTIL_EVALUATE);
         bytes.put(base + 64, (byte) 1);

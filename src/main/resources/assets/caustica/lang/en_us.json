@@ -186,7 +186,7 @@
 	"caustica.options.rt.frameGeneration.tooltip": "Open Streamline DLSS Frame Generation, Multi Frame Generation, and Reflex controls.",
 	"caustica.options.rt.frameGeneration.title": "DLSS Frame Generation",
 	"caustica.options.rt.fg.mode": "Frame Generation Mode",
-	"caustica.options.rt.fg.mode.tooltip": "Off disables the Streamline swapchain proxy. Fixed generates a selected number of frames. Dynamic targets a frame rate. Auto is NVIDIA's legacy automatic mode.",
+	"caustica.options.rt.fg.mode.tooltip": "Fixed generates the selected 2x-6x multiplier. Auto is NVIDIA's legacy fixed-count fallback. Dynamic MFG requires D3D12 and is unavailable in Caustica's Vulkan renderer.",
 	"caustica.options.rt.fg.mode.off": "Off",
 	"caustica.options.rt.fg.mode.fixed": "Fixed",
 	"caustica.options.rt.fg.mode.dynamic": "Dynamic",

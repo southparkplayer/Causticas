@@ -15,10 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Central mutable runtime configuration. Each setting resolves its value, in order of precedence, from a
- * {@code -Dcaustica.*} system property, then the {@code config/caustica.toml} file, then a hardcoded
- * default. The settings UI and any other code call the same {@code set(...)} methods, and {@link #save()}
- * writes the current values back to the TOML file.
+ * Central mutable runtime configuration. Every setting keeps its user-configured TOML value separate from
+ * an optional {@code -Dcaustica.*} launch override. Reads return the launch override while it is present,
+ * but UI writes and {@link #save()} only change the configured value. A temporary launcher argument can
+ * therefore diagnose a session without silently becoming permanent configuration.
  *
  * <p>The system property namespace ({@code caustica.rt.foo}) and the TOML layout are independent: the file
  * uses real nested tables (e.g. {@code [omm]} with a {@code subdivision} key) grouped for readability, while
@@ -36,6 +36,11 @@ public final class CausticaConfig {
 
     public static List<RuntimeSetting<?>> settings() {
         return List.copyOf(SETTINGS);
+    }
+
+    public static List<RuntimeSetting<?>> activeOverrides() {
+        ensureRegistered();
+        return SETTINGS.stream().filter(RuntimeSetting::isOverridden).toList();
     }
 
     public static Path configPath() {
@@ -57,7 +62,8 @@ public final class CausticaConfig {
         @SuppressWarnings("unused")
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
-            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED,
+            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED, Rt.EntityTextures.MAX_TEXTURES,
+            Rt.DlssRr.ENABLED,
             Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE,
@@ -75,6 +81,11 @@ public final class CausticaConfig {
     /** Serializes all registered settings to the TOML config file. */
     public static synchronized void save() {
         ensureRegistered();
+        // Streamline Dynamic MFG is D3D12-only. Caustica's Vulkan renderer preserves the user's generated
+        // frame count and migrates a stale dynamic selection to the supported fixed mode on the next save.
+        if ("dynamic".equals(Rt.Fg.MODE.configuredValue())) {
+            Rt.Fg.setMode("fixed");
+        }
         writeComments();
         for (RuntimeSetting<?> setting : SETTINGS) {
             setting.writeToFile(FILE);
@@ -94,9 +105,10 @@ public final class CausticaConfig {
                         + " stream-fallback-budget-ms is the per-tick slice used only when no world frame is\n"
                         + " streaming (loading screens), where a long pass hitches nothing.");
         FILE.setComment("frame-generation",
-                " Streamline DLSS Frame Generation. mode: off, fixed, dynamic, or auto (legacy).\n"
+                " Streamline DLSS Frame Generation. mode: off, fixed, or auto (legacy).\n"
                         + " multi-frame-count is generated frames per rendered frame (1 = 2x, 2 = 3x, ...).\n"
-                        + " dynamic-target-fps 0 follows display refresh. Vulkan DLSS-G requires VSync off.");
+                        + " Dynamic MFG is D3D12-only and is migrated to fixed because Caustica uses Vulkan.\n"
+                        + " Vulkan DLSS-G requires VSync off.");
         FILE.setComment("reflex",
                 " Streamline Reflex Low Latency. DLSS-G forces effective On while generation is active.\n"
                         + " minimum-interval-us: 0 = no frame-rate cap; PCL markers and sleep still run when Off.");
@@ -156,13 +168,30 @@ public final class CausticaConfig {
 
         T defaultValue();
 
+        /** The value owned by the UI/TOML, before any launch override is applied. */
+        T configuredValue();
+
+        /** The value currently visible to the renderer. */
         T get();
 
+        /** Changes the UI/TOML-owned value. An active launch override remains effective until restart/reload. */
         void set(T value);
+
+        boolean isOverridden();
+
+        /** Human-readable source metadata for diagnostics; {@code null} when no override is active. */
+        default String overrideSource() {
+            return isOverridden() ? "system-property:" + key() : null;
+        }
+
+        /** Raw launcher value for diagnostics; {@code null} when no override is active. */
+        default String overrideRawValue() {
+            return isOverridden() ? System.getProperty(key()) : null;
+        }
 
         void reloadFromSystemProperties();
 
-        /** Writes this setting's current value into the given config at {@link #tomlPath()}. */
+        /** Writes only this setting's configured value into the given config at {@link #tomlPath()}. */
         void writeToFile(CommentedConfig config);
     }
 
@@ -170,13 +199,16 @@ public final class CausticaConfig {
         private final String key;
         private final String tomlPath;
         private final boolean defaultValue;
-        private volatile boolean value;
+        private volatile boolean configuredValue;
+        private volatile boolean overrideValue;
+        private volatile boolean overrideActive;
 
         private BooleanSetting(String key, String tomlPath, boolean defaultValue) {
             this.key = key;
             this.tomlPath = tomlPath;
             this.defaultValue = defaultValue;
-            this.value = resolveInitial();
+            this.configuredValue = resolveConfigured();
+            reloadFromSystemProperties();
             SETTINGS.add(this);
         }
 
@@ -196,34 +228,42 @@ public final class CausticaConfig {
         }
 
         @Override
+        public Boolean configuredValue() {
+            return configuredValue;
+        }
+
+        @Override
         public Boolean get() {
-            return value;
+            return value();
         }
 
         public boolean value() {
-            return value;
+            return overrideActive ? overrideValue : configuredValue;
         }
 
         @Override
         public void set(Boolean value) {
-            this.value = value != null ? value : defaultValue;
+            this.configuredValue = value != null ? value : defaultValue;
+        }
+
+        @Override
+        public boolean isOverridden() {
+            return overrideActive;
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            set(Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue))));
+            String prop = System.getProperty(key);
+            overrideActive = prop != null;
+            overrideValue = prop != null ? Boolean.parseBoolean(prop.trim()) : defaultValue;
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
-            config.set(tomlPath, value);
+            config.set(tomlPath, configuredValue);
         }
 
-        private boolean resolveInitial() {
-            String prop = System.getProperty(key);
-            if (prop != null) {
-                return Boolean.parseBoolean(prop.trim());
-            }
+        private boolean resolveConfigured() {
             Boolean fromFile = fileBoolean(tomlPath);
             return fromFile != null ? fromFile : defaultValue;
         }
@@ -234,14 +274,17 @@ public final class CausticaConfig {
         private final String tomlPath;
         private final int defaultValue;
         private final IntUnaryOperator sanitize;
-        private volatile int value;
+        private volatile int configuredValue;
+        private volatile int overrideValue;
+        private volatile boolean overrideActive;
 
         private IntSetting(String key, String tomlPath, int defaultValue, IntUnaryOperator sanitize) {
             this.key = key;
             this.tomlPath = tomlPath;
             this.defaultValue = sanitize.applyAsInt(defaultValue);
             this.sanitize = sanitize;
-            this.value = resolveInitial();
+            this.configuredValue = resolveConfigured();
+            reloadFromSystemProperties();
             SETTINGS.add(this);
         }
 
@@ -261,47 +304,50 @@ public final class CausticaConfig {
         }
 
         @Override
+        public Integer configuredValue() {
+            return configuredValue;
+        }
+
+        @Override
         public Integer get() {
-            return value;
+            return value();
         }
 
         public int value() {
-            return value;
+            return overrideActive ? overrideValue : configuredValue;
         }
 
         @Override
         public void set(Integer value) {
-            this.value = sanitize.applyAsInt(value != null ? value : defaultValue);
+            this.configuredValue = sanitize.applyAsInt(value != null ? value : defaultValue);
+        }
+
+        @Override
+        public boolean isOverridden() {
+            return overrideActive;
         }
 
         @Override
         public void reloadFromSystemProperties() {
             String prop = System.getProperty(key);
+            overrideActive = prop != null;
             if (prop == null) {
-                this.value = defaultValue;
+                overrideValue = defaultValue;
                 return;
             }
             try {
-                this.value = sanitize.applyAsInt(Integer.parseInt(prop.trim()));
+                overrideValue = sanitize.applyAsInt(Integer.parseInt(prop.trim()));
             } catch (NumberFormatException e) {
-                this.value = defaultValue;
+                overrideValue = defaultValue;
             }
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
-            config.set(tomlPath, value);
+            config.set(tomlPath, configuredValue);
         }
 
-        private int resolveInitial() {
-            String prop = System.getProperty(key);
-            if (prop != null) {
-                try {
-                    return sanitize.applyAsInt(Integer.parseInt(prop.trim()));
-                } catch (NumberFormatException e) {
-                    return defaultValue;
-                }
-            }
+        private int resolveConfigured() {
             Number fromFile = fileNumber(tomlPath);
             return fromFile != null ? sanitize.applyAsInt(fromFile.intValue()) : defaultValue;
         }
@@ -320,7 +366,9 @@ public final class CausticaConfig {
         private final DoubleUnaryOperator outputTransform;
         // Idempotent guard on a value-domain number (clamp / finite check); safe to apply to any source.
         private final DoubleUnaryOperator valueClamp;
-        private volatile float value;
+        private volatile float configuredValue;
+        private volatile float overrideValue;
+        private volatile boolean overrideActive;
 
         private FloatSetting(String key, String tomlPath, float rawDefault, DoubleUnaryOperator inputTransform,
                              DoubleUnaryOperator outputTransform, DoubleUnaryOperator valueClamp) {
@@ -330,7 +378,8 @@ public final class CausticaConfig {
             this.outputTransform = outputTransform;
             this.valueClamp = valueClamp;
             this.defaultValue = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(rawDefault));
-            this.value = resolveInitial();
+            this.configuredValue = resolveConfigured();
+            reloadFromSystemProperties();
             SETTINGS.add(this);
         }
 
@@ -350,34 +399,46 @@ public final class CausticaConfig {
         }
 
         @Override
+        public Float configuredValue() {
+            return configuredValue;
+        }
+
+        @Override
         public Float get() {
-            return value;
+            return value();
         }
 
         public float value() {
-            return value;
+            return overrideActive ? overrideValue : configuredValue;
         }
 
         @Override
         public void set(Float value) {
             if (value == null) {
-                this.value = defaultValue;
+                this.configuredValue = defaultValue;
             } else {
-                this.value = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(value));
+                this.configuredValue = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(value));
             }
+        }
+
+        @Override
+        public boolean isOverridden() {
+            return overrideActive;
         }
 
         @Override
         public void reloadFromSystemProperties() {
             String prop = System.getProperty(key);
+            overrideActive = prop != null;
             if (prop == null) {
-                this.value = defaultValue;
+                overrideValue = defaultValue;
                 return;
             }
             try {
-                this.value = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(Double.parseDouble(prop.trim())));
+                overrideValue = (float) valueClamp.applyAsDouble(
+                        inputTransform.applyAsDouble(Double.parseDouble(prop.trim())));
             } catch (NumberFormatException e) {
-                this.value = defaultValue;
+                overrideValue = defaultValue;
             }
         }
 
@@ -386,19 +447,11 @@ public final class CausticaConfig {
             // Round-trip through Float.toString() so the file gets the shortest decimal that reproduces
             // this float (e.g. "0.6"), not outputTransform's raw double with float's binary noise spelled
             // out to 17 digits (e.g. 0.6000000487130328).
-            float raw = (float) outputTransform.applyAsDouble(value);
+            float raw = (float) outputTransform.applyAsDouble(configuredValue);
             config.set(tomlPath, Double.parseDouble(Float.toString(raw)));
         }
 
-        private float resolveInitial() {
-            String prop = System.getProperty(key);
-            if (prop != null) {
-                try {
-                    return (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(Double.parseDouble(prop.trim())));
-                } catch (NumberFormatException e) {
-                    return defaultValue;
-                }
-            }
+        private float resolveConfigured() {
             Number fromFile = fileNumber(tomlPath);
             if (fromFile == null) {
                 return defaultValue;
@@ -412,14 +465,17 @@ public final class CausticaConfig {
         private final String tomlPath;
         private final String defaultValue;
         private final UnaryOperator<String> sanitize;
-        private volatile String value;
+        private volatile String configuredValue;
+        private volatile String overrideValue;
+        private volatile boolean overrideActive;
 
         private StringSetting(String key, String tomlPath, String defaultValue, UnaryOperator<String> sanitize) {
             this.key = key;
             this.tomlPath = tomlPath;
             this.defaultValue = sanitize.apply(defaultValue);
             this.sanitize = sanitize;
-            this.value = resolveInitial();
+            this.configuredValue = resolveConfigured();
+            reloadFromSystemProperties();
             SETTINGS.add(this);
         }
 
@@ -439,30 +495,38 @@ public final class CausticaConfig {
         }
 
         @Override
+        public String configuredValue() {
+            return configuredValue;
+        }
+
+        @Override
         public String get() {
-            return value;
+            return overrideActive ? overrideValue : configuredValue;
         }
 
         @Override
         public void set(String value) {
-            this.value = sanitize.apply(value != null ? value : defaultValue);
+            this.configuredValue = sanitize.apply(value != null ? value : defaultValue);
+        }
+
+        @Override
+        public boolean isOverridden() {
+            return overrideActive;
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            set(System.getProperty(key, defaultValue));
+            String prop = System.getProperty(key);
+            overrideActive = prop != null;
+            overrideValue = sanitize.apply(prop != null ? prop : defaultValue);
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
-            config.set(tomlPath, value);
+            config.set(tomlPath, configuredValue);
         }
 
-        private String resolveInitial() {
-            String prop = System.getProperty(key);
-            if (prop != null) {
-                return sanitize.apply(prop);
-            }
+        private String resolveConfigured() {
             String fromFile = fileString(tomlPath);
             return sanitize.apply(fromFile != null ? fromFile : defaultValue);
         }
@@ -471,12 +535,15 @@ public final class CausticaConfig {
     public static final class OptionalStringSetting implements RuntimeSetting<String> {
         private final String key;
         private final String tomlPath;
-        private volatile String value;
+        private volatile String configuredValue;
+        private volatile String overrideValue;
+        private volatile boolean overrideActive;
 
         private OptionalStringSetting(String key, String tomlPath) {
             this.key = key;
             this.tomlPath = tomlPath;
-            this.value = resolveInitial();
+            this.configuredValue = fileString(tomlPath);
+            reloadFromSystemProperties();
             SETTINGS.add(this);
         }
 
@@ -496,32 +563,38 @@ public final class CausticaConfig {
         }
 
         @Override
+        public String configuredValue() {
+            return configuredValue;
+        }
+
+        @Override
         public String get() {
-            return value;
+            return overrideActive ? overrideValue : configuredValue;
         }
 
         @Override
         public void set(String value) {
-            this.value = value;
+            this.configuredValue = value;
+        }
+
+        @Override
+        public boolean isOverridden() {
+            return overrideActive;
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            this.value = System.getProperty(key);
+            overrideValue = System.getProperty(key);
+            overrideActive = overrideValue != null;
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
-            if (value != null) {
-                config.set(tomlPath, value);
+            if (configuredValue != null) {
+                config.set(tomlPath, configuredValue);
             } else {
                 config.remove(tomlPath);
             }
-        }
-
-        private String resolveInitial() {
-            String prop = System.getProperty(key);
-            return prop != null ? prop : fileString(tomlPath);
         }
     }
 
@@ -620,6 +693,20 @@ public final class CausticaConfig {
             }
         }
 
+        public static final class FirstPerson {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.firstPerson", "first-person.enabled", true);
+            public static final FloatSetting FORWARD_OFFSET = clampedFloat(
+                    "caustica.rt.firstPerson.forwardOffset", "first-person.forward-offset", -0.20f, -0.30f, 0.30f);
+            public static final FloatSetting VERTICAL_OFFSET = clampedFloat(
+                    "caustica.rt.firstPerson.verticalOffset", "first-person.vertical-offset", 0.0f, -0.30f, 0.30f);
+            public static final FloatSetting LATERAL_OFFSET = clampedFloat(
+                    "caustica.rt.firstPerson.lateralOffset", "first-person.lateral-offset", 0.0f, -0.20f, 0.20f);
+
+            private FirstPerson() {
+            }
+        }
+
         public static final class EntityTextures {
             public static final IntSetting MAX_TEXTURES =
                     intAtLeast("caustica.rt.maxEntityTextures", "entities.textures.max-textures", 256, 1);
@@ -653,7 +740,7 @@ public final class CausticaConfig {
             public static final StringSetting MODE = string(
                     "caustica.rt.fg.mode", "frame-generation.mode", "off", Fg::sanitizeMode);
             public static final IntSetting MULTI_FRAME_COUNT =
-                    intAtLeast("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1);
+                    clampedInt("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1, 5);
             public static final FloatSetting DYNAMIC_TARGET_FPS = clampedFloat(
                     "caustica.rt.fg.dynamicTargetFps", "frame-generation.dynamic-target-fps", 0.0f, 0.0f, 1000.0f);
             public static final BooleanSetting UI_RECOMPOSITION = bool(
@@ -672,6 +759,11 @@ public final class CausticaConfig {
             public static String mode() {
                 String mode = MODE.get();
                 return "off".equals(mode) && ENABLED.value() ? "fixed" : mode;
+            }
+
+            public static String configuredMode() {
+                String mode = MODE.configuredValue();
+                return "off".equals(mode) && ENABLED.configuredValue() ? "fixed" : mode;
             }
 
             public static boolean requested() {
