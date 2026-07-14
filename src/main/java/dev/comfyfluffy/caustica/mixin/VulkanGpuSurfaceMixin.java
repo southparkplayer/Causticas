@@ -108,6 +108,7 @@ public abstract class VulkanGpuSurfaceMixin {
 	@Inject(method = "close()V", at = @At("HEAD"))
 	private void caustica$streamlineSurfaceClosing(CallbackInfo ci) {
 		StreamlineSwapchainCoordinator.INSTANCE.closing();
+		RtHdr.clearSwapchainSelection();
 	}
 
 	@Redirect(method = "destroySwapchain()V",
@@ -152,26 +153,49 @@ public abstract class VulkanGpuSurfaceMixin {
 
 	/**
 	 * Pick a PQ (HDR10_ST2084) surface format when requested + available, before vanilla's SDR-only selection
-	 * runs. Scans for any format the surface pairs with that color space rather than assuming a specific one
-	 * (IHVs commonly pair it with a 10-bit UNORM like A2R10G10B10, but this must not be hardcoded). Sets
+	 * runs. Accepts the implemented 10-bit UNORM formats paired with that color space. Sets
 	 * {@link #caustica$colorSpace} so {@code configure} can pass the matching color space.
 	 */
 	@Inject(method = "pickSwapchainSurfaceFormat", at = @At("HEAD"), cancellable = true)
 	private void caustica$pickPqFormat(VkSurfaceFormatKHR.Buffer formats, CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
+		this.caustica$colorSpace = RtHdr.resetColorSpaceForSurfaceScan(this.caustica$colorSpace);
+		RtHdr.clearSwapchainSelection();
 		if (!CausticaConfig.Rt.Hdr.enabled()) {
 			return;
 		}
+		boolean unsupportedPqAdvertised = false;
 		for (int i = 0; i < formats.capacity(); i++) {
 			VkSurfaceFormatKHR f = formats.get(i);
 			if (f.colorSpace() == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+				if (!RtHdr.isSupportedPqFormat(f.format())) {
+					unsupportedPqAdvertised = true;
+					continue;
+				}
 				this.caustica$colorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+				RtHdr.recordSwapchainSelection(true, f.format(), f.colorSpace());
 				CausticaMod.LOGGER.info("HDR: selecting PQ swapchain (format={}, colorSpace=HDR10_ST2084)", f.format());
 				cir.setReturnValue(f);
 				return;
 			}
 		}
-		CausticaMod.LOGGER.warn("HDR: PQ swapchain requested but HDR10_ST2084 was not advertised by the surface; "
-				+ "using SDR (enable OS/display HDR; on Linux use a native Wayland session with HDR enabled in the compositor)");
+		CausticaMod.LOGGER.warn(unsupportedPqAdvertised
+				? "HDR: HDR10_ST2084 was advertised only with unsupported non-10-bit formats; using SDR"
+				: "HDR: PQ swapchain requested but HDR10_ST2084 was not advertised by the surface; "
+						+ "using SDR (enable OS/display HDR; on Linux use a native Wayland session with HDR enabled in the compositor)");
+	}
+
+	/** Record the format vanilla actually selected on every SDR/fallback return path. */
+	@Inject(method = "pickSwapchainSurfaceFormat", at = @At("RETURN"))
+	private void caustica$recordSelectedSurfaceFormat(VkSurfaceFormatKHR.Buffer formats,
+			CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
+		VkSurfaceFormatKHR selected = cir.getReturnValue();
+		if (selected == null) {
+			RtHdr.clearSwapchainSelection();
+			return;
+		}
+		this.caustica$colorSpace = selected.colorSpace();
+		RtHdr.recordSwapchainSelection(CausticaConfig.Rt.Hdr.enabled(),
+				selected.format(), selected.colorSpace());
 	}
 
 	/** Replace the hardcoded {@code imageColorSpace(0)} with the PQ color space when one was selected. */

@@ -681,7 +681,7 @@ public final class RtComposite {
         boolean rrOperational = RtDlssRr.INSTANCE.isOperational();
         int rrQuality = rrOperational ? RtDlssRr.quality() : Integer.MIN_VALUE;
         boolean fgGuidesRequired = RtDlssFg.requested();
-        boolean hdrEnabled = CausticaConfig.Rt.Hdr.enabled();
+        boolean hdrEnabled = RtHdr.effective();
         if (output != null && displayImage != null && hdrDisplayImage != null && exposure.ready()
                 && (!renderSizeRrEnabled || rrOutput != null)
                 && displayW == width && displayH == height
@@ -1012,9 +1012,9 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
-                displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled());
+                displayPipeline.dispatch(cmd, displayW, displayH, RtHdr.effective());
             }
-            hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
+            hdrWrittenThisFrame = RtHdr.effective();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "copy composite to main target");
@@ -1366,7 +1366,7 @@ public final class RtComposite {
 
     /** Whether the HDR present path (HDR image + combined UI -> PQ swapchain) should replace the vanilla SDR blit. */
     public boolean isHdrPresentActive() {
-        return CausticaConfig.Rt.Hdr.enabled()
+        return RtHdr.effective()
                 && hdrWrittenThisFrame
                 && hdrDisplayImage != null;
     }
@@ -1493,7 +1493,7 @@ public final class RtComposite {
      * not produce an HDR image ({@link #isHdrPresentActive()} false).
      */
     public boolean isPqSdrPresentActive() {
-        return CausticaConfig.Rt.Hdr.enabled()
+        return RtHdr.effective()
                 && !isHdrPresentActive();
     }
 
@@ -1605,7 +1605,7 @@ public final class RtComposite {
      * copy the ALREADY-composited backbuffer, which is useless as a distinct hudless input.
      */
     public void captureFgHudless(RenderTarget main) {
-        if (!RtDlssFg.requested() || CausticaConfig.Rt.Hdr.enabled() || !RtUiOverlay.enabled()
+        if (!RtDlssFg.requested() || RtHdr.effective() || !RtUiOverlay.enabled()
                 || !hasCurrentFrameForFg() || main == null || main.getColorTexture() == null) {
             return;
         }

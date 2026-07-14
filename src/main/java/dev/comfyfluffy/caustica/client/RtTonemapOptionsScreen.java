@@ -2,13 +2,16 @@ package dev.comfyfluffy.caustica.client;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
-import net.minecraft.client.OptionInstance;
+import java.util.Map;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.ResettableOptionWidget;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 
@@ -27,6 +30,7 @@ public final class RtTonemapOptionsScreen extends Screen {
     private final Screen lastScreen;
     private final Options options;
     private final List<SectionTitle> sectionTitles = new ArrayList<>();
+    private final Map<AbstractWidget, RtVideoOptions.TonemapControl> resetControls = new IdentityHashMap<>();
 
     public RtTonemapOptionsScreen(Screen lastScreen, Options options) {
         super(Component.translatable("caustica.options.rt.tonemapping.title"));
@@ -37,6 +41,7 @@ public final class RtTonemapOptionsScreen extends Screen {
     @Override
     protected void init() {
         sectionTitles.clear();
+        resetControls.clear();
 
         List<Section> sections = sections();
         int availableWidth = Math.max(MIN_COLUMN_WIDTH, width - SIDE_MARGIN * 2);
@@ -59,15 +64,16 @@ public final class RtTonemapOptionsScreen extends Screen {
 
             int controlGap = controlsPerRow == 2 ? ROW_GAP : 0;
             int controlWidth = (columnWidth - controlGap * (controlsPerRow - 1)) / controlsPerRow;
-            OptionInstance<?>[] controls = section.controls();
+            RtVideoOptions.TonemapControl[] controls = section.controls();
             for (int i = 0; i < controls.length; i++) {
                 int row = i / controlsPerRow;
                 int slot = i % controlsPerRow;
                 int controlX = x + slot * (controlWidth + controlGap);
                 int controlY = y + row * (BUTTON_HEIGHT + ROW_GAP);
-                AbstractWidget widget = controls[i].createButton(options, controlX, controlY, controlWidth);
+                AbstractWidget widget = controls[i].option().createButton(options, controlX, controlY, controlWidth);
                 widget.setHeight(BUTTON_HEIGHT);
                 addRenderableWidget(widget);
+                resetControls.put(widget, controls[i]);
             }
 
             int rows = (controls.length + controlsPerRow - 1) / controlsPerRow;
@@ -82,10 +88,32 @@ public final class RtTonemapOptionsScreen extends Screen {
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
         graphics.centeredText(font, title, width / 2, 15, 0xFFFFFFFF);
+        graphics.centeredText(font,
+                Component.translatable("caustica.options.rt.tonemapping.resetHint"),
+                width / 2, 28, 0xFFAAAAAA);
         for (SectionTitle sectionTitle : sectionTitles) {
             graphics.text(font, sectionTitle.title(), sectionTitle.x(), sectionTitle.y(), 0xFFFFFFFF);
         }
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        if (event.button() == 0 && event.hasShiftDown()) {
+            for (Map.Entry<AbstractWidget, RtVideoOptions.TonemapControl> entry : resetControls.entrySet()) {
+                AbstractWidget widget = entry.getKey();
+                if (widget.visible && widget.active && widget.isMouseOver(event.x(), event.y())) {
+                    entry.getValue().resetToDefault();
+                    if (widget instanceof ResettableOptionWidget resettable) {
+                        resettable.resetValue();
+                    }
+                    options.save();
+                    CausticaConfig.save();
+                    return true;
+                }
+            }
+        }
+        return super.mouseClicked(event, doubleClick);
     }
 
     @Override
@@ -131,11 +159,17 @@ public final class RtTonemapOptionsScreen extends Screen {
                         RtVideoOptions.sdrGtOptions()),
                 new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho"),
                         RtVideoOptions.sdrPsychoOptions()),
+                new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho23"),
+                        RtVideoOptions.sdrPsychoV23Options()),
                 new Section(Component.translatable("caustica.options.rt.tonemapping.section.psychoShared"),
-                        RtVideoOptions.psychoOptions()));
+                        RtVideoOptions.psychoOptions()),
+                new Section(Component.translatable("caustica.options.rt.tonemapping.section.hdrPsycho"),
+                        RtVideoOptions.hdrPsychoOptions()),
+                new Section(Component.translatable("caustica.options.rt.tonemapping.section.hdrPsycho23"),
+                        RtVideoOptions.hdrPsychoV23Options()));
     }
 
-    private record Section(Component title, OptionInstance<?>[] controls) {
+    private record Section(Component title, RtVideoOptions.TonemapControl[] controls) {
     }
 
     private record SectionTitle(Component title, int x, int y) {

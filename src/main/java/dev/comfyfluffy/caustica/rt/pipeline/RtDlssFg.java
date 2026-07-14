@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vulkan.VulkanDevice;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.mixin.GpuDeviceAccessor;
+import dev.comfyfluffy.caustica.rt.RtHdr;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.streamline.StreamlineAbi;
 import dev.comfyfluffy.caustica.streamline.StreamlineLibrary;
@@ -781,7 +782,7 @@ public final class RtDlssFg {
             int renderHeight = lastRenderHeight > 0 ? lastRenderHeight : swapchainHeight;
             int hudlessFormat = lastHudlessFormat != 0
                     ? lastHudlessFormat
-                    : CausticaConfig.Rt.Hdr.enabled() ? swapchainFormat : VK10.VK_FORMAT_R8G8B8A8_UNORM;
+                    : RtHdr.effective() ? swapchainFormat : VK10.VK_FORMAT_R8G8B8A8_UNORM;
             writeOptions(options, swapchainWidth, swapchainHeight, swapchainFormat,
                     renderWidth, renderHeight, hudlessFormat, lastUiAlphaValid);
             StreamlineAbi.bytes(options).putInt(8, 1 << 2);

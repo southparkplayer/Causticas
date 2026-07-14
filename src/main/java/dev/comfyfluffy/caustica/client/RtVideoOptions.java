@@ -27,7 +27,18 @@ public final class RtVideoOptions {
              0, 1, 2, 3, 4, 5, 6, 7,
              CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON);
 
+    /** A tone-mapping widget plus the value it should restore when Shift+Left-clicked. */
+    public record TonemapControl(OptionInstance<?> option, Runnable reset) {
+        public void resetToDefault() {
+            reset.run();
+        }
+    }
+
     private RtVideoOptions() {
+    }
+
+    private static <T> TonemapControl control(OptionInstance<T> option, T defaultValue) {
+        return new TonemapControl(option, () -> option.set(defaultValue));
     }
 
     public static OptionInstance<?>[] exposureOptions() {
@@ -161,8 +172,8 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] tonemapOutputOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] tonemapOutputOptions() {
+        return new TonemapControl[] {
             sdrTonemap(),
             hdrEnabled(),
             hdrTonemap(),
@@ -171,34 +182,34 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] sdrAgxOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrAgxOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrAgxContrast", CausticaConfig.Rt.Sdr.AGX_CONTRAST, 100, 0, 200, 2),
             scaledFloat("caustica.options.rt.sdrAgxSaturation", CausticaConfig.Rt.Sdr.AGX_SATURATION, 100, 0, 300, 2),
         };
     }
 
-    public static OptionInstance<?>[] sdrPbrNeutralOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrPbrNeutralOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrPbrStartCompression", CausticaConfig.Rt.Sdr.PBR_START_COMPRESSION, 100, 0, 99, 2),
             scaledFloat("caustica.options.rt.sdrPbrDesaturation", CausticaConfig.Rt.Sdr.PBR_DESATURATION, 100, 0, 100, 2),
         };
     }
 
-    public static OptionInstance<?>[] sdrReinhardOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrReinhardOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrReinhardWhitePoint", CausticaConfig.Rt.Sdr.REINHARD_WHITE_POINT, 10, 10, 200, 1),
         };
     }
 
-    public static OptionInstance<?>[] sdrAcesOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrAcesOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrAcesExposure", CausticaConfig.Rt.Sdr.ACES_EXPOSURE, 100, 0, 400, 2),
         };
     }
 
-    public static OptionInstance<?>[] sdrLottesOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrLottesOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrLottesContrast", CausticaConfig.Rt.Sdr.LOTTES_CONTRAST, 100, 10, 500, 2),
             scaledFloat("caustica.options.rt.sdrLottesShoulder", CausticaConfig.Rt.Sdr.LOTTES_SHOULDER, 100, 10, 500, 2),
             scaledFloat("caustica.options.rt.sdrLottesHdrMax", CausticaConfig.Rt.Sdr.LOTTES_HDR_MAX, 10, 10, 640, 1),
@@ -207,15 +218,15 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] sdrFrostbiteOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrFrostbiteOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrFrostbiteLinearEnd", CausticaConfig.Rt.Sdr.FROSTBITE_LINEAR_END, 100, 0, 100, 2),
             scaledFloat("caustica.options.rt.sdrFrostbiteShoulderStrength", CausticaConfig.Rt.Sdr.FROSTBITE_SHOULDER_STRENGTH, 100, 0, 800, 2),
         };
     }
 
-    public static OptionInstance<?>[] sdrUncharted2Options() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrUncharted2Options() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrUnchartedA", CausticaConfig.Rt.Sdr.UNCHARTED_A, 100, 1, 100, 2),
             scaledFloat("caustica.options.rt.sdrUnchartedB", CausticaConfig.Rt.Sdr.UNCHARTED_B, 100, 1, 200, 2),
             scaledFloat("caustica.options.rt.sdrUnchartedC", CausticaConfig.Rt.Sdr.UNCHARTED_C, 100, 0, 100, 2),
@@ -226,8 +237,8 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] sdrGtOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrGtOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrGtContrast", CausticaConfig.Rt.Sdr.GT_CONTRAST, 100, 10, 400, 2),
             scaledFloat("caustica.options.rt.sdrGtLinearStart", CausticaConfig.Rt.Sdr.GT_LINEAR_START, 100, 1, 99, 2),
             scaledFloat("caustica.options.rt.sdrGtLinearLength", CausticaConfig.Rt.Sdr.GT_LINEAR_LENGTH, 100, 1, 400, 2),
@@ -236,24 +247,54 @@ public final class RtVideoOptions {
         };
     }
 
-    public static OptionInstance<?>[] sdrPsychoOptions() {
-        return new OptionInstance<?>[] {
+    public static TonemapControl[] sdrPsychoOptions() {
+        return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrPsychoPeak", CausticaConfig.Rt.Sdr.PSYCHO_PEAK, 10, 5, 80, 1),
         };
     }
 
-    public static OptionInstance<?>[] psychoOptions() {
-        return new OptionInstance<?>[] {
+    /** SDR-only controls for the PsychoV23 peak and display-hull stages. */
+    public static TonemapControl[] sdrPsychoV23Options() {
+        return new TonemapControl[] {
+            scaledFloat("caustica.options.rt.sdrPsychoV23Peak", CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,
+                    10, 5, 80, 1),
+            psychoV23Compression("caustica.options.rt.sdrPsychoV23Compression",
+                    CausticaConfig.Rt.Sdr.PSYCHOV23_COMPRESSION),
+            scaledFloat("caustica.options.rt.sdrPsychoV23GamutCompression",
+                    CausticaConfig.Rt.Sdr.PSYCHOV23_GAMUT_COMPRESSION, 100, 0, 100, 2),
+        };
+    }
+
+    /** Controls shared by the legacy PsychoV and PsychoV23 maps on both output paths. */
+    public static TonemapControl[] psychoOptions() {
+        return new TonemapControl[] {
             percent("caustica.options.rt.hdrPsychoHighlights", CausticaConfig.Rt.Hdr.PSYCHO_HIGHLIGHTS, 0, 300),
             percent("caustica.options.rt.hdrPsychoShadows", CausticaConfig.Rt.Hdr.PSYCHO_SHADOWS, 0, 300),
             percent("caustica.options.rt.hdrPsychoContrast", CausticaConfig.Rt.Hdr.PSYCHO_CONTRAST, 0, 300),
             percent("caustica.options.rt.hdrPsychoPurity", CausticaConfig.Rt.Hdr.PSYCHO_PURITY, 0, 300),
-            percent("caustica.options.rt.hdrPsychoBleaching", CausticaConfig.Rt.Hdr.PSYCHO_BLEACHING, 0, 100),
             percent("caustica.options.rt.hdrPsychoHueRestore", CausticaConfig.Rt.Hdr.PSYCHO_HUE_RESTORE, 0, 100),
             percent("caustica.options.rt.hdrPsychoAdaptContrast", CausticaConfig.Rt.Hdr.PSYCHO_ADAPT_CONTRAST, 0, 300),
+            scaledFloat("caustica.options.rt.hdrPsychoConeExponent",
+                    CausticaConfig.Rt.Hdr.PSYCHO_CONE_EXPONENT, 100, 10, 300, 2),
+        };
+    }
+
+    /** Controls used only by the original HDR PsychoV white-compression path. */
+    public static TonemapControl[] hdrPsychoOptions() {
+        return new TonemapControl[] {
+            percent("caustica.options.rt.hdrPsychoBleaching", CausticaConfig.Rt.Hdr.PSYCHO_BLEACHING, 0, 100),
             scaledFloat("caustica.options.rt.hdrPsychoClipPoint", CausticaConfig.Rt.Hdr.PSYCHO_CLIP_POINT, 10, 10, 10000, 1),
             psychoWhiteCurve(),
-            scaledFloat("caustica.options.rt.hdrPsychoConeExponent", CausticaConfig.Rt.Hdr.PSYCHO_CONE_EXPONENT, 100, 10, 300, 2),
+        };
+    }
+
+    /** HDR-only controls for the PsychoV23 display-peak and gamut stages. */
+    public static TonemapControl[] hdrPsychoV23Options() {
+        return new TonemapControl[] {
+            psychoV23Compression("caustica.options.rt.hdrPsychoV23Compression",
+                    CausticaConfig.Rt.Hdr.PSYCHOV23_COMPRESSION),
+            scaledFloat("caustica.options.rt.hdrPsychoV23GamutCompression",
+                    CausticaConfig.Rt.Hdr.PSYCHOV23_GAMUT_COMPRESSION, 100, 0, 100, 2),
         };
     }
 
@@ -284,9 +325,9 @@ public final class RtVideoOptions {
             tenths -> setting.set(tenths / 10.0f));
     }
 
-    private static OptionInstance<String> sdrTonemap() {
+    private static TonemapControl sdrTonemap() {
         StringSetting setting = CausticaConfig.Rt.Sdr.TONEMAP_MODE;
-        return new OptionInstance<>(
+        OptionInstance<String> option = new OptionInstance<>(
             "caustica.options.rt.sdrTonemap",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.sdrTonemap.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.sdrTonemap." + value),
@@ -303,6 +344,7 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV23), Codec.STRING),
             setting.configuredValue(),
             setting::set);
+        return control(option, setting.defaultValue());
     }
 
     private static OptionInstance<Integer> spp() {
@@ -368,13 +410,14 @@ public final class RtVideoOptions {
             position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
     }
 
-    private static OptionInstance<Boolean> hdrEnabled() {
-        return bool("caustica.options.rt.hdr", CausticaConfig.Rt.Hdr.ENABLED);
+    private static TonemapControl hdrEnabled() {
+        BooleanSetting setting = CausticaConfig.Rt.Hdr.ENABLED;
+        return control(bool("caustica.options.rt.hdr", setting), setting.defaultValue());
     }
 
-    private static OptionInstance<String> hdrTonemap() {
+    private static TonemapControl hdrTonemap() {
         StringSetting setting = CausticaConfig.Rt.Hdr.TONEMAP_MODE;
-        return new OptionInstance<>(
+        OptionInstance<String> option = new OptionInstance<>(
             "caustica.options.rt.hdrTonemap",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrTonemap.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.hdrTonemap." + value),
@@ -385,39 +428,43 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Hdr.TONEMAP_CAUSTICA), Codec.STRING),
             setting.configuredValue(),
             setting::set);
+        return control(option, setting.defaultValue());
     }
 
-    private static OptionInstance<String> psychoWhiteCurve() {
+    private static TonemapControl psychoWhiteCurve() {
         StringSetting setting = CausticaConfig.Rt.Hdr.PSYCHO_WHITE_CURVE;
-        return new OptionInstance<>(
+        OptionInstance<String> option = new OptionInstance<>(
             "caustica.options.rt.hdrPsychoWhiteCurve",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPsychoWhiteCurve.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.hdrPsychoWhiteCurve." + value),
             new OptionInstance.Enum<>(List.of("naka-rushton", "neutwo"), Codec.STRING),
             setting.configuredValue(),
             setting::set);
+        return control(option, setting.defaultValue());
     }
 
-    private static OptionInstance<Integer> hdrPaperWhite() {
+    private static TonemapControl hdrPaperWhite() {
         FloatSetting setting = CausticaConfig.Rt.Hdr.PAPER_WHITE_NITS;
-        return new OptionInstance<>(
+        OptionInstance<Integer> option = new OptionInstance<>(
             "caustica.options.rt.hdrPaperWhite",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPaperWhite.tooltip")),
             (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
             new OptionInstance.IntRange(80, 1000),
             Math.clamp(Math.round(setting.configuredValue()), 80, 1000),
             nits -> setting.set(nits.floatValue()));
+        return control(option, Math.clamp(Math.round(setting.defaultValue()), 80, 1000));
     }
 
-    private static OptionInstance<Integer> hdrPeak() {
+    private static TonemapControl hdrPeak() {
         FloatSetting setting = CausticaConfig.Rt.Hdr.PEAK_NITS;
-        return new OptionInstance<>(
+        OptionInstance<Integer> option = new OptionInstance<>(
             "caustica.options.rt.hdrPeak",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPeak.tooltip")),
             (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
             new OptionInstance.IntRange(80, 10000),
             Math.clamp(Math.round(setting.configuredValue()), 80, 10000),
             nits -> setting.set(nits.floatValue()));
+        return control(option, Math.clamp(Math.round(setting.defaultValue()), 80, 10000));
     }
 
     private static OptionInstance<Integer> debugView() {
@@ -431,7 +478,7 @@ public final class RtVideoOptions {
             setting::set);
     }
 
-    private static OptionInstance<Integer> percent(String captionKey, FloatSetting setting, int min, int max) {
+    private static TonemapControl percent(String captionKey, FloatSetting setting, int min, int max) {
         return scaledFloat(captionKey, setting, 100, min, max, 2);
     }
 
@@ -446,9 +493,9 @@ public final class RtVideoOptions {
             centimeters -> setting.set(centimeters / 100.0f));
     }
 
-    private static OptionInstance<Integer> scaledFloat(
+    private static TonemapControl scaledFloat(
             String captionKey, FloatSetting setting, int scale, int min, int max, int decimals) {
-        return new OptionInstance<>(
+        OptionInstance<Integer> option = new OptionInstance<>(
             captionKey,
             OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
             (caption, value) -> Options.genericValueLabel(caption,
@@ -456,6 +503,24 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(min, max),
             Math.clamp(Math.round(setting.configuredValue() * scale), min, max),
             value -> setting.set(value / (float) scale));
+        return control(option, Math.clamp(Math.round(setting.defaultValue() * scale), min, max));
+    }
+
+    private static TonemapControl psychoV23Compression(String captionKey, FloatSetting setting) {
+        int min = 0;
+        int max = 800;
+        int scale = 100;
+        OptionInstance<Integer> option = new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    value == 0
+                            ? Component.translatable(captionKey + ".auto")
+                            : Component.literal(decimal(value / (float) scale, 2))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.configuredValue() * scale), min, max),
+            value -> setting.set(value / (float) scale));
+        return control(option, Math.clamp(Math.round(setting.defaultValue() * scale), min, max));
     }
 
     private static String decimal(float value, int decimals) {

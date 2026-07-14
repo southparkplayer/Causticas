@@ -4,6 +4,7 @@ import java.nio.IntBuffer;
 
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.KHRSurface;
+import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkSurfaceFormatKHR;
 
@@ -41,6 +42,9 @@ public final class RtHdr {
     private static final int CS_EXTENDED_SRGB_NONLINEAR = 1000104014;
 
     private static volatile boolean surfaceLogged;
+    private static volatile boolean effectiveHdrSwapchain;
+    private static volatile int selectedColorSpace = CS_SRGB_NONLINEAR;
+    private static volatile int selectedFormat;
 
     private RtHdr() {
     }
@@ -48,12 +52,44 @@ public final class RtHdr {
     /** Logs the resolved HDR config once (cheap; safe to call repeatedly — guarded by the surface log). */
     public static void logConfig() {
         CausticaMod.LOGGER.info(
-                "HDR config: enabled={} tonemap={} paperWhite={}nits peak={}nits -> {} (headroom={})",
+                "HDR config: requestedAtStartup={} effectiveSwapchain={} format={} colorSpace={} "
+                        + "tonemap={} paperWhite={}nits peak={}nits (headroom={})",
                 CausticaConfig.Rt.Hdr.enabled(),
+                effective(), selectedFormat, colorSpaceName(selectedColorSpace),
                 CausticaConfig.Rt.Hdr.TONEMAP_MODE.get(),
                 CausticaConfig.Rt.Hdr.PAPER_WHITE_NITS.value(), CausticaConfig.Rt.Hdr.PEAK_NITS.value(),
-                CausticaConfig.Rt.Hdr.enabled() ? "HDR display path active" : "SDR display path",
                 CausticaConfig.Rt.Hdr.headroom());
+    }
+
+    /** Runtime truth: only an actually selected, supported HDR10/PQ swapchain enables PQ rendering. */
+    public static boolean effective() {
+        return effectiveHdrSwapchain;
+    }
+
+    public static void recordSwapchainSelection(boolean requestedAtStartup, int format, int colorSpace) {
+        selectedFormat = format;
+        selectedColorSpace = colorSpace;
+        effectiveHdrSwapchain = effectiveHdrForSelection(requestedAtStartup, format, colorSpace);
+    }
+
+    public static void clearSwapchainSelection() {
+        effectiveHdrSwapchain = false;
+        selectedFormat = 0;
+        selectedColorSpace = CS_SRGB_NONLINEAR;
+    }
+
+    /** Every surface-format scan starts from SDR; a previous PQ selection is never reusable evidence. */
+    public static int resetColorSpaceForSurfaceScan(int ignoredPreviousColorSpace) {
+        return CS_SRGB_NONLINEAR;
+    }
+
+    public static boolean isSupportedPqFormat(int format) {
+        return format == VK10.VK_FORMAT_A2B10G10R10_UNORM_PACK32
+                || format == VK10.VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+    }
+
+    static boolean effectiveHdrForSelection(boolean requestedAtStartup, int format, int colorSpace) {
+        return requestedAtStartup && colorSpace == CS_HDR10_ST2084 && isSupportedPqFormat(format);
     }
 
     /**

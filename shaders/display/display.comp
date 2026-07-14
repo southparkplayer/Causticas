@@ -33,6 +33,11 @@ layout(push_constant) uniform Push {
     float sdrParam6;
     float sdrParam7;
     int debugView;        // 8 = selected SDR mapper / PsychoV23 comparison
+    float sdrPsychoV23Compression;      // 0 = automatic reference-range compression
+    float sdrPsychoV23GamutCompression; // 0..1 adaptive gamut compression
+    float hdrPsychoV23Compression;      // 0 = automatic reference-range compression
+    float hdrPsychoV23GamutCompression; // 0..1 adaptive gamut compression
+    float sdrPsychoV23Peak;
 } pc;
 
 // Tonemap seam: map HDR RT radiance to displayable LDR before copying back to the main target.
@@ -716,11 +721,10 @@ vec3 tonemapSdrPsychoV(vec3 color) {
 }
 
 // PsychoV23 (Test23): signed-opponent retention after scalar Yf grading and
-// before the display-hull conversion. The reference path intentionally uses
-// the defaults from test23_signed_opponent_retention.hlsl so it can be tested
-// independently of the existing PsychoV controls.
+// before the display-hull conversion. The controls follow the supplied HLSL
+// reference: PsychoV's grading controls are shared, while compression and
+// gamut strength are independent for the SDR and HDR output paths.
 const float PSYCHO23_EPSILON = 1.0e-6;
-const float PSYCHO23_PEAK = 1000.0 / 203.0;
 const float PSYCHO23_REFERENCE_SIMULTANEOUS_RANGE_LOG10 = 3.7;
 const float PSYCHO23_REFERENCE_CENTERED_RANGE_SIDE_COUNT = 2.0;
 const float PSYCHO23_HIGHLIGHT_GRADE_REFERENCE_WHITE = 1.0;
@@ -966,13 +970,12 @@ vec3 psycho23CopySign(vec3 magnitude, vec3 source) {
             source.z < 0.0 ? -abs(magnitude.z) : abs(magnitude.z));
 }
 
-vec3 psychoV23Linear(vec3 color, float peakValue) {
-    const float highlights = 1.0;
-    const float shadows = 1.0;
-    const float contrast = 1.0;
-    const float purityScale = 1.0;
-    const float hueRestore = 1.0;
-    const float compression = 1.0;
+vec3 psychoV23Linear(vec3 color, float peakValue, float highlights, float shadows,
+        float contrast, float purityScale, float hueRestore, float adaptationContrast,
+        float coneResponseExponent, float compression, float gamutCompression) {
+    float legacyResponseScale = max(coneResponseExponent * adaptationContrast, 0.0);
+    contrast *= legacyResponseScale;
+    purityScale *= legacyResponseScale;
 
     vec3 lmsIn = psycho23LMSFromBT709(color);
     vec3 lmsPeak = psycho23LMSFromBT709(vec3(peakValue));
@@ -994,7 +997,12 @@ vec3 psychoV23Linear(vec3 color, float peakValue) {
     vec3 contrastRatio = max(contrastInput / anchorIn, vec3(PSYCHO23_EPSILON));
     vec3 contrastLms = anchorOut * pow(contrastRatio, vec3(contrastPower));
 
-    float compressionPower = max(compression, PSYCHO23_EPSILON);
+    float compressionPower = compression;
+    if (compression <= PSYCHO23_EPSILON) {
+        compressionPower = psycho23AutoCompression(
+                psycho23YfFromLMS(anchorOut), psycho23YfFromLMS(lmsPeak));
+    }
+    compressionPower = max(compressionPower, PSYCHO23_EPSILON);
     vec3 anchorOverPeak = anchorOut / max(lmsPeak, vec3(PSYCHO23_EPSILON));
     vec3 compressionSlopeNorm = 1.0
             - pow(max(anchorOverPeak, vec3(PSYCHO23_EPSILON)), vec3(compressionPower));
@@ -1015,7 +1023,7 @@ vec3 psychoV23Linear(vec3 color, float peakValue) {
     vec3 displayScaledRelativeWeighted = psycho23ToAdaptiveRelativeWeightedLMS(
             displayScaled, adaptiveStateLms);
     displayScaledRelativeWeighted = psycho23GamutCompressAdaptive(
-            displayScaledRelativeWeighted, adaptiveStateLms, 1.0);
+            displayScaledRelativeWeighted, adaptiveStateLms, gamutCompression);
 
     vec3 outputLms = psycho23UnweighLMS(
             psycho23FromAdaptiveRelativeWeightedLMS(displayScaledRelativeWeighted, adaptiveStateLms));
@@ -1023,12 +1031,18 @@ vec3 psychoV23Linear(vec3 color, float peakValue) {
 }
 
 vec3 tonemapSdrPsychoV23(vec3 color) {
-    return clamp(psychoV23Linear(color, PSYCHO23_PEAK), 0.0, 1.0);
+    return clamp(psychoV23Linear(color, max(pc.sdrPsychoV23Peak, 0.25),
+            pc.psychoHighlights, pc.psychoShadows, pc.psychoContrast, pc.psychoPurity,
+            pc.psychoHueRestore, pc.psychoAdaptContrast, pc.psychoConeExponent,
+            pc.sdrPsychoV23Compression, pc.sdrPsychoV23GamutCompression), 0.0, 1.0);
 }
 
 vec3 tonemapHdrPsychoV23(vec3 hdr, float exposure) {
     vec3 paperReferred709 = max(hdr * exposure, vec3(0.0));
-    vec3 mapped709 = max(psychoV23Linear(paperReferred709, max(pc.headroom, 1.0)), vec3(0.0));
+    vec3 mapped709 = max(psychoV23Linear(paperReferred709, max(pc.headroom, 1.0),
+            pc.psychoHighlights, pc.psychoShadows, pc.psychoContrast, pc.psychoPurity,
+            pc.psychoHueRestore, pc.psychoAdaptContrast, pc.psychoConeExponent,
+            pc.hdrPsychoV23Compression, pc.hdrPsychoV23GamutCompression), vec3(0.0));
     vec3 mapped2020 = max(BT709_TO_BT2020 * mapped709, vec3(0.0));
     return pqEncodeNits(mapped2020 * pc.paperWhiteNits);
 }
@@ -1086,9 +1100,9 @@ void main() {
     vec4 rt = imageLoad(rtImage, pix);
     float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
     vec3 selectedLdr = tonemapSdr(rt.rgb, exposure);
-    vec3 psychoV23Ldr = linearToSrgb(tonemapSdrPsychoV23(max(rt.rgb * exposure, vec3(0.0))));
     vec3 ldr = selectedLdr;
     if (pc.debugView == DISPLAY_DEBUG_TONEMAP_COMPARISON) {
+        vec3 psychoV23Ldr = linearToSrgb(tonemapSdrPsychoV23(max(rt.rgb * exposure, vec3(0.0))));
         int split = size.x / 2;
         if (pix.x == split || pix.x == split - 1) {
             ldr = vec3(1.0);

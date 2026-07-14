@@ -122,7 +122,8 @@ public final class CausticaConfig {
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
                         + " drive the scene-HDR -> display mapping. tonemap-mode selects the HDR display map:\n"
                         + " eetf is the BT.2390 PQ electrical-electrical transfer function; caustica is the\n"
-                        + " original Caustica highlight rolloff; psychov and psychov23 are perceptual PsychoV maps.");
+                        + " original Caustica highlight rolloff; psychov and psychov23 are perceptual PsychoV maps.\n"
+                        + " psychov23.compression=0 uses the automatic psychophysical reference-range fit.");
     }
 
     private static Path resolveConfigPath() {
@@ -927,6 +928,12 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.sdr.gt.blackLift", "sdr.gt.black-lift", 0.0f, -0.5f, 0.5f);
             public static final FloatSetting PSYCHO_PEAK =
                     clampedFloat("caustica.rt.sdr.psychov.peak", "sdr.psychov.peak", 2.0f, 0.5f, 8.0f);
+            public static final FloatSetting PSYCHOV23_PEAK =
+                    clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak", 1000.0f / 203.0f, 0.5f, 8.0f);
+            public static final FloatSetting PSYCHOV23_COMPRESSION =
+                    clampedFloat("caustica.rt.sdr.psychov23.compression", "sdr.psychov23.compression", 1.0f, 0.0f, 8.0f);
+            public static final FloatSetting PSYCHOV23_GAMUT_COMPRESSION =
+                    clampedFloat("caustica.rt.sdr.psychov23.gamutCompression", "sdr.psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
 
             private Sdr() {
             }
@@ -1086,6 +1093,10 @@ public final class CausticaConfig {
             public static final StringSetting PSYCHO_WHITE_CURVE =
                     string("caustica.rt.hdr.psychov.whiteCurve", "hdr.psychov.white-curve", "naka-rushton",
                             Hdr::sanitizePsychoWhiteCurve);
+            public static final FloatSetting PSYCHOV23_COMPRESSION =
+                    clampedFloat("caustica.rt.hdr.psychov23.compression", "hdr.psychov23.compression", 1.0f, 0.0f, 8.0f);
+            public static final FloatSetting PSYCHOV23_GAMUT_COMPRESSION =
+                    clampedFloat("caustica.rt.hdr.psychov23.gamutCompression", "hdr.psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
 
             // Snapshot of ENABLED as resolved at startup (system property / config file), before any
             // in-session edit from the options screen. The swapchain's pixel format (PQ vs SDR) is fixed
@@ -1099,12 +1110,20 @@ public final class CausticaConfig {
 
             /** Whether the HDR display path (world HDR + PQ swapchain + UI overlay) is active this session. */
             public static boolean enabled() {
-                return ENABLED_AT_STARTUP;
+                return sessionRequest(ENABLED_AT_STARTUP, ENABLED.value());
             }
 
             /** Whether {@link #ENABLED} has been changed since startup and needs a restart to take effect. */
             public static boolean pendingRestart() {
-                return ENABLED.value() != ENABLED_AT_STARTUP;
+                return settingRequiresRestart(ENABLED_AT_STARTUP, ENABLED.value());
+            }
+
+            static boolean sessionRequest(boolean enabledAtStartup, boolean ignoredLiveSetting) {
+                return enabledAtStartup;
+            }
+
+            static boolean settingRequiresRestart(boolean enabledAtStartup, boolean liveSetting) {
+                return liveSetting != enabledAtStartup;
             }
 
             /** Absolute nits SDR paper white maps to in the PQ encode (ST.2084 is referenced to 10000 nits). */
