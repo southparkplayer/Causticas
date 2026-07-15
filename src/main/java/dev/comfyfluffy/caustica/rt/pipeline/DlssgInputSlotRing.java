@@ -6,6 +6,7 @@ final class DlssgInputSlotRing {
     private long[] values = new long[0];
     private boolean[] pending = new boolean[0];
     private int active = -1;
+    private int acquiredApplicationImage = -1;
     private boolean prepared;
 
     void reset(int count) {
@@ -13,11 +14,16 @@ final class DlssgInputSlotRing {
         values = new long[fences.length];
         pending = new boolean[fences.length];
         active = -1;
+        acquiredApplicationImage = -1;
         prepared = false;
     }
 
     void acquire(int imageIndex) {
-        active = imageIndex >= 0 && fences.length > 0 ? imageIndex % fences.length : -1;
+        acquiredApplicationImage = imageIndex;
+        // Tagged depth/motion/HUD-less/UI images are independent of the swapchain images. Rotate them
+        // uniformly by application present instead of inheriting MAILBOX's intentionally nonuniform image
+        // acquisition order, which otherwise creates irregular retirement waits and visible pumping.
+        active = imageIndex >= 0 && fences.length > 0 ? (active + 1) % fences.length : -1;
         prepared = false;
     }
 
@@ -32,6 +38,7 @@ final class DlssgInputSlotRing {
 
     int count() { return fences.length; }
     int active() { return active; }
+    int acquiredApplicationImage() { return acquiredApplicationImage; }
     boolean hasActive() { return active >= 0 && active < fences.length; }
     boolean prepared() { return prepared; }
     void markPrepared() { prepared = true; }

@@ -38,6 +38,13 @@ class DlssgPresentationContractTest {
     }
 
     @Test
+    void automaticQueuePolicyUsesPresentBlockingForMailboxVsync() throws Exception {
+        String fg = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtDlssFg.java");
+        assertTrue(fg.contains("!queueFallback && !logicalVsyncRequested"));
+        assertTrue(fg.contains("MAILBOX VSync requires Streamline-owned presenting-queue pacing"));
+    }
+
+    @Test
     void reportKeepsApplicationAndProxyCountsDistinct() throws Exception {
         String report = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/StreamlineAcceptanceReport.java");
         assertTrue(report.contains("\\\"applicationImageCount\\\""));

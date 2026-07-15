@@ -50,8 +50,9 @@ if ($PSBoundParameters.ContainsKey('GeneratedFrames')) {
 if (-not $report.dlssg.capabilityStateValid) {
     $failures.Add('DLSSG capability state is not valid')
 }
-if ($report.dlssg.effectiveQueueMode -ne 'no-client-queues') {
-    $failures.Add("effective queue mode is $($report.dlssg.effectiveQueueMode), expected no-client-queues")
+$expectedQueueMode = if ($report.dlssg.logicalVsyncRequested) { 'block-presenting-queue' } else { 'no-client-queues' }
+if ($report.dlssg.effectiveQueueMode -ne $expectedQueueMode) {
+    $failures.Add("effective queue mode is $($report.dlssg.effectiveQueueMode), expected $expectedQueueMode")
 }
 if ($report.dlssg.queueFallbackActive) {
     $failures.Add("queue fallback is active: $($report.dlssg.queueFallbackReason)")

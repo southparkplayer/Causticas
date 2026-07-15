@@ -188,12 +188,30 @@ public final class RtDlssFg {
         return inputSlots.active();
     }
 
+    public int acquiredApplicationImage() {
+        return inputSlots.acquiredApplicationImage();
+    }
+
     public String requestedQueueMode() {
         return diagnosticQueueOverride();
     }
 
     public String effectiveQueueMode() {
         return useNoClientQueues() ? "no-client-queues" : "block-presenting-queue";
+    }
+
+    public String queuePolicyReason() {
+        String override = diagnosticQueueOverride();
+        if (!"auto".equals(override)) {
+            return "Forced diagnostic mode";
+        }
+        if (queueFallback) {
+            return queueFallbackReason;
+        }
+        if (logicalVsyncRequested) {
+            return "MAILBOX VSync requires Streamline-owned presenting-queue pacing";
+        }
+        return "Asynchronous IMMEDIATE presentation";
     }
 
     public boolean queueFallbackActive() {
@@ -959,7 +977,8 @@ public final class RtDlssFg {
 
     private boolean useNoClientQueues() {
         String override = diagnosticQueueOverride();
-        return "no-client-queues".equals(override) || ("auto".equals(override) && !queueFallback);
+        return "no-client-queues".equals(override)
+                || ("auto".equals(override) && !queueFallback && !logicalVsyncRequested);
     }
 
     private static String diagnosticQueueOverride() {

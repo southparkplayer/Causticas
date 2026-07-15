@@ -123,7 +123,7 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                         + " -> native " + StreamlineSwapchainCoordinator.INSTANCE.nativePresentMode()
                         + (StreamlineSwapchainCoordinator.INSTANCE.nativeProxyDispatch()
                                 ? " (Streamline proxy)" : " (native dispatch)")
-                        + " | Queue " + fg.effectiveQueueMode()
+                        + " | Queue " + fg.effectiveQueueMode() + " (" + fg.queuePolicyReason() + ")"
                         + (fg.queueFallbackActive() ? " (fallback: " + fg.queueFallbackReason() + ")" : "")
                         + " | Flip metering " + StreamlineRuntime.flipMeteringState()
                         + " | SDK FG VSync " + (fg.vsyncSupportAvailable() ? "available" : "unsupported")

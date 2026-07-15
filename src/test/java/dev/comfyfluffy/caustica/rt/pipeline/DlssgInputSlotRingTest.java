@@ -6,18 +6,19 @@ import org.junit.jupiter.api.Test;
 
 class DlssgInputSlotRingTest {
     @Test
-    void associatesRetirementWithAcquiredApplicationImage() {
+    void associatesRetirementWithUniformInputSlotNotMailboxImageOrder() {
         DlssgInputSlotRing ring = new DlssgInputSlotRing();
         ring.reset(3);
         ring.acquire(2);
         ring.retireActive(0x1234L, 17L);
 
-        assertEquals(2, ring.active());
-        assertTrue(ring.pending(2));
-        assertTrue(ring.valid(2));
-        assertEquals(0x1234L, ring.fence(2));
-        assertEquals(17L, ring.value(2));
-        assertFalse(ring.pending(0));
+        assertEquals(2, ring.acquiredApplicationImage());
+        assertEquals(0, ring.active());
+        assertTrue(ring.pending(0));
+        assertTrue(ring.valid(0));
+        assertEquals(0x1234L, ring.fence(0));
+        assertEquals(17L, ring.value(0));
+        assertFalse(ring.pending(2));
     }
 
     @Test
@@ -45,9 +46,9 @@ class DlssgInputSlotRingTest {
         ring.acquire(1);
         ring.retireActive(0xCAFE, 0L);
 
-        assertTrue(ring.pending(1));
-        assertFalse(ring.valid(1));
-        assertTrue(ring.snapshot().contains("1:cafe@0:pending"));
+        assertTrue(ring.pending(0));
+        assertFalse(ring.valid(0));
+        assertTrue(ring.snapshot().contains("0:cafe@0:pending"));
     }
 
     @Test
@@ -59,7 +60,8 @@ class DlssgInputSlotRingTest {
         ring.reset(3);
         ring.acquire(4);
 
-        assertEquals(1, ring.active());
+        assertEquals(0, ring.active());
+        assertEquals(4, ring.acquiredApplicationImage());
         assertEquals(3, ring.count());
         assertFalse(ring.pending(1));
         assertFalse(ring.prepared());

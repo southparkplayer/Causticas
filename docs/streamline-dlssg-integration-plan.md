@@ -205,9 +205,10 @@ resource retention only for short, safe transitions.
 
 ### Synchronization
 
-- Default to automatic `eBlockNoClientQueues`. Maintain one tagged-input resource slot per
-  application-visible swapchain image and associate each real present's
-  `inputsProcessingCompletionFence`/value with the slot used by that present.
+- Use automatic queue ownership: `eBlockNoClientQueues` for uncapped IMMEDIATE presentation and
+  `eBlockPresentingClientQueue` for physical MAILBOX VSync so Streamline owns generated-frame cadence
+  without an application limiter. Maintain one uniformly rotated tagged-input resource slot per
+  application-visible backbuffer; do not key slot reuse to MAILBOX's nonuniform acquired-image order.
 - Preserve Minecraft's acquire/present binary semaphore chain exactly. The proxy acquire and proxy present
   are the only acquire/present operations.
 - Wait only when the corresponding application-image slot is reused. If Streamline supplies an invalid
