@@ -288,6 +288,7 @@ static const float MIN_ROUGH = 0.045;
 // LabPBR smoothness is 8-bit. Red=255 decodes to roughness 0; allow one half-code of tolerance for the
 // sampled UNORM conversion without turning merely glossy surfaces into delta mirrors.
 static const float PSR_MIRROR_ROUGHNESS_MAX = 0.5 / 255.0;
+static const uint PSR_MAX_MIRRORS = 3u;
 
 float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
@@ -680,6 +681,90 @@ float2 previousReflectionNdc(float3 surfacePos, float3 previousSurfaceNormal,
     return projectPrevNdc(mirroredHit);
 }
 
+// Follow a bounded chain of exact mirrors, then unfold the final destination through the mirror planes
+// in reverse order. T1(T2(...Tn(P))) is the virtual primary surface seen through n reflections.
+float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNormal,
+        float3 primaryDir, float primaryConeSpread) {
+    float3 mirrorPos[PSR_MAX_MIRRORS];
+    float3 mirrorNormal[PSR_MAX_MIRRORS];
+    mirrorPos[0] = surfacePos;
+    mirrorNormal[0] = normalize(surfaceNormal);
+    uint mirrorCount = 1u;
+
+    float3 rayOrigin = surfacePos;
+    float3 rayNormal = mirrorNormal[0];
+    float3 rayDir = reflect(primaryDir, rayNormal);
+    float3 finalHit = surfacePos;
+    float3 finalNormal = float3(0.0, 0.0, 0.0);
+    float3 finalMotion = float3(0.0, 0.0, 0.0);
+    float finalRoughness = 1.0;
+    float3 finalDiffuse = SKY_DIFF_ALBEDO;
+    float travelled = length(surfacePos - pc.camOffset);
+
+    for (uint segment = 0u; segment < PSR_MAX_MIRRORS; ++segment) {
+        payload.hitT = -1.0;
+        payloadSetTraceState(false,
+                max(travelled * primaryConeSpread, RAY_CONE_MIN_WIDTH),
+                max(primaryConeSpread, RAY_CONE_MIN_SPREAD));
+        traceGuideReordered(RAY_FLAG_NONE, rayOrigin + rayNormal * SURF_BIAS,
+                RAY_TMIN, rayDir, 10000.0);
+        if (payload.hitT <= 0.0) {
+            finalHit = rayOrigin + rayDir * 1.0e6;
+            break;
+        }
+
+        finalHit = rayOrigin + rayDir * payload.hitT;
+        travelled += payload.hitT;
+        uint material = payloadMaterial();
+        float destinationRoughness = material == MATERIAL_WATER
+                ? WATER_GUIDE_ROUGH : clamp(payloadRoughness(), 0.0, 1.0);
+        float destinationMetal = material == MATERIAL_OPAQUE
+                ? clamp(payloadMetalness(), 0.0, 1.0) : 0.0;
+        bool nestedMirror = material == MATERIAL_OPAQUE
+                && destinationRoughness <= PSR_MIRROR_ROUGHNESS_MAX
+                && destinationMetal >= 0.999
+                && dot(payload.motionPrev, payload.motionPrev) <= 1.0e-12
+                && mirrorCount < PSR_MAX_MIRRORS;
+        if (nestedMirror) {
+            rayOrigin = finalHit;
+            rayNormal = normalize(payload.normal);
+            mirrorPos[mirrorCount] = rayOrigin;
+            mirrorNormal[mirrorCount] = rayNormal;
+            ++mirrorCount;
+            rayDir = reflect(rayDir, rayNormal);
+            continue;
+        }
+
+        finalNormal = payload.normal;
+        finalRoughness = destinationRoughness;
+        if (material == MATERIAL_OPAQUE) {
+            finalMotion = payload.motionPrev;
+            finalDiffuse = payload.albedo * (1.0 - destinationMetal);
+        } else {
+            finalDiffuse = material == MATERIAL_GLASS ? payload.albedo : float3(0.0, 0.0, 0.0);
+        }
+        break;
+    }
+
+    for (int i = int(mirrorCount) - 1; i >= 0; --i) {
+        float3 n = mirrorNormal[i];
+        finalHit -= 2.0 * n * dot(finalHit - mirrorPos[i], n);
+        finalNormal -= 2.0 * n * dot(finalNormal, n);
+        finalMotion -= 2.0 * n * dot(finalMotion, n);
+    }
+    gv_hitCamRel = finalHit - pc.camOffset;
+    gv_motionHitCamRel = gv_hitCamRel;
+    gv_motionObjDisp = finalMotion;
+    gv_motionUseRefracted = true;
+    gv_normal = finalNormal;
+    gv_rough = finalRoughness;
+    gv_albedo = finalDiffuse;
+    // The mirror chain itself has been replaced. A further specular lobe on the terminal surface would
+    // require another correctly transformed specular-motion chain, so keep this bounded PSR pass diffuse.
+    gv_specAlb = float3(0.0, 0.0, 0.0);
+    return float2(0.0, 0.0);
+}
+
 // Reflection (specular) motion vector for DLSS-RR. Covers smooth specular blocks (metals / LabPBR _s)
 // and water reflections including underwater total-internal-reflection — any primary surface with a
 // sharp specular lobe (specular albedo > 0, roughness <= 0.5). A sky miss is treated as a reflected
@@ -696,6 +781,9 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
     }
 
     float3 n = normalize(surfaceNormal);
+    if (gv_psrMirror) {
+        return recursivePrimarySurfaceReplacement(surfacePos, n, primaryDir, primaryConeSpread);
+    }
     float3 specDir = reflect(primaryDir, n);
     // The bias is ONLY for the trace origin (so the reflection ray doesn't self-intersect the surface it
     // leaves). The hit is then reconstructed from the TRUE surface point `surfacePos`, NOT the biased
@@ -720,27 +808,6 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
     } else {
         reflectedHit = surfacePos + specDir * 1.0e6; // sky reflection: virtual image at infinity along specDir
         reflectedMotionPrev = float3(0.0, 0.0, 0.0);
-    }
-    if (gv_psrMirror) {
-        float3 virtualHit = reflectedHit - 2.0 * n * dot(reflectedHit - surfacePos, n);
-        gv_hitCamRel = virtualHit - pc.camOffset;
-        gv_motionHitCamRel = gv_hitCamRel;
-        gv_motionObjDisp = reflectedMotionPrev - 2.0 * n * dot(reflectedMotionPrev, n);
-        gv_motionUseRefracted = true;
-        if (payload.hitT > 0.0) {
-            gv_normal = payload.normal - 2.0 * n * dot(payload.normal, n);
-            gv_rough = payloadMaterial() == MATERIAL_WATER
-                    ? WATER_GUIDE_ROUGH : clamp(payloadRoughness(), 0.0, 1.0);
-            gv_albedo = payloadMaterial() == MATERIAL_OPAQUE
-                    ? payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0))
-                    : float3(0.0, 0.0, 0.0);
-        } else {
-            gv_normal = float3(0.0, 0.0, 0.0);
-            gv_rough = 1.0;
-            gv_albedo = SKY_DIFF_ALBEDO;
-        }
-        gv_specAlb = float3(0.0, 0.0, 0.0);
-        return float2(0.0, 0.0);
     }
     float3 prevN = length(previousSurfaceNormal) >= 0.5 ? normalize(previousSurfaceNormal) : n;
     float2 prevNdc = previousReflectionNdc(surfacePos, prevN, reflectedHit, reflectedMotionPrev);

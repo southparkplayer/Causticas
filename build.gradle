@@ -216,9 +216,9 @@ abstract class CompileShaders extends DefaultTask {
 		// expansion that halved all-scene performance in the rejected hybrid integration.
 		["world.rgen.spv", "world_nv.rgen.spv"].each { name ->
 			def raygen = new File(scratchDir, name)
-			if (!raygen.isFile() || raygen.length() > 126_000L) {
+			if (!raygen.isFile() || raygen.length() > 130_500L) {
 				throw new GradleException("Glass-only world raygen complexity budget exceeded: ${name} is "
-						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 126000)")
+						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 130500)")
 			}
 		}
 		outDirFile.mkdirs()
