@@ -3,13 +3,16 @@ package dev.comfyfluffy.caustica.mixin;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.client.VanillaRenderController;
 import dev.comfyfluffy.caustica.client.WorldRenderScaler;
 import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtUiOverlay;
+import dev.comfyfluffy.caustica.rt.entity.RtEntities;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.SubmitNodeStorage;
 import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
@@ -71,6 +74,14 @@ public abstract class GameRendererMixin {
 					target = "Lnet/minecraft/client/renderer/GameRenderer;renderItemInHand(Lnet/minecraft/client/renderer/state/level/CameraRenderState;FLorg/joml/Matrix4fc;)V"))
 	private void caustica$redirectHandToOverlay(GameRenderer self, CameraRenderState cameraState, float deltaPartialTick,
 			Matrix4fc modelViewMatrix, Operation<Void> original) {
+		boolean disableVanillaModel = VanillaRenderController.rtRuntimeWorkRequested()
+				&& RtEntities.enabled()
+				&& CausticaConfig.Rt.FirstPerson.ENABLED.value()
+				&& CausticaConfig.Rt.FirstPerson.DISABLE_VANILLA_MODEL.value()
+				&& Minecraft.getInstance().options.getCameraType().isFirstPerson();
+		if (disableVanillaModel) {
+			return;
+		}
 		boolean redirect = RtUiOverlay.enabled();
 		if (redirect) {
 			RtUiOverlay.beginOutputRedirect(this.mainRenderTarget);

@@ -495,9 +495,9 @@ public final class RtEntities {
     private void captureEntities(RtContext ctx, FrameBuild build, Minecraft mc, ClientLevel level, float partial, int rbx, int rby, int rbz) {
         EntityRenderDispatcher dispatcher = mc.getEntityRenderDispatcher();
         Entity cameraEntity = mc.getCameraEntity();
-        // In first person the camera owner's own body must not block the primary camera ray, but it should
-        // still appear in reflections / shadows / GI (so the player sees themselves in water as others would).
-        // In F5 third person it renders fully, like any other entity.
+        // In first person the camera owner's body is visible to both the primary camera ray and secondary
+        // lighting/reflection rays. The separately captured head remains secondary-only so the camera cannot
+        // start inside the head mesh. In F5 third person the full player renders like any other entity.
         boolean firstPerson = mc.options.getCameraType().isFirstPerson();
         curVerts.clear();
         glowBatches.clear();
@@ -540,7 +540,7 @@ public final class RtEntities {
                     Vec3 offset = RtFirstPersonPose.offset((Player) entity, avatar, partial, cameraState.pos);
                     captureEntityPass(ctx, build, dispatcher, state,
                             ix + (float) offset.x, iy + (float) offset.y, iz + (float) offset.z,
-                            rbx, rby, rbz, captureKey(entityToken, CAPTURE_BODY), MASK_SECONDARY,
+                            rbx, rby, rbz, captureKey(entityToken, CAPTURE_BODY), MASK_PRIMARY | MASK_SECONDARY,
                             RtEntityCollector.CaptureMode.FIRST_PERSON_BODY, "first-person body");
                     captureEntityPass(ctx, build, dispatcher, state,
                             ix + (float) offset.x, iy + (float) offset.y, iz + (float) offset.z,

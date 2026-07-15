@@ -803,8 +803,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         payloadSetTraceState(showCelestial, rayConeWidth, rayConeSpread);
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
-        // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the first-person
-        // player. Bounce rays are secondary (CULL_SECONDARY): exclude particles, include the player.
+        // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles and the first-person body,
+        // but not the separately captured head. Bounce rays are secondary (CULL_SECONDARY): exclude
+        // particles and include both first-person body and head for shadows, GI, and reflections.
         traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0);
 
         if (payload.hitT < 0.0) {

@@ -20,11 +20,10 @@ layout(location = 0) in vec3 vCamRel; // this fragment's position relative to th
 layout(location = 0) out vec4 outColor;
 
 // Same primary-camera-ray cull mask world.rgen's tracePath uses for bounce 0 (see CULL_PRIMARY there /
-// RtEntities.MASK_PRIMARY): the local first-person player's own body is deliberately masked out of primary
-// rays (RtEntities.captureEntities gives it MASK_SECONDARY = 0x01 instead of MASK_ALL), since vanilla never
-// draws your own body in first person either. This ray originates at the camera like a primary ray, so it
-// must use the SAME mask — 0xFF (every instance) would immediately self-intersect the first-person player's
-// body sitting right at the origin and discard every fragment.
+// RtEntities.MASK_PRIMARY): the local first-person body is visible here just as it is to the world camera ray;
+// the separately captured head remains secondary-only to avoid camera-origin self-intersection. This ray
+// originates at the camera like a primary ray, so it must use the SAME mask. Using 0xFF would also include
+// the secondary-only head and could immediately self-intersect at the camera origin.
 const uint CULL_PRIMARY = 0x02u;
 
 void main() {

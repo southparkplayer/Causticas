@@ -62,7 +62,8 @@ public final class CausticaConfig {
         @SuppressWarnings("unused")
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
-            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED, Rt.EntityTextures.MAX_TEXTURES,
+            Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED,
+            Rt.FirstPerson.DISABLE_VANILLA_MODEL, Rt.EntityTextures.MAX_TEXTURES,
             Rt.DlssRr.ENABLED,
             Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
@@ -700,6 +701,8 @@ public final class CausticaConfig {
         public static final class FirstPerson {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.firstPerson", "first-person.enabled", true);
+            public static final BooleanSetting DISABLE_VANILLA_MODEL = bool(
+                    "caustica.rt.firstPerson.disableVanillaModel", "first-person.disable-vanilla-model", true);
             public static final FloatSetting FORWARD_OFFSET = clampedFloat(
                     "caustica.rt.firstPerson.forwardOffset", "first-person.forward-offset", -0.20f, -0.30f, 0.30f);
             public static final FloatSetting VERTICAL_OFFSET = clampedFloat(

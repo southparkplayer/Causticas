@@ -146,6 +146,8 @@ public final class RtVideoOptions {
     public static OptionInstance<?>[] firstPersonOptions() {
         return new OptionInstance<?>[] {
             bool("caustica.options.rt.firstPerson.enabled", CausticaConfig.Rt.FirstPerson.ENABLED),
+            bool("caustica.options.rt.firstPerson.disableVanillaModel",
+                    CausticaConfig.Rt.FirstPerson.DISABLE_VANILLA_MODEL),
             offset("caustica.options.rt.firstPerson.forward", CausticaConfig.Rt.FirstPerson.FORWARD_OFFSET, -30, 30),
             offset("caustica.options.rt.firstPerson.vertical", CausticaConfig.Rt.FirstPerson.VERTICAL_OFFSET, -30, 30),
             offset("caustica.options.rt.firstPerson.lateral", CausticaConfig.Rt.FirstPerson.LATERAL_OFFSET, -20, 20),
