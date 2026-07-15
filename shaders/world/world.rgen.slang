@@ -62,6 +62,10 @@ static uint gv_opticalGuideMode; // 0 none, 1 water, 2 glass exit, 3 glass entry
 static float gv_opticalExitEta;
 // Previous animated-reflector normal; zero selects the current normal for static surfaces.
 static float3 gv_specPreviousNormal;
+// Primary Surface Replacement (PSR) is reserved for exact, static metallic mirrors. The radiance path
+// follows the same deterministic delta reflection, while a separate guide ray replaces the mirror plane
+// with the reflected surface in DLSSD's G-buffer.
+static bool gv_psrMirror;
 
 static const uint PAYLOAD_MATERIAL_MASK = 3u;
 
@@ -281,6 +285,9 @@ float waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
 // GGX BRDF. Roughness is clamped away from 0 so the delta sun's specular highlight stays finite
 // and the VNDF sample is well-conditioned. alpha = roughness^2 (perceptual -> GGX) throughout.
 static const float MIN_ROUGH = 0.045;
+// LabPBR smoothness is 8-bit. Red=255 decodes to roughness 0; allow one half-code of tolerance for the
+// sampled UNORM conversion without turning merely glossy surfaces into delta mirrors.
+static const float PSR_MIRROR_ROUGHNESS_MAX = 0.5 / 255.0;
 
 float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
@@ -714,6 +721,27 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
         reflectedHit = surfacePos + specDir * 1.0e6; // sky reflection: virtual image at infinity along specDir
         reflectedMotionPrev = float3(0.0, 0.0, 0.0);
     }
+    if (gv_psrMirror) {
+        float3 virtualHit = reflectedHit - 2.0 * n * dot(reflectedHit - surfacePos, n);
+        gv_hitCamRel = virtualHit - pc.camOffset;
+        gv_motionHitCamRel = gv_hitCamRel;
+        gv_motionObjDisp = reflectedMotionPrev - 2.0 * n * dot(reflectedMotionPrev, n);
+        gv_motionUseRefracted = true;
+        if (payload.hitT > 0.0) {
+            gv_normal = payload.normal - 2.0 * n * dot(payload.normal, n);
+            gv_rough = payloadMaterial() == MATERIAL_WATER
+                    ? WATER_GUIDE_ROUGH : clamp(payloadRoughness(), 0.0, 1.0);
+            gv_albedo = payloadMaterial() == MATERIAL_OPAQUE
+                    ? payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0))
+                    : float3(0.0, 0.0, 0.0);
+        } else {
+            gv_normal = float3(0.0, 0.0, 0.0);
+            gv_rough = 1.0;
+            gv_albedo = SKY_DIFF_ALBEDO;
+        }
+        gv_specAlb = float3(0.0, 0.0, 0.0);
+        return float2(0.0, 0.0);
+    }
     float3 prevN = length(previousSurfaceNormal) >= 0.5 ? normalize(previousSurfaceNormal) : n;
     float2 prevNdc = previousReflectionNdc(surfacePos, prevN, reflectedHit, reflectedMotionPrev);
     return (prevNdc - currentNdc) * 0.5 * size;
@@ -1086,6 +1114,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         float perceptualRough = pbr ? clamp(payloadRoughness(), 0.0, 1.0) : 1.0;
         float rough = max(perceptualRough, MIN_ROUGH);
         float metal = pbr ? clamp(payloadMetalness(), 0.0, 1.0) : 0.0;
+        bool exactMirror = pbr && perceptualRough <= PSR_MIRROR_ROUGHNESS_MAX && metal >= 0.999;
         float3 diffAlb = albedo * (1.0 - metal);
         // F0 comes from the chit: dielectric 0.04, a LabPBR custom/metal F0, or albedo for metals.
         float3 F0 = pbr ? payload.f0 : lerp(float3(0.04, 0.04, 0.04), albedo, metal);
@@ -1099,9 +1128,28 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             gv_motionHitCamRel = gv_hitCamRel;
             gv_motionUseRefracted = false;
             gv_motionObjDisp = payload.motionPrev; // per-vertex world motion (0 for static terrain/sky)
+            // Dynamic mirror transforms need their own previous-plane transform. Restrict PSR to static
+            // mirrors; moving reflective entities retain the ordinary specular-motion guide path.
+            gv_psrMirror = exactMirror && dot(payload.motionPrev, payload.motionPrev) <= 1.0e-12;
         }
         if (primaryOnly) {
             break;
+        }
+
+        // A true mirror is a delta distribution, not a narrow finite GGX lobe. This removes the 0.045
+        // roughness floor and stochastic 90/10 specular/diffuse branch only for authored roughness zero.
+        // The reflected sun/moon arrives through the continuation miss, so delta mirrors skip NEE.
+        if (exactMirror) {
+            throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0);
+            ro = p;
+            rd = reflect(rd, n);
+            showCelestial = true;
+            if (bounce >= rrStart) {
+                float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
+                if (rndf(seed) > q) break;
+                throughput /= q;
+            }
+            continue;
         }
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
@@ -1259,6 +1307,7 @@ void main() {
     gv_opticalGuideMode = 0u;
     gv_opticalExitEta = 1.0;
     gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
+    gv_psrMirror = false;
     for (uint s = 0u; s < pathCount; s++) {
         seed = pcg(seed); // decorrelate per-sample paths (shared camera ray, no AA jitter yet)
         // The primary ray is shared by all SPP samples. Preserve guides from sample zero; the radiance path
@@ -1308,13 +1357,22 @@ void main() {
         }
     }
 
+    // The existing reflection-motion trace also performs PSR for exact mirrors, so run it before ordinary
+    // depth/motion are derived from the potentially replaced virtual surface.
+    float2 specMotion = float2(0.0, 0.0);
+    bool debugSpecMotion = pc.debugView == 7u;
+    if (writeRrGuides || debugSpecMotion) {
+        specMotion = specularReflectionMotion(
+                specSurfaceCamRel + pc.camOffset, specSurfaceNormal, specSurfacePreviousNormal,
+                specSurfaceRoughness, specSurfaceAlbedo, dir, jndc, size, rayConeSpread);
+    }
+
     // Hardware (non-linear, reversed-Z) depth for DLSS-RR + Frame Generation: project the camera-relative
     // primary hit through the forward view-projection and take ndc z/w — exactly the value a rasterizer
     // would write. Reversed-Z (near=1, far=0), so DLSS gets the DepthInverted flag; sky's far hit -> ~0.
     // Water depth follows its surface; clear glass follows the transmitted destination to avoid blur.
     bool debugDepth = pc.debugView == 3u;
     bool debugMotion = pc.debugView == 5u;
-    bool debugSpecMotion = pc.debugView == 7u;
     if (writeMotionGuides || debugDepth) {
         float4 curClip = mul(pc.curViewProj, float4(gv_hitCamRel, 1.0));
         gv_depth = curClip.w > 0.0 ? curClip.z / curClip.w : 0.0;
@@ -1331,14 +1389,6 @@ void main() {
             curNdc = curClipRefr.xy / curClipRefr.w;
         }
         motion = (prevNdc - curNdc) * 0.5 * size;
-    }
-
-    float2 specMotion = float2(0.0, 0.0);
-    if (writeRrGuides || debugSpecMotion) {
-        specMotion = specularReflectionMotion(
-                specSurfaceCamRel + pc.camOffset, specSurfaceNormal, specSurfacePreviousNormal,
-                specSurfaceRoughness,
-                specSurfaceAlbedo, dir, jndc, size, rayConeSpread);
     }
 
     if (writeRrGuides) {
