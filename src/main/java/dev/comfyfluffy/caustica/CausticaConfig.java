@@ -580,8 +580,15 @@ public final class CausticaConfig {
                     bool("caustica.rt.glow", "entities.glow.enabled", true);
             public static final BooleanSetting NAME_TAGS_ENABLED =
                     bool("caustica.rt.nameTags", "entities.name-tags.enabled", true);
-            public static final IntSetting MAX_ENTITIES =
-                    intAtLeast("caustica.rt.maxEntities", "entities.max-entities", 1024, 1);
+            /** Debug-only: render each model submission twice and require bitwise-identical CPU captures. */
+            public static final BooleanSetting CAPTURE_PARITY =
+                    bool("caustica.rt.entityCaptureParity", "entities.debug.capture-parity", false);
+            public static final IntSetting MAX_ORDINARY_ENTITIES =
+                    intAtLeast("caustica.rt.maxOrdinaryEntities", "entities.max-ordinary-entities", 1024, 0);
+            public static final IntSetting MAX_BLOCK_ENTITIES =
+                    intAtLeast("caustica.rt.maxBlockEntities", "entities.block-entities.max-entities", 1024, 0);
+            public static final IntSetting MAX_PARTICLES =
+                    intAtLeast("caustica.rt.maxParticles", "particles.max-particles", 1024, 0);
             public static final IntSetting BE_VIEW_CHUNKS =
                     intAtLeast("caustica.rt.beViewChunks", "entities.block-entities.view-chunks", 8, 0);
             public static final IntSetting BE_BUILDS_PER_FRAME =
@@ -592,16 +599,18 @@ public final class CausticaConfig {
             private Entities() {
             }
 
-            public static int entityListCapacity() {
-                return Math.max(16, MAX_ENTITIES.value());
+            public static int maxEntities() {
+                return Math.addExact(Math.addExact(
+                        MAX_ORDINARY_ENTITIES.value(), MAX_BLOCK_ENTITIES.value()), MAX_PARTICLES.value());
             }
 
-            public static int entityBufferListCapacity() {
-                return (int) Math.min(Integer.MAX_VALUE, (long) entityListCapacity() * 5L);
+            public static int entityListCapacity() {
+                return Math.max(16, maxEntities());
             }
 
             public static int entityMapCapacity() {
-                return (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) MAX_ENTITIES.value() * 2L));
+                // Fastutil expected-size constructors apply their own load-factor headroom.
+                return Math.max(16, MAX_ORDINARY_ENTITIES.value());
             }
         }
 
