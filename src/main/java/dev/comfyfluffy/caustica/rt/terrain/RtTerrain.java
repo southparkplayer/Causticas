@@ -1909,7 +1909,7 @@ public final class RtTerrain {
             }
             return;
         }
-        ctx.waitIdle();
+        ctx.waitIdle(shutdown ? "terrain shutdown" : "terrain world reset");
         if (pending != null) {
             ctx.freeAsync(pending.op());
             RtAccel.freeBlasScratch(pending.blas());

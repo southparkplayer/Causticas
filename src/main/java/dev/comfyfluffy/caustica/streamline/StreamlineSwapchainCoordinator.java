@@ -122,7 +122,7 @@ public final class StreamlineSwapchainCoordinator {
         RtDlssFg.INSTANCE.onSwapchainConfigured(width, height, format, imageCount, vsyncRequested,
                 physicalFifo, pluginForSwapchain, generation);
         CausticaMod.LOGGER.info(
-                "Streamline swapchain generation {}: {}x{}, format={}, images={}, plugin={}, requestedPresentMode={}, normalizedPresentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}, nativePresentMode={} (value={}), nativeMinImages={}, nativeImages={}, nativeCreateResult={}, nativeProxyDispatch={}, nativeSwapchain={}",
+                "Streamline swapchain generation {}: {}x{}, format={}, applicationImages={}, plugin={}, requestedPresentMode={}, normalizedPresentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}, nativePresentMode={} (value={}), requestedNativeMinImages={}, proxyVisibleImages={}, nativeCreateResult={}, nativeProxyDispatch={}, nativeSwapchain={}",
                 generation, width, height, format, imageCount, pluginForSwapchain, requestedPresentMode, presentMode, vsyncRequested,
                 mailboxVsyncCompatibility, nativeSwapchain.presentMode(), nativeSwapchain.presentModeValue(),
                 nativeSwapchain.minImageCount(), nativeSwapchain.imageCount(), nativeSwapchain.createResult(),
@@ -195,11 +195,13 @@ public final class StreamlineSwapchainCoordinator {
         return nativeSwapchain.presentModeKnown();
     }
 
-    public int nativeMinImageCount() {
+    /** Requested minimum in the intercepted native create info; not a physical-image enumeration. */
+    public int requestedNativeMinImageCount() {
         return nativeSwapchain.minImageCount();
     }
 
-    public int nativeImageCount() {
+    /** Image count returned through the Streamline proxy to the application. */
+    public int proxyVisibleImageCount() {
         return nativeSwapchain.imageCount();
     }
 

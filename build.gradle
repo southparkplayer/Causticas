@@ -283,6 +283,10 @@ def streamlineVendorNames = [
 def streamlineSdkVendorRoot = { File sdkRoot ->
 	new File(sdkRoot, streamlineVariant == "development" ? "bin/x64/development" : "bin/x64")
 }
+def streamlineNoticeFiles = [
+	"license.txt": "STREAMLINE-SDK-MIT.txt",
+	"3rd-party-licenses.md": "STREAMLINE-THIRD-PARTY.md"
+]
 
 def streamlineBridgeSourceDir = file("native/streamline_bridge")
 def streamlineBridgeBuildDir = file("native/streamline_bridge/build")
@@ -372,6 +376,10 @@ def verifyStreamlineProductionInputs = tasks.register("verifyStreamlineProductio
 		if (vendorRoot.path.toLowerCase(java.util.Locale.ROOT).contains("development")) {
 			throw new GradleException("Production Streamline packaging cannot use the development SDK directory.")
 		}
+		def missingNotices = streamlineNoticeFiles.keySet().findAll { !new File(sdkRoot, it).isFile() }
+		if (!missingNotices.empty) {
+			throw new GradleException("Missing Streamline distribution notice(s): ${missingNotices.join(', ')}")
+		}
 		def unsigned = streamlineVendorNames.findAll { name ->
 			def candidate = new File(vendorRoot, name)
 			if (!candidate.isFile() || !name.toLowerCase(java.util.Locale.ROOT).endsWith(".dll")) {
@@ -400,6 +408,8 @@ def bundleStreamlineNatives = tasks.register("bundleStreamlineNatives") {
 		inputs.files(fileTree(streamlineSdkVendorRoot(sdkForInputs)) {
 			include streamlineVendorNames
 		}).withPropertyName("streamlineSdk.${streamlineVariant}")
+		inputs.files(streamlineNoticeFiles.keySet().collect { new File(sdkForInputs, it) })
+			.withPropertyName("streamlineSdk.notices")
 		inputs.file(streamlineBridgeOutput)
 			.withPropertyName("streamlineBridge")
 	}
@@ -427,6 +437,11 @@ def bundleStreamlineNatives = tasks.register("bundleStreamlineNatives") {
 				missing << new File(vendorRoot, name)
 			}
 		}
+		streamlineNoticeFiles.keySet().each { name ->
+			if (!new File(sdkRoot, name).isFile()) {
+				missing << new File(sdkRoot, name)
+			}
+		}
 		if (!missing.empty) {
 			throw new GradleException("Missing Streamline ${streamlineVariant} Windows x64 inputs:\n - "
 					+ missing.join("\n - "))
@@ -438,6 +453,20 @@ def bundleStreamlineNatives = tasks.register("bundleStreamlineNatives") {
 			from(vendorRoot) {
 				include streamlineVendorNames
 				into "caustica/natives/windows-x64"
+			}
+			from(new File(vendorRoot, "nvngx_dlss.license.txt")) {
+				rename { "NVIDIA-RTX-SDKS.txt" }
+				into "META-INF/licenses/nvidia"
+			}
+			from(new File(vendorRoot, "reflex.license.txt")) {
+				rename { "NVIDIA-REFLEX-SDK.txt" }
+				into "META-INF/licenses/nvidia"
+			}
+			streamlineNoticeFiles.each { sourceName, packagedName ->
+				from(new File(sdkRoot, sourceName)) {
+					rename { packagedName }
+					into "META-INF/licenses/nvidia"
+				}
 			}
 			into streamlineNativeGenRoot
 		}
@@ -464,10 +493,86 @@ java {
 	withSourcesJar()
 }
 
+// Source distributions contain project source, not generated shaders or NVIDIA's proprietary runtime payloads.
+tasks.named("sourcesJar", Jar).configure {
+	exclude "caustica/natives/**"
+	exclude "caustica/rt/*.spv"
+	exclude "caustica/streamline.properties"
+}
+
 tasks.named("jar", Jar).configure {
-	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
+	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md",
+			"DISTRIBUTION_NOTICE.md")) {
 		into "META-INF"
 	}
+}
+
+def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
+	group = "verification"
+	description = "Verifies the exact production runtime and source JAR distribution boundary."
+	dependsOn(tasks.named("jar"), tasks.named("sourcesJar"))
+	onlyIf { streamlinePlatform != null && streamlineVariant == "production" }
+	doLast {
+		def runtimeJar = tasks.named("jar", Jar).get().archiveFile.get().asFile
+		def sourceJar = tasks.named("sourcesJar", Jar).get().archiveFile.get().asFile
+		def required = [
+			"fabric.mod.json",
+			"caustica/streamline.properties",
+			"caustica/natives/windows-x64/streamlinebridge.dll",
+			"caustica/natives/windows-x64/sl.interposer.dll",
+			"caustica/natives/windows-x64/sl.dlss_d.dll",
+			"caustica/natives/windows-x64/sl.dlss_g.dll",
+			"caustica/natives/windows-x64/nvngx_dlssd.dll",
+			"caustica/natives/windows-x64/nvngx_dlssg.dll",
+			"META-INF/DISTRIBUTION_NOTICE.md",
+			"META-INF/THIRD_PARTY_NOTICES.md",
+			"META-INF/licenses/nvidia/STREAMLINE-SDK-MIT.txt",
+			"META-INF/licenses/nvidia/STREAMLINE-THIRD-PARTY.md",
+			"META-INF/licenses/nvidia/NVIDIA-RTX-SDKS.txt",
+			"META-INF/licenses/nvidia/NVIDIA-REFLEX-SDK.txt"
+		]
+		def runtimeZip = new java.util.zip.ZipFile(runtimeJar)
+		try {
+			def names = runtimeZip.entries().collect { it.name } as Set
+			def missing = required.findAll { !names.contains(it) }
+			if (!missing.empty) {
+				throw new GradleException("Production JAR is missing release entries: ${missing.join(', ')}")
+			}
+			def forbidden = names.findAll { name ->
+				name.toLowerCase(java.util.Locale.ROOT).contains("/development/")
+						|| name.toLowerCase(java.util.Locale.ROOT).endsWith(".pdb")
+						|| name.startsWith("include/") || name.endsWith(".h")
+			}
+			if (!forbidden.empty) {
+				throw new GradleException("Production JAR contains non-redistributable development inputs: "
+						+ forbidden.join(', '))
+			}
+			def properties = runtimeZip.getInputStream(runtimeZip.getEntry("caustica/streamline.properties"))
+					.getText("UTF-8")
+			if (!properties.readLines().contains("variant=production")) {
+				throw new GradleException("Production JAR does not identify the production Streamline variant")
+			}
+		} finally {
+			runtimeZip.close()
+		}
+
+		def sourceZip = new java.util.zip.ZipFile(sourceJar)
+		try {
+			def leaked = sourceZip.entries().collect { it.name }.findAll { name ->
+				name.startsWith("caustica/natives/") || name.endsWith(".spv")
+						|| name == "caustica/streamline.properties"
+			}
+			if (!leaked.empty) {
+				throw new GradleException("Sources JAR leaks generated/proprietary payloads: ${leaked.join(', ')}")
+			}
+		} finally {
+			sourceZip.close()
+		}
+	}
+}
+
+tasks.named("build").configure {
+	dependsOn(verifyProductionArtifact)
 }
 
 publishing {

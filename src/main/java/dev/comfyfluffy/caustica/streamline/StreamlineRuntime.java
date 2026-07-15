@@ -27,9 +27,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 
 import org.lwjgl.PointerBuffer;
@@ -62,6 +68,9 @@ public final class StreamlineRuntime {
     private long meteringLogProbeNanos;
     private long meteringLogSize = Long.MIN_VALUE;
     private String meteringState = "unknown";
+    private long controlledDeviceIdleCount;
+    private long steadyStateDeviceIdleCount;
+    private final Map<String, Long> deviceIdleReasons = new LinkedHashMap<>();
 
     private StreamlineRuntime() {
     }
@@ -261,11 +270,50 @@ public final class StreamlineRuntime {
         return INSTANCE.library.vkQueuePresent(queue.address(), presentInfo.address());
     }
 
-    public static int vkDeviceWaitIdle(VkDevice device) {
+    public static int vkDeviceWaitIdle(VkDevice device, String reason, boolean steadyState) {
+        INSTANCE.recordDeviceIdle(reason, steadyState);
         if (!useVulkanProxies()) {
             return VK10.vkDeviceWaitIdle(device);
         }
         return INSTANCE.library.vkDeviceWaitIdle(device.address());
+    }
+
+    private synchronized void recordDeviceIdle(String reason, boolean steadyState) {
+        String normalized = reason == null || reason.isBlank() ? "unspecified" : reason;
+        if (steadyState) {
+            steadyStateDeviceIdleCount++;
+        } else {
+            controlledDeviceIdleCount++;
+        }
+        deviceIdleReasons.merge(normalized, 1L, Long::sum);
+    }
+
+    public static long controlledDeviceIdleCount() {
+        synchronized (INSTANCE) {
+            return INSTANCE.controlledDeviceIdleCount;
+        }
+    }
+
+    public static long steadyStateDeviceIdleCount() {
+        synchronized (INSTANCE) {
+            return INSTANCE.steadyStateDeviceIdleCount;
+        }
+    }
+
+    public static String deviceIdleReasons() {
+        synchronized (INSTANCE) {
+            if (INSTANCE.deviceIdleReasons.isEmpty()) {
+                return "none";
+            }
+            StringBuilder result = new StringBuilder();
+            INSTANCE.deviceIdleReasons.forEach((reason, count) -> {
+                if (!result.isEmpty()) {
+                    result.append("; ");
+                }
+                result.append(reason).append('=').append(count);
+            });
+            return result.toString();
+        }
     }
 
     /** Called immediately before a swapchain is created or recreated. */
@@ -464,27 +512,63 @@ public final class StreamlineRuntime {
             return Files.isDirectory(path) ? path : null;
         }
         String packagedVariant = variant();
-        Path directory = packagedNativeDirectory(gameDirectory(), packagedVariant);
+        Map<String, byte[]> payload = readBundledPayload();
+        if (payload.size() != WINDOWS_NATIVE_NAMES.size()) {
+            return null;
+        }
+        Path directory = packagedNativeDirectory(gameDirectory(), packagedVariant, payloadId(payload));
         Files.createDirectories(directory);
-        boolean complete = true;
-        for (String name : WINDOWS_NATIVE_NAMES) {
-            complete &= extractBundled(name, directory.resolve(name));
+        for (Map.Entry<String, byte[]> entry : payload.entrySet()) {
+            writeAtomicallyIfChanged(directory.resolve(entry.getKey()), entry.getValue());
         }
         configureBehaviorConfiguration(directory, vulkanMailboxVsyncCompatibilityEnabled());
-        return complete ? directory : null;
+        return directory;
     }
 
-    private static boolean extractBundled(String name, Path destination) throws IOException {
-        try (InputStream stream = StreamlineRuntime.class.getResourceAsStream(
-                "/caustica/natives/windows-x64/" + name)) {
-            if (stream == null) {
-                return false;
+    private static Map<String, byte[]> readBundledPayload() throws IOException {
+        Map<String, byte[]> payload = new LinkedHashMap<>();
+        for (String name : WINDOWS_NATIVE_NAMES) {
+            try (InputStream stream = StreamlineRuntime.class.getResourceAsStream(
+                    "/caustica/natives/windows-x64/" + name)) {
+                if (stream == null) {
+                    return Map.of();
+                }
+                payload.put(name, stream.readAllBytes());
             }
-            byte[] bytes = stream.readAllBytes();
-            if (!sameBytes(destination, bytes)) {
-                Files.write(destination, bytes);
+        }
+        return payload;
+    }
+
+    private static String payloadId(Map<String, byte[]> payload) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            payload.forEach((name, bytes) -> {
+                digest.update(name.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                digest.update(bytes);
+            });
+            return HexFormat.of().formatHex(digest.digest(), 0, 12);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    static void writeAtomicallyIfChanged(Path destination, byte[] bytes) throws IOException {
+        if (sameBytes(destination, bytes)) {
+            return;
+        }
+        Files.createDirectories(destination.getParent());
+        Path temporary = Files.createTempFile(destination.getParent(), destination.getFileName() + ".", ".tmp");
+        try {
+            Files.write(temporary, bytes);
+            try {
+                Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
             }
-            return true;
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 
@@ -515,6 +599,10 @@ public final class StreamlineRuntime {
                 .resolve("windows-x64").resolve(normalizeVariant(packagedVariant));
     }
 
+    static Path packagedNativeDirectory(Path gameDirectory, String packagedVariant, String payloadId) {
+        return packagedNativeDirectory(gameDirectory, packagedVariant).resolve(payloadId);
+    }
+
     static void removeStaleBehaviorConfiguration(Path pluginDirectory) throws IOException {
         Files.deleteIfExists(pluginDirectory.resolve("sl.dlss_g.json"));
     }
@@ -522,7 +610,8 @@ public final class StreamlineRuntime {
     static void configureBehaviorConfiguration(Path pluginDirectory, boolean vulkanMailboxVsync) throws IOException {
         Path configuration = pluginDirectory.resolve("sl.dlss_g.json");
         if (vulkanMailboxVsync) {
-            Files.writeString(configuration, VULKAN_MAILBOX_VSYNC_CONFIGURATION);
+            writeAtomicallyIfChanged(configuration,
+                    VULKAN_MAILBOX_VSYNC_CONFIGURATION.getBytes(StandardCharsets.UTF_8));
         } else {
             Files.deleteIfExists(configuration);
         }

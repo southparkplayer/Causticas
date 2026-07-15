@@ -87,6 +87,8 @@
 
 	"caustica.options.rt.dlssQuality": "DLSS Quality",
 	"caustica.options.rt.dlssQuality.tooltip": "DLSS Ray Reconstruction quality mode. Lower-quality modes render fewer pixels and upscale more aggressively for higher framerates; higher-quality modes render more pixels for a sharper image. Only affects the image when DLSS Ray Reconstruction is enabled.",
+	"caustica.options.rt.dlssRr": "DLSS Ray Reconstruction",
+	"caustica.options.rt.dlssRr.tooltip": "Use NVIDIA DLSS Ray Reconstruction to denoise and reconstruct the path-traced image. If unavailable, Caustica renders at native resolution instead.",
 	"caustica.options.rt.dlssQuality.3": "Ultra Performance",
 	"caustica.options.rt.dlssQuality.0": "Performance",
 	"caustica.options.rt.dlssQuality.1": "Balanced",
@@ -231,5 +233,7 @@
 	"caustica.options.rt.fg.queueParallelism.auto": "Automatic",
 	"caustica.options.rt.fg.vsync.tooltip": "When enabled with DLSS-G, use tear-free MAILBOX presentation with no application frame limiter. When disabled, use uncapped IMMEDIATE presentation.",
 	"caustica.options.rt.fg.estimateVram": "Estimate DLSS-G VRAM",
+	"caustica.options.rt.fg.advancedDiagnostics": "Advanced Diagnostics...",
+	"caustica.options.rt.fg.diagnostics.title": "DLSS Frame Generation Diagnostics",
 	"caustica.options.rt.fg.vsyncConflict": "FIFO VSync is unsupported by Vulkan Streamline; MAILBOX presentation is used when available."
 }

@@ -36,7 +36,7 @@ final class RtDlssRrResourceContractTest {
     }
 
     @Test
-    void acceptanceSchemaIsFour() {
-        assertEquals(6, StreamlineAcceptanceReport.SCHEMA_VERSION);
+    void acceptanceSchemaTracksReleaseTelemetryContract() {
+        assertEquals(7, StreamlineAcceptanceReport.SCHEMA_VERSION);
     }
 }

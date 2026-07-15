@@ -361,7 +361,7 @@ public final class RtDlssRr {
 
     private void releaseResources(VulkanDevice device) {
         if (resourcesCreated && library != null && StreamlineRuntime.initialized()) {
-            StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
+            StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice(), "DLSSD resource release", false);
             int result = library.freeDlssdResources(VIEWPORT);
             if (result != RESULT_OK) {
                 CausticaMod.LOGGER.warn("Could not release Streamline DLSS-RR resources: {}",

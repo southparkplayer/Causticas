@@ -18,25 +18,39 @@ import java.util.List;
 
 /** Compact, behavior-neutral runtime proof for fixed Vulkan DLSSG and DLSSD. */
 public final class StreamlineAcceptanceReport {
-    public static final int SCHEMA_VERSION = 6;
-    private static final long WRITE_INTERVAL_NANOS = 250_000_000L;
+    public static final int SCHEMA_VERSION = 7;
+    private static final long DEVELOPMENT_WRITE_INTERVAL_NANOS = 250_000_000L;
+    private static final long PRODUCTION_WRITE_INTERVAL_NANOS = 60_000_000_000L;
     private static long lastWriteNanos;
+    private static String lastStateKey = "";
 
     private StreamlineAcceptanceReport() {
     }
 
     public static synchronized void publish() {
         long now = System.nanoTime();
-        if (lastWriteNanos != 0L && now - lastWriteNanos < WRITE_INTERVAL_NANOS) {
+        String stateKey = stateKey();
+        long interval = StreamlineRuntime.productionVariant()
+                ? PRODUCTION_WRITE_INTERVAL_NANOS : DEVELOPMENT_WRITE_INTERVAL_NANOS;
+        if (stateKey.equals(lastStateKey) && lastWriteNanos != 0L && now - lastWriteNanos < interval) {
             return;
         }
         writeReports();
         lastWriteNanos = now;
+        lastStateKey = stateKey;
     }
 
     public static synchronized void publishNow() {
         writeReports();
         lastWriteNanos = System.nanoTime();
+        lastStateKey = stateKey();
+    }
+
+    private static String stateKey() {
+        RtDlssFg fg = RtDlssFg.INSTANCE;
+        RtDlssRr rr = RtDlssRr.INSTANCE;
+        return fg.hasGeneratedFrames() + ":" + fg.isActive() + ":" + fg.queueFallbackActive()
+                + ":" + fg.runtimeStatus() + ":" + rr.fallbackActive() + ":" + rr.lastEvaluateResult();
     }
 
     private static void writeReports() {
@@ -140,8 +154,12 @@ public final class StreamlineAcceptanceReport {
                 .append("    \"timelineWaitTotalNanos\": ").append(fg.timelineWaitTotalNanos()).append(",\n")
                 .append("    \"timelineWaitMaximumNanos\": ").append(fg.timelineWaitMaximumNanos()).append(",\n")
                 .append("    \"timelineWaitFailures\": ").append(fg.timelineWaitFailures()).append(",\n")
-                .append("    \"controlledDeviceIdleCount\": ").append(fg.controlledDeviceIdleCount()).append(",\n")
-                .append("    \"steadyStateDeviceIdleCount\": 0,\n")
+                .append("    \"controlledDeviceIdleCount\": ")
+                .append(StreamlineRuntime.controlledDeviceIdleCount()).append(",\n")
+                .append("    \"steadyStateDeviceIdleCount\": ")
+                .append(StreamlineRuntime.steadyStateDeviceIdleCount()).append(",\n")
+                .append("    \"deviceIdleReasons\": ")
+                .append(quote(StreamlineRuntime.deviceIdleReasons())).append(",\n")
                 .append("    \"nativeTimelineWaitCalls\": ").append(trace == null ? 0L : trace.timelineWaitCalls).append(",\n")
                 .append("    \"nativeTimelineWaitFailures\": ").append(trace == null ? 0L : trace.timelineWaitFailures).append(",\n")
                 .append("    \"nativeDeviceWaitIdleCalls\": ").append(trace == null ? 0L : trace.deviceWaitIdleCalls).append(",\n")
@@ -166,12 +184,12 @@ public final class StreamlineAcceptanceReport {
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativePresentModeValue()).append(",\n")
                 .append("    \"nativePresentModeKnown\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativePresentModeKnown()).append(",\n")
-                .append("    \"nativeMinImageCount\": ")
-                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeMinImageCount()).append(",\n")
+                .append("    \"requestedNativeMinImageCount\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.requestedNativeMinImageCount()).append(",\n")
                 .append("    \"applicationImageCount\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.applicationImageCount()).append(",\n")
-                .append("    \"nativeImageCount\": ")
-                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()).append(",\n")
+                .append("    \"proxyVisibleImageCount\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.proxyVisibleImageCount()).append(",\n")
                 .append("    \"nativeCreateResult\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativeCreateResult()).append(",\n")
                 .append("    \"nativeProxyDispatch\": ")

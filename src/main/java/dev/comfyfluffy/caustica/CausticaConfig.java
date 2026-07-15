@@ -105,7 +105,7 @@ public final class CausticaConfig {
                         + " stream-fallback-budget-ms is the per-tick slice used only when no world frame is\n"
                         + " streaming (loading screens), where a long pass hitches nothing.");
         FILE.setComment("frame-generation",
-                " Streamline DLSS Frame Generation. mode: off, fixed, or auto (legacy).\n"
+                " Streamline DLSS Frame Generation. mode is off or fixed; legacy auto/dynamic values migrate to fixed.\n"
                         + " multi-frame-count is generated frames per rendered frame (1 = 2x, 2 = 3x, ...).\n"
                         + " Dynamic MFG is D3D12-only and is migrated to fixed because Caustica uses Vulkan.\n"
                         + " With VSync requested, Vulkan DLSS-G uses MAILBOX presentation. With VSync off,\n"

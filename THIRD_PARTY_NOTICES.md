@@ -12,9 +12,19 @@ SDK source is MIT-licensed; NVIDIA feature runtime components loaded through it
 remain proprietary third-party software and are not licensed under the LGPL.
 
 The Streamline SDK and runtime components remain subject to NVIDIA's Streamline
-license and the NVIDIA RTX SDKs license included with the SDK distribution:
+license and the NVIDIA RTX SDKs and Reflex licenses included with the SDK distribution:
 
 <https://github.com/NVIDIA-RTX/Streamline/blob/v2.12.0/license.txt>
+
+The runtime JAR reproduces the complete applicable texts under:
+
+- `META-INF/licenses/nvidia/STREAMLINE-SDK-MIT.txt`
+- `META-INF/licenses/nvidia/STREAMLINE-THIRD-PARTY.md`
+- `META-INF/licenses/nvidia/NVIDIA-RTX-SDKS.txt`
+- `META-INF/licenses/nvidia/NVIDIA-REFLEX-SDK.txt`
+
+See `META-INF/DISTRIBUTION_NOTICE.md` for the license boundary between Caustica's project-owned
+code and the incorporated NVIDIA binaries.
 
 Bundled Streamline runtime libraries may include:
 

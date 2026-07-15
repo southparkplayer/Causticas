@@ -2,7 +2,6 @@ package dev.comfyfluffy.caustica.client;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
-import dev.comfyfluffy.caustica.streamline.StreamlineRuntime;
 import dev.comfyfluffy.caustica.streamline.StreamlineSwapchainCoordinator;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
@@ -18,8 +17,6 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
     private final boolean initiallyRequested;
     private boolean surfaceSettingChanged;
     private Button statusWidget;
-    private Button runtimeWidget;
-    private Button detailsWidget;
     private Button vsyncWidget;
 
     public RtFrameGenerationOptionsScreen(Screen lastScreen, Options options) {
@@ -30,11 +27,7 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
     @Override
     protected void addOptions() {
         statusWidget = diagnosticButton();
-        runtimeWidget = diagnosticButton();
-        detailsWidget = diagnosticButton();
         list.addBig(statusWidget);
-        list.addBig(runtimeWidget);
-        list.addBig(detailsWidget);
 
         vsyncWidget = Button.builder(Component.empty(), button -> {
             options.enableVsync().set(!options.enableVsync().get());
@@ -53,10 +46,9 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                 list.addBig(controls[i]);
             }
         }
-        list.addBig(Button.builder(Component.translatable("caustica.options.rt.fg.estimateVram"), button -> {
-            RtDlssFg.INSTANCE.requestVramEstimate();
-            refreshDiagnostics();
-        }).width(Button.BIG_WIDTH).build());
+        list.addBig(Button.builder(Component.translatable("caustica.options.rt.fg.advancedDiagnostics"), button ->
+                minecraft.setScreenAndShow(new RtFrameGenerationDiagnosticsScreen(this, options)))
+                .width(Button.BIG_WIDTH).build());
         refreshDiagnostics();
     }
 
@@ -93,48 +85,8 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                 : fg.isAvailable() && RtDlssFg.requested() ? fg.submissionStatus()
                 : fg.isAvailable() ? "Available"
                 : fg.unavailableReason().isBlank() ? "Unavailable" : fg.unavailableReason();
-        statusWidget.setMessage(Component.literal("Streamline DLSS-G: " + availability));
-        String maximum = fg.multiFrameCountMax() > 0
-                ? (fg.multiFrameCountMax() + 1) + "x"
-                : "not probed";
-        runtimeWidget.setMessage(Component.literal(
-                "Runtime: " + RtDlssFg.statusDescription(fg.runtimeStatus())
-                        + " | Max " + maximum
-                        + " | Count configured/effective/native " + fg.configuredMultiFrameCount()
-                        + "/" + fg.effectiveMultiFrameCount()
-                        + "/" + fg.nativeSubmittedMultiFrameCount()
-                        + " | Presented " + fg.framesActuallyPresented()
-                        + " (max " + fg.maxFramesActuallyPresented() + ")"));
-        String reflex = fg.isActive()
-                ? CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.value() ? "On + Boost" : "On (required by DLSS-G)"
-                : CausticaConfig.Rt.Reflex.ENABLED.value()
-                        ? CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.value() ? "On + Boost" : "On"
-                        : "Off";
-        String vram = fg.estimatedVramUsage() > 0L
-                ? (fg.estimatedVramUsage() / (1024L * 1024L)) + " MiB"
-                : "not estimated";
-        var overrides = CausticaConfig.activeOverrides();
-        String overrideStatus = overrides.isEmpty() ? "none"
-                : overrides.size() + " (first: " + overrides.getFirst().key() + ")";
-        detailsWidget.setMessage(Component.literal(
-                "Reflex " + reflex
-                        + " | VSync " + StreamlineSwapchainCoordinator.INSTANCE.requestedPresentMode()
-                        + " -> " + StreamlineSwapchainCoordinator.INSTANCE.normalizedPresentMode()
-                        + " -> native " + StreamlineSwapchainCoordinator.INSTANCE.nativePresentMode()
-                        + (StreamlineSwapchainCoordinator.INSTANCE.nativeProxyDispatch()
-                                ? " (Streamline proxy)" : " (native dispatch)")
-                        + " | Queue " + fg.effectiveQueueMode() + " (" + fg.queuePolicyReason() + ")"
-                        + (fg.queueFallbackActive() ? " (fallback: " + fg.queueFallbackReason() + ")" : "")
-                        + " | Flip metering " + StreamlineRuntime.flipMeteringState()
-                        + " | SDK FG VSync " + (fg.vsyncSupportAvailable() ? "available" : "unsupported")
-                        + " | Images app/native "
-                        + StreamlineSwapchainCoordinator.INSTANCE.applicationImageCount() + "/"
-                        + StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()
-                        + " | Reflex interval " + fg.reflexIntervalUs() + "us"
-                        + " | DLSSD configured/effective "
-                        + CausticaConfig.Rt.DlssRr.ENABLED.configuredValue() + "/"
-                        + CausticaConfig.Rt.DlssRr.ENABLED.value()
-                        + " | Launch overrides " + overrideStatus + " | " + fg.featureVersion()));
+        String maximum = fg.multiFrameCountMax() > 0 ? " | Maximum " + (fg.multiFrameCountMax() + 1) + "x" : "";
+        statusWidget.setMessage(Component.literal("DLSS Frame Generation: " + availability + maximum));
     }
 
     private static Button diagnosticButton() {

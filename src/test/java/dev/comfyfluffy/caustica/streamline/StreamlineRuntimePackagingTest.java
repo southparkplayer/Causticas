@@ -3,6 +3,7 @@ package dev.comfyfluffy.caustica.streamline;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -21,6 +22,29 @@ final class StreamlineRuntimePackagingTest {
         assertNotEquals(production, development);
         assertTrue(production.endsWith(Path.of("windows-x64", "production")));
         assertTrue(development.endsWith(Path.of("windows-x64", "development")));
+    }
+
+    @Test
+    void payloadIdentitySeparatesUpgradesWithoutOverwritingLoadedLibraries() {
+        Path first = StreamlineRuntime.packagedNativeDirectory(temporaryDirectory, "production", "payload-a");
+        Path second = StreamlineRuntime.packagedNativeDirectory(temporaryDirectory, "production", "payload-b");
+        assertNotEquals(first, second);
+        assertTrue(first.endsWith(Path.of("windows-x64", "production", "payload-a")));
+    }
+
+    @Test
+    void atomicExtractionRepairsCorruptFilesAndLeavesNoTemporaryPayload() throws Exception {
+        Path destination = temporaryDirectory.resolve("production").resolve("streamlinebridge.dll");
+        Files.createDirectories(destination.getParent());
+        Files.writeString(destination, "corrupt");
+
+        byte[] expected = { 1, 2, 3, 4, 5 };
+        StreamlineRuntime.writeAtomicallyIfChanged(destination, expected);
+
+        assertArrayEquals(expected, Files.readAllBytes(destination));
+        try (var files = Files.list(destination.getParent())) {
+            assertFalse(files.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")));
+        }
     }
 
     @Test

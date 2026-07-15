@@ -23,6 +23,13 @@ final class DisplayShaderContractTest {
         assertFalse(source.substring(selected, comparison).contains("psychoV23Ldr"));
     }
 
+    @Test
+    void psychoV23ComparisonRemainsSelectableInVideoOptions() throws IOException {
+        String source = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java"));
+        assertTrue(source.contains("CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON), Codec.INT"));
+    }
+
     private static String shader() throws IOException {
         Path cursor = Path.of("").toAbsolutePath();
         while (cursor != null) {

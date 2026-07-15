@@ -90,7 +90,7 @@ public final class CausticaClient implements ClientModInitializer {
 
 		RtContext ctx = RtContext.currentOrNull();
 		if (ctx != null) {
-			ctx.waitIdle();
+			ctx.waitIdle("client shutdown");
 			RtTerrain.shutdown(ctx);
 			RtEntities.INSTANCE.shutdown();
 		}

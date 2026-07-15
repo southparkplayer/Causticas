@@ -104,7 +104,6 @@ public final class RtDlssFg {
     private long timelineWaitTotalNanos;
     private long timelineWaitMaximumNanos;
     private long timelineWaitFailures;
-    private long controlledDeviceIdleCount;
     private long estimatedVramUsage;
     private String featureVersion = "Unknown";
     private int lastReflexMode = Integer.MIN_VALUE;
@@ -236,10 +235,6 @@ public final class RtDlssFg {
 
     public long timelineWaitFailures() {
         return timelineWaitFailures;
-    }
-
-    public long controlledDeviceIdleCount() {
-        return controlledDeviceIdleCount;
     }
 
     public long lastInputFence() {
@@ -922,8 +917,8 @@ public final class RtDlssFg {
                 instanceof VulkanDevice device)) {
             return false;
         }
-        int result = StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
-        controlledDeviceIdleCount++;
+        int result = StreamlineRuntime.vkDeviceWaitIdle(
+                device.vkDevice(), "DLSSG queue fallback", false);
         if (result != RESULT_OK) {
             dlssgFailed = true;
             unavailableReason = "Could not quiesce for Streamline queue fallback: " + StreamlineRuntime.lastError();
@@ -953,8 +948,8 @@ public final class RtDlssFg {
         }
         if (needsDeviceIdle && StreamlineRuntime.initialized()
                 && ((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend() instanceof VulkanDevice device) {
-            int result = StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
-            controlledDeviceIdleCount++;
+            int result = StreamlineRuntime.vkDeviceWaitIdle(
+                    device.vkDevice(), "DLSSG input drain: " + reason, false);
             if (result != RESULT_OK) {
                 CausticaMod.LOGGER.error("Could not quiesce Streamline inputs for {}: {}", reason,
                         StreamlineRuntime.lastError());
@@ -1262,8 +1257,8 @@ public final class RtDlssFg {
     }
 
     public void destroy() {
-        StreamlineAcceptanceReport.publishNow();
         drainInputSlots("shutdown");
+        StreamlineAcceptanceReport.publishNow();
         setOff(false);
         frameToken = 0L;
         currentFrameIndex = -1;

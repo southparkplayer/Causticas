@@ -7,6 +7,7 @@ import dev.comfyfluffy.caustica.CausticaConfig.FloatSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.IntSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.StringSetting;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
+import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
 import dev.comfyfluffy.caustica.streamline.StreamlineRuntime;
 import java.util.List;
 import java.util.Locale;
@@ -136,6 +137,7 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            dlssRrEnabled(),
             dlssQuality(),
             debugView(),
         };
@@ -388,6 +390,17 @@ public final class RtVideoOptions {
             position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
     }
 
+    private static OptionInstance<Boolean> dlssRrEnabled() {
+        return OptionInstance.createBoolean(
+                "caustica.options.rt.dlssRr",
+                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.dlssRr.tooltip")),
+                CausticaConfig.Rt.DlssRr.ENABLED.configuredValue(),
+                enabled -> {
+                    CausticaConfig.Rt.DlssRr.ENABLED.set(enabled);
+                    RtDlssRr.INSTANCE.requestHistoryReset();
+                });
+    }
+
     private static TonemapControl hdrEnabled() {
         BooleanSetting setting = CausticaConfig.Rt.Hdr.ENABLED;
         return control(bool("caustica.options.rt.hdr", setting), setting.defaultValue());
@@ -451,8 +464,10 @@ public final class RtVideoOptions {
             "caustica.options.rt.debugView",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.debugView.tooltip")),
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7), Codec.INT),
-            Math.clamp(setting.configuredValue(), 0, 7),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7,
+                    CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON), Codec.INT),
+            Math.clamp(setting.configuredValue(), 0,
+                    CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON),
             setting::set);
     }
 

@@ -400,8 +400,8 @@ public final class RtContext {
         }
     }
 
-    public void waitIdle() {
-        StreamlineRuntime.vkDeviceWaitIdle(vk);
+    public void waitIdle(String reason) {
+        StreamlineRuntime.vkDeviceWaitIdle(vk, reason, false);
     }
 
     public void destroy() {

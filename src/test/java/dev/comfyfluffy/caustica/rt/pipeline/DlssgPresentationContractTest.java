@@ -48,6 +48,8 @@ class DlssgPresentationContractTest {
     void reportKeepsApplicationAndProxyCountsDistinct() throws Exception {
         String report = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/StreamlineAcceptanceReport.java");
         assertTrue(report.contains("\\\"applicationImageCount\\\""));
-        assertTrue(report.contains("\\\"nativeImageCount\\\""));
+        assertTrue(report.contains("\\\"requestedNativeMinImageCount\\\""));
+        assertTrue(report.contains("\\\"proxyVisibleImageCount\\\""));
+        assertFalse(report.contains("\\\"physicalProxyImageCount\\\""));
     }
 }

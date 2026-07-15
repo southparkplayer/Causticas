@@ -18,8 +18,8 @@ if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 $failures = New-Object 'System.Collections.Generic.List[string]'
 
-if ($report.schemaVersion -ne 6) {
-    $failures.Add("schemaVersion is $($report.schemaVersion), expected 6")
+if ($report.schemaVersion -ne 7) {
+    $failures.Add("schemaVersion is $($report.schemaVersion), expected 7")
 }
 if ($RequireProduction -and -not $report.identity.production) {
     $failures.Add("runtime identity is $($report.identity.streamlineVariant), expected production")
@@ -63,6 +63,16 @@ if ($report.dlssg.timelineWaitFailures -ne 0) {
 if ($report.dlssg.steadyStateDeviceIdleCount -ne 0) {
     $failures.Add("steady-state device idle count is $($report.dlssg.steadyStateDeviceIdleCount), expected 0")
 }
+$accountedDeviceIdleCalls = [long]$report.dlssg.controlledDeviceIdleCount +
+    [long]$report.dlssg.steadyStateDeviceIdleCount
+if ([long]$report.dlssg.nativeDeviceWaitIdleCalls -ne $accountedDeviceIdleCalls) {
+    $failures.Add("native device-idle calls $($report.dlssg.nativeDeviceWaitIdleCalls) do not match " +
+        "controlled/steady-state accounting $accountedDeviceIdleCalls")
+}
+if ([long]$report.dlssg.controlledDeviceIdleCount -gt 0 -and
+        [string]::IsNullOrWhiteSpace([string]$report.dlssg.deviceIdleReasons)) {
+    $failures.Add('controlled device-idle calls have no recorded reasons')
+}
 if ($report.dlssg.inputSlotCount -ne $report.dlssg.applicationImageCount) {
     $failures.Add("input slot count $($report.dlssg.inputSlotCount) does not match application image count $($report.dlssg.applicationImageCount)")
 }
@@ -80,8 +90,13 @@ if ($RequireDlssd) {
     if ($report.dlssd.lastOptionsResult -ne 0 -or $report.dlssd.lastEvaluationResult -ne 0) {
         $failures.Add('DLSSD option/evaluation result is not success')
     }
-    if ($report.dlssd.submittedResourceCount -ne 8 -or $report.dlssd.nativeResourceCount -ne 8) {
-        $failures.Add('DLSSD did not preserve the exact eight-resource contract')
+    $requiredResources = [int]$report.dlssd.requiredResourceCount
+    if ($requiredResources -lt 1) {
+        $failures.Add("DLSSD required resource count is $requiredResources, expected a positive value")
+    } elseif ($report.dlssd.submittedResourceCount -ne $requiredResources -or
+            $report.dlssd.nativeResourceCount -ne $requiredResources) {
+        $failures.Add("DLSSD resource contract is required/submitted/native " +
+            "$requiredResources/$($report.dlssd.submittedResourceCount)/$($report.dlssd.nativeResourceCount)")
     }
     if ($report.dlssd.nativeOptionsCalls -lt 1 -or $report.dlssd.nativeEvaluationCalls -lt 1) {
         $failures.Add('DLSSD native call counters are zero')

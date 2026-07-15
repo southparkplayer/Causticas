@@ -540,7 +540,7 @@ public final class RtComposite {
         if (desiredBindlessCapacity <= bindlessTextureCapacity) {
             return;
         }
-        ctx.waitIdle();
+        ctx.waitIdle("bindless texture capacity growth");
         worldPipeline.destroy();
         worldPipeline = null;
         bindlessTextureCapacity = 0;
@@ -629,7 +629,7 @@ public final class RtComposite {
         setCelestialUvAtlas(0L);
         RtContext ctx = RtContext.currentOrNull();
         if (ctx != null && worldPipeline != null) {
-            ctx.waitIdle();
+            ctx.waitIdle("resource reload");
             worldPipeline.destroy();
             worldPipeline = null;
             bindlessTextureCapacity = 0;
@@ -712,7 +712,7 @@ public final class RtComposite {
                 && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled) {
             return;
         }
-        ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
+        ctx.waitIdle("output resize or mode change"); // no in-flight frame may use old images/descriptors
         // Release Streamline's viewport before any tagged input/output image is destroyed or resized.
         // This also promptly frees RR when the setting is switched off instead of retaining its feature
         // allocation until device shutdown.
