@@ -142,7 +142,11 @@ public abstract class VulkanGpuSurfaceMixin {
 				target = "Lorg/lwjgl/vulkan/KHRSwapchain;vkAcquireNextImageKHR(Lorg/lwjgl/vulkan/VkDevice;JJJJLjava/nio/IntBuffer;)I"))
 	private int caustica$acquireNextImageThroughStreamline(VkDevice device, long swapchain, long timeout,
 			long semaphore, long fence, IntBuffer imageIndex) {
-		return StreamlineRuntime.vkAcquireNextImage(device, swapchain, timeout, semaphore, fence, imageIndex);
+		int result = StreamlineRuntime.vkAcquireNextImage(device, swapchain, timeout, semaphore, fence, imageIndex);
+		if (result == org.lwjgl.vulkan.VK10.VK_SUCCESS || result == org.lwjgl.vulkan.KHRSwapchain.VK_SUBOPTIMAL_KHR) {
+			RtDlssFg.INSTANCE.onImageAcquired(imageIndex.get(0));
+		}
+		return result;
 	}
 
 	@Unique

@@ -227,9 +227,8 @@
 	"caustica.options.rt.fg.showInterpolated": "Show Generated Only",
 	"caustica.options.rt.fg.showInterpolated.tooltip": "Development diagnostic that displays only interpolated frames.",
 	"caustica.options.rt.fg.queueParallelism": "Queue Parallelism",
-	"caustica.options.rt.fg.queueParallelism.tooltip": "Safe blocks the presenting queue. Maximum Throughput uses Streamline's no-client-queue mode and waits on its input-consumption timeline before reuse.",
-	"caustica.options.rt.fg.queueParallelism.safe": "Safe",
-	"caustica.options.rt.fg.queueParallelism.no-client-queues": "Maximum Throughput",
+	"caustica.options.rt.fg.queueParallelism.tooltip": "Automatically uses slot-local Streamline timeline retirement and falls back to the blocking queue mode if the required fence contract is unavailable.",
+	"caustica.options.rt.fg.queueParallelism.auto": "Automatic",
 	"caustica.options.rt.fg.vsync.tooltip": "When enabled with DLSS-G, use tear-free MAILBOX presentation with no application frame limiter. When disabled, use uncapped IMMEDIATE presentation.",
 	"caustica.options.rt.fg.estimateVram": "Estimate DLSS-G VRAM",
 	"caustica.options.rt.fg.vsyncConflict": "FIFO VSync is unsupported by Vulkan Streamline; MAILBOX presentation is used when available."

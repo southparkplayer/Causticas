@@ -192,17 +192,10 @@ public final class RtComposite {
     // Set true after this frame's display dispatch wrote hdrDisplayImage (HDR enabled + RT ran); gates the
     // HDR present blit so a frame where RT did not run falls back to the vanilla SDR present.
     private boolean hdrWrittenThisFrame;
-    // DLSS-FG "hudless" resource: the main render target before the combined UI overlay composites back on
-    // top, normalized to the swapchain's exact extent and final Y-reversed presentation convention.
-    private RtImage fgHudlessImage;
-    // Same idea as fgHudlessImage but for the HDR present path: a copy of hdrDisplayImage taken in
-    // presentHdr right before its own combined-UI composite dispatch overwrites it in place (see
-    // captureFgHdrHudless). Already PQ-encoded (same as hdrDisplayImage), then blitted into the exact HDR10
-    // swapchain format/extent and final Y convention required by DLSS-G.
-    private RtImage fgHdrHudlessImage;
-    private RtImage fgDepthImage;
-    private RtImage fgMotionImage;
-    private RtImage fgUiAlphaImage;
+    // One independently retired input set per application-visible swapchain image. Streamline can consume
+    // these resources asynchronously after the real present, so no set may be overwritten until its
+    // DLSSGState timeline value completes.
+    private FgInputSlot[] fgInputSlots = new FgInputSlot[0];
     private RtFgUiAlphaPipeline fgUiAlphaPipeline;
     // Step C.2: composites the combined UI overlay over hdrDisplayImage at paper white, just before present.
     private RtHdrCompositePipeline hdrCompositePipeline;
@@ -436,9 +429,6 @@ public final class RtComposite {
         if (RtTerrain.currentOrNull() == null || !frameCaptured || Minecraft.getInstance().level == null) {
             // No usable world/camera this frame. Skip RT so presentation falls back to vanilla SDR or the
             // menu-safe PQ conversion path instead of reusing stale temporal inputs.
-            return false;
-        }
-        if (!RtDlssFg.INSTANCE.beforeFrameInputs()) {
             return false;
         }
         try {
@@ -1236,26 +1226,8 @@ public final class RtComposite {
             hdrDisplayImage.destroy();
             hdrDisplayImage = null;
         }
-        if (fgHudlessImage != null) {
-            fgHudlessImage.destroy();
-            fgHudlessImage = null;
-        }
-        if (fgHdrHudlessImage != null) {
-            fgHdrHudlessImage.destroy();
-            fgHdrHudlessImage = null;
-        }
-        if (fgDepthImage != null) {
-            fgDepthImage.destroy();
-            fgDepthImage = null;
-        }
-        if (fgMotionImage != null) {
-            fgMotionImage.destroy();
-            fgMotionImage = null;
-        }
-        if (fgUiAlphaImage != null) {
-            fgUiAlphaImage.destroy();
-            fgUiAlphaImage = null;
-        }
+        RtDlssFg.INSTANCE.beforeInputResourcesDestroyed();
+        destroyFgInputSlots();
         if (fgUiAlphaPipeline != null) {
             fgUiAlphaPipeline.destroy();
             fgUiAlphaPipeline = null;
@@ -1596,7 +1568,7 @@ public final class RtComposite {
 
     /**
      * DLSS Frame Generation quality: normalize {@code main} (the main render target) into
-     * {@link #fgHudlessImage} for Streamline's swapchain-oriented DLSS-G hudless-color tag. Call from
+     * the active input slot for Streamline's swapchain-oriented DLSS-G hudless-color tag. Call from
      * {@code GameRendererMixin} right after {@code GuiRenderer.render()} but BEFORE
      * {@link RtUiOverlay#compositeIfUsed()} — at that point, when the UI overlay redirect is active, {@code
      * main} still has no combined UI baked in (world overlays, hand/screen effects and GUI went to the
@@ -1615,20 +1587,24 @@ public final class RtComposite {
         if (ctx == null || outputWidth <= 0 || outputHeight <= 0) {
             return;
         }
+        FgInputSlot slot = activeFgInputSlot(ctx);
+        if (slot == null || !RtDlssFg.INSTANCE.beforeFrameInputs()) {
+            return;
+        }
         long srcImage;
         try {
             srcImage = vkImage(main.getColorTexture());
         } catch (IllegalStateException e) {
             return; // not a Vulkan-backed texture (shouldn't happen on this backend)
         }
-        if (fgHudlessImage == null || fgHudlessImage.width != outputWidth
-                || fgHudlessImage.height != outputHeight) {
-            if (fgHudlessImage != null) {
-                ctx.waitIdle();
-                fgHudlessImage.destroy();
+        if (slot.hudlessSdr == null || slot.hudlessSdr.width != outputWidth
+                || slot.hudlessSdr.height != outputHeight) {
+            if (slot.hudlessSdr != null) {
+                slot.hudlessSdr.destroy();
             }
-            fgHudlessImage = ctx.createStorageImage(outputWidth, outputHeight, VK10.VK_FORMAT_R8G8B8A8_UNORM,
-                    "FG hudless capture " + outputWidth + "x" + outputHeight);
+            slot.hudlessSdr = ctx.createStorageImage(outputWidth, outputHeight, VK10.VK_FORMAT_R8G8B8A8_UNORM,
+                    "FG hudless capture slot " + RtDlssFg.INSTANCE.activeInputSlot() + " "
+                            + outputWidth + "x" + outputHeight);
         }
         var encoder = (VulkanCommandEncoder) ((CommandEncoderAccessor) RenderSystem.getDevice().createCommandEncoder()).caustica$getBackend();
         VkCommandBuffer cmd = encoder.allocateAndBeginTransientCommandBuffer();
@@ -1636,7 +1612,7 @@ public final class RtComposite {
             // Make writes into `main` visible to the copy (the combined UI has not touched `main` yet this
             // frame — it went to the UI overlay target instead).
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
-            blitFlipped(cmd, stack, srcImage, main.width, main.height, fgHudlessImage, VK10.VK_FILTER_NEAREST);
+            blitFlipped(cmd, stack, srcImage, main.width, main.height, slot.hudlessSdr, VK10.VK_FILTER_NEAREST);
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
         }
         if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
@@ -1647,7 +1623,7 @@ public final class RtComposite {
 
     /**
      * HDR counterpart of {@link #captureFgHudless} — copies {@code src} (this frame's {@code hdrDisplayImage},
-     * before the combined UI overlay is blended in) into {@link #fgHdrHudlessImage} for Streamline's HDR10
+     * before the combined UI overlay is blended in) into the active input slot for Streamline's HDR10
      * hudless-color tag. The compute encode converts the renderer's float PQ image to the swapchain's
      * RGB10A2 format with a format-safe image blit. Called from {@link #presentHdr} using its already-open {@code cmd}/
      * {@code stack}, right before that method's own combined-UI composite dispatch overwrites
@@ -1661,16 +1637,21 @@ public final class RtComposite {
                 && swapchainFormat != VK10.VK_FORMAT_A2R10G10B10_UNORM_PACK32)) {
             return;
         }
-        if (fgHdrHudlessImage == null || fgHdrHudlessImage.width != src.width
-                || fgHdrHudlessImage.height != src.height || fgHdrHudlessImage.format != swapchainFormat) {
-            if (fgHdrHudlessImage != null) {
-                fgHdrHudlessImage.destroy();
+        FgInputSlot slot = activeFgInputSlot(ctx);
+        if (slot == null || !RtDlssFg.INSTANCE.beforeFrameInputs()) {
+            return;
+        }
+        if (slot.hudlessHdr == null || slot.hudlessHdr.width != src.width
+                || slot.hudlessHdr.height != src.height || slot.hudlessHdr.format != swapchainFormat) {
+            if (slot.hudlessHdr != null) {
+                slot.hudlessHdr.destroy();
             }
-            fgHdrHudlessImage = ctx.createSampledTransferImage(src.width, src.height, swapchainFormat,
-                    "FG HDR10 hudless input " + src.width + "x" + src.height);
+            slot.hudlessHdr = ctx.createSampledTransferImage(src.width, src.height, swapchainFormat,
+                    "FG HDR10 hudless slot " + RtDlssFg.INSTANCE.activeInputSlot() + " "
+                            + src.width + "x" + src.height);
         }
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        blitFlipped(cmd, stack, src.image, src.width, src.height, fgHdrHudlessImage, VK10.VK_FILTER_NEAREST);
+        blitFlipped(cmd, stack, src.image, src.width, src.height, slot.hudlessHdr, VK10.VK_FILTER_NEAREST);
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
     }
 
@@ -1682,7 +1663,15 @@ public final class RtComposite {
                 || !hasCurrentFrameForFg()) {
             return false;
         }
-        RtImage hudless = hdr ? fgHdrHudlessImage : fgHudlessImage;
+        RtContext ctx = RtContext.currentOrNull();
+        if (ctx == null) {
+            return false;
+        }
+        FgInputSlot slot = activeFgInputSlot(ctx);
+        if (slot == null || !RtDlssFg.INSTANCE.beforeFrameInputs()) {
+            return false;
+        }
+        RtImage hudless = hdr ? slot.hudlessHdr : slot.hudlessSdr;
         if (hudless == null) {
             return false;
         }
@@ -1694,34 +1683,31 @@ public final class RtComposite {
                 && CausticaConfig.Rt.Fg.UI_RECOMPOSITION.value()
                 && RtUiOverlay.overlayColorView() != 0L;
         RtImage uiAlpha = null;
-        RtContext ctx = RtContext.currentOrNull();
-        if (ctx == null) {
-            return false;
-        }
         int contentWidth = hudless.width;
         int contentHeight = hudless.height;
         if (uiValid && ensureUiSampler(ctx)) {
             if (fgUiAlphaPipeline == null) {
                 fgUiAlphaPipeline = RtFgUiAlphaPipeline.create(ctx);
             }
-            if (fgUiAlphaImage == null || fgUiAlphaImage.width != contentWidth
-                    || fgUiAlphaImage.height != contentHeight) {
-                if (fgUiAlphaImage != null) {
-                    fgUiAlphaImage.destroy();
+            if (slot.uiAlpha == null || slot.uiAlpha.width != contentWidth
+                    || slot.uiAlpha.height != contentHeight) {
+                if (slot.uiAlpha != null) {
+                    slot.uiAlpha.destroy();
                 }
-                fgUiAlphaImage = ctx.createStorageImage(contentWidth, contentHeight, VK10.VK_FORMAT_R32_SFLOAT,
-                        "DLSS-G UI alpha " + contentWidth + "x" + contentHeight);
+                slot.uiAlpha = ctx.createStorageImage(contentWidth, contentHeight, VK10.VK_FORMAT_R32_SFLOAT,
+                        "DLSS-G UI alpha slot " + RtDlssFg.INSTANCE.activeInputSlot() + " "
+                                + contentWidth + "x" + contentHeight);
             }
-            uiAlpha = fgUiAlphaImage;
+            uiAlpha = slot.uiAlpha;
         }
         VkCommandBuffer commandBuffer = encoder.allocateAndBeginTransientCommandBuffer();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            ensureFgGuideImages(ctx, renderW, renderH);
+            ensureFgGuideImages(ctx, slot, renderW, renderH);
             VulkanCommandEncoder.memoryBarrier(commandBuffer, stack);
             blitFlipped(commandBuffer, stack, gDepth.image, gDepth.width, gDepth.height,
-                    fgDepthImage, VK10.VK_FILTER_NEAREST);
+                    slot.depth, VK10.VK_FILTER_NEAREST);
             blitFlipped(commandBuffer, stack, gMotion.image, gMotion.width, gMotion.height,
-                    fgMotionImage, VK10.VK_FILTER_NEAREST);
+                    slot.motion, VK10.VK_FILTER_NEAREST);
             if (uiAlpha != null) {
                 fgUiAlphaPipeline.setImages(uiAlpha.view, RtUiOverlay.overlayColorView(), hdrUiSampler);
                 fgUiAlphaPipeline.dispatch(commandBuffer, contentWidth, contentHeight);
@@ -1729,7 +1715,7 @@ public final class RtComposite {
             VulkanCommandEncoder.memoryBarrier(commandBuffer, stack);
         }
         boolean submitted = RtDlssFg.INSTANCE.submitFrame(commandBuffer.address(), swapWidth, swapHeight,
-                swapchainFormat, renderW, renderH, fgDepthImage, fgMotionImage, hudless, hudlessFormat,
+                swapchainFormat, renderW, renderH, slot.depth, slot.motion, hudless, hudlessFormat,
                 uiAlpha,
                 frameProjection, mvCurProjView,
                 fgPreviousViewProjectionValid ? fgPreviousViewProjection : mvCurProjView,
@@ -1746,20 +1732,68 @@ public final class RtComposite {
         return submitted;
     }
 
-    private void ensureFgGuideImages(RtContext ctx, int width, int height) {
-        if (fgDepthImage == null || fgDepthImage.width != width || fgDepthImage.height != height) {
-            if (fgDepthImage != null) {
-                fgDepthImage.destroy();
+    private void ensureFgGuideImages(RtContext ctx, FgInputSlot slot, int width, int height) {
+        if (slot.depth == null || slot.depth.width != width || slot.depth.height != height) {
+            if (slot.depth != null) {
+                slot.depth.destroy();
             }
-            fgDepthImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32_SFLOAT,
-                    "DLSS-G normalized depth " + width + "x" + height);
+            slot.depth = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32_SFLOAT,
+                    "DLSS-G normalized depth slot " + RtDlssFg.INSTANCE.activeInputSlot() + " "
+                            + width + "x" + height);
         }
-        if (fgMotionImage == null || fgMotionImage.width != width || fgMotionImage.height != height) {
-            if (fgMotionImage != null) {
-                fgMotionImage.destroy();
+        if (slot.motion == null || slot.motion.width != width || slot.motion.height != height) {
+            if (slot.motion != null) {
+                slot.motion.destroy();
             }
-            fgMotionImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16_SFLOAT,
-                    "DLSS-G normalized motion " + width + "x" + height);
+            slot.motion = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16_SFLOAT,
+                    "DLSS-G normalized motion slot " + RtDlssFg.INSTANCE.activeInputSlot() + " "
+                            + width + "x" + height);
+        }
+    }
+
+    private FgInputSlot activeFgInputSlot(RtContext ctx) {
+        int count = RtDlssFg.INSTANCE.inputSlotCount();
+        int active = RtDlssFg.INSTANCE.activeInputSlot();
+        if (count <= 0 || active < 0 || active >= count) {
+            return null;
+        }
+        if (fgInputSlots.length != count) {
+            destroyFgInputSlots();
+            fgInputSlots = new FgInputSlot[count];
+            for (int slot = 0; slot < count; slot++) {
+                fgInputSlots[slot] = new FgInputSlot();
+            }
+        }
+        return fgInputSlots[active];
+    }
+
+    private void destroyFgInputSlots() {
+        for (FgInputSlot slot : fgInputSlots) {
+            if (slot != null) {
+                slot.destroy();
+            }
+        }
+        fgInputSlots = new FgInputSlot[0];
+    }
+
+    private static final class FgInputSlot {
+        private RtImage hudlessSdr;
+        private RtImage hudlessHdr;
+        private RtImage depth;
+        private RtImage motion;
+        private RtImage uiAlpha;
+
+        private void destroy() {
+            for (RtImage image : new RtImage[] {hudlessSdr, hudlessHdr, depth, motion, uiAlpha}) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            hudlessSdr = null;
+            hudlessHdr = null;
+            depth = null;
+            motion = null;
+            uiAlpha = null;
         }
     }
 

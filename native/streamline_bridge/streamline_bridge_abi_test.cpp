@@ -14,11 +14,13 @@
 
 int main() {
     static_assert(sizeof(slbridge_abi_info) == 36);
-    static_assert(sizeof(slbridge_trace_state) == 336);
+    static_assert(sizeof(slbridge_trace_state) == 376);
     static_assert(offsetof(slbridge_trace_state, dlssd_optimal_calls) == 240);
     static_assert(offsetof(slbridge_trace_state, last_dlssd_viewport) == 300);
     static_assert(offsetof(slbridge_trace_state, last_swapchain_handle) == 304);
     static_assert(offsetof(slbridge_trace_state, last_swapchain_present_mode) == 312);
+    static_assert(offsetof(slbridge_trace_state, timeline_wait_calls) == 336);
+    static_assert(offsetof(slbridge_trace_state, last_timeline_value) == 368);
     static_assert(offsetof(slbridge_trace_state, last_swapchain_present_mode_known) == 332);
     static_assert(SL_VERSION_MAJOR == 2 && SL_VERSION_MINOR == 12 && SL_VERSION_PATCH == 0);
     static_assert(sl::DLSSGOptions::s_structType.data1 == 0xfac5f1cb);
@@ -86,7 +88,7 @@ int main() {
     assert(SLBRIDGE_BUFFER_UI_COLOR_AND_ALPHA == 23);
     assert(SLBRIDGE_BUFFER_BACKBUFFER == 53);
     assert(SLBRIDGE_BUFFER_UI_ALPHA == 69);
-    assert(SLBRIDGE_ABI_VERSION == 8);
+    assert(SLBRIDGE_ABI_VERSION == 9);
 
     sl::Resource resource{};
     sl::Extent extent{0u, 0u, 3840u, 2160u};

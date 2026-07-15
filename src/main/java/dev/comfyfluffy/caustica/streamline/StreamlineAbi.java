@@ -9,7 +9,7 @@ import org.joml.Matrix4fc;
 
 /** Versioned Caustica-owned C ABI shared with {@code streamlinebridge.dll}. */
 public final class StreamlineAbi {
-    public static final int VERSION = 8;
+    public static final int VERSION = 9;
     public static final int RESOURCE_DESC_SIZE = 72;
     public static final int CONSTANTS_SIZE = 444;
     public static final int DLSSD_OPTIONS_SIZE = 144;
@@ -17,7 +17,7 @@ public final class StreamlineAbi {
     public static final int DLSSG_STATE_SIZE = 48;
     public static final int REFLEX_OPTIONS_SIZE = 8;
     public static final int REFLEX_STATE_SIZE = 88;
-    public static final int TRACE_STATE_SIZE = 336;
+    public static final int TRACE_STATE_SIZE = 376;
 
     public static final int TRACE_SWAPCHAIN_HANDLE_OFFSET = 304;
     public static final int TRACE_SWAPCHAIN_PRESENT_MODE_OFFSET = 312;
@@ -26,6 +26,11 @@ public final class StreamlineAbi {
     public static final int TRACE_SWAPCHAIN_CREATE_RESULT_OFFSET = 324;
     public static final int TRACE_SWAPCHAIN_PROXY_DISPATCH_OFFSET = 328;
     public static final int TRACE_SWAPCHAIN_PRESENT_MODE_KNOWN_OFFSET = 332;
+    public static final int TRACE_TIMELINE_WAIT_CALLS_OFFSET = 336;
+    public static final int TRACE_TIMELINE_WAIT_FAILURES_OFFSET = 344;
+    public static final int TRACE_DEVICE_WAIT_IDLE_CALLS_OFFSET = 352;
+    public static final int TRACE_LAST_TIMELINE_SEMAPHORE_OFFSET = 360;
+    public static final int TRACE_LAST_TIMELINE_VALUE_OFFSET = 368;
 
     private static final int ABI_INFO_SIZE = 36;
 

@@ -123,10 +123,13 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                         + " -> native " + StreamlineSwapchainCoordinator.INSTANCE.nativePresentMode()
                         + (StreamlineSwapchainCoordinator.INSTANCE.nativeProxyDispatch()
                                 ? " (Streamline proxy)" : " (native dispatch)")
-                        + " | Pacer " + (fg.isActive() ? "DLSS-G generated" : "waiting")
+                        + " | Queue " + fg.effectiveQueueMode()
+                        + (fg.queueFallbackActive() ? " (fallback: " + fg.queueFallbackReason() + ")" : "")
                         + " | Flip metering " + StreamlineRuntime.flipMeteringState()
                         + " | SDK FG VSync " + (fg.vsyncSupportAvailable() ? "available" : "unsupported")
-                        + " | Native images " + StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()
+                        + " | Images app/native "
+                        + StreamlineSwapchainCoordinator.INSTANCE.applicationImageCount() + "/"
+                        + StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()
                         + " | Reflex interval " + fg.reflexIntervalUs() + "us"
                         + " | DLSSD configured/effective "
                         + CausticaConfig.Rt.DlssRr.ENABLED.configuredValue() + "/"

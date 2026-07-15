@@ -205,15 +205,15 @@ resource retention only for short, safe transitions.
 
 ### Synchronization
 
-- Default to `eBlockPresentingClientQueue`, which matches Caustica's single graphics/present queue and avoids
-  input-fence reuse hazards.
+- Default to automatic `eBlockNoClientQueues`. Maintain one tagged-input resource slot per
+  application-visible swapchain image and associate each real present's
+  `inputsProcessingCompletionFence`/value with the slot used by that present.
 - Preserve Minecraft's acquire/present binary semaphore chain exactly. The proxy acquire and proxy present
   are the only acquire/present operations.
-- Do not expose `eBlockNoClientQueues` until the bridge can wait on
-  `inputsProcessingCompletionFence`/value before any tagged image is reused or destroyed. Implement and test
-  that wait first, then permit the advanced mode.
-- Swapchain/resource teardown always waits for the last reported input-consumption fence when the selected
-  queue mode requires it.
+- Wait only when the corresponding application-image slot is reused. If Streamline supplies an invalid
+  fence/value, quiesce once and remain in `eBlockPresentingClientQueue` for that swapchain generation; never
+  hide a per-frame `vkDeviceWaitIdle` behind the throughput mode.
+- Swapchain/resource teardown drains every outstanding slot value before destroying tagged images.
 
 ## Complete feature and menu surface
 

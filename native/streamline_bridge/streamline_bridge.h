@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SLBRIDGE_ABI_VERSION 8u
+#define SLBRIDGE_ABI_VERSION 9u
 
 enum slbridge_variant {
     SLBRIDGE_VARIANT_DEVELOPMENT = 0,
@@ -286,6 +286,11 @@ typedef struct slbridge_trace_state {
     int32_t last_swapchain_create_result;
     uint32_t last_swapchain_proxy_dispatch;
     uint32_t last_swapchain_present_mode_known;
+    uint64_t timeline_wait_calls;
+    uint64_t timeline_wait_failures;
+    uint64_t device_wait_idle_calls;
+    uint64_t last_timeline_semaphore;
+    uint64_t last_timeline_value;
 } slbridge_trace_state;
 
 SLBRIDGE_EXPORT int32_t slbridge_get_abi_info(slbridge_abi_info* out_info);

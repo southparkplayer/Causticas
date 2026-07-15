@@ -754,8 +754,8 @@ public final class CausticaConfig {
             public static final BooleanSetting SHOW_ONLY_INTERPOLATED = bool(
                     "caustica.rt.fg.showOnlyInterpolated", "frame-generation.show-only-interpolated", false);
             public static final StringSetting QUEUE_PARALLELISM = string(
-                    "caustica.rt.fg.queueParallelism", "frame-generation.queue-parallelism", "safe",
-                    value -> "no-client-queues".equalsIgnoreCase(value) ? "no-client-queues" : "safe");
+                    "caustica.rt.fg.queueParallelism", "frame-generation.queue-parallelism", "auto",
+                    value -> "auto");
 
             private Fg() {
             }
@@ -785,7 +785,7 @@ public final class CausticaConfig {
                     return "off";
                 }
                 return switch (value.toLowerCase(java.util.Locale.ROOT)) {
-                    case "fixed", "dynamic", "auto" -> value.toLowerCase(java.util.Locale.ROOT);
+                    case "fixed", "dynamic", "auto" -> "fixed";
                     default -> "off";
                 };
             }

@@ -699,6 +699,10 @@ SLBRIDGE_EXPORT int32_t slbridge_vk_device_wait_idle(uint64_t device) {
         setError("Streamline did not provide vkDeviceWaitIdle");
         return -1;
     }
+    {
+        std::lock_guard lock(g_traceMutex);
+        g_trace.device_wait_idle_calls++;
+    }
     return vkResult(function(reinterpret_cast<VkDevice>(device)), "vkDeviceWaitIdle");
 }
 
@@ -714,7 +718,16 @@ SLBRIDGE_EXPORT int32_t slbridge_vk_wait_timeline(uint64_t device, uint64_t sema
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &nativeSemaphore;
     waitInfo.pValues = &value;
-    return vkResult(function(reinterpret_cast<VkDevice>(device), &waitInfo, timeout_ns), "vkWaitSemaphores");
+    const int32_t result = vkResult(function(reinterpret_cast<VkDevice>(device), &waitInfo, timeout_ns),
+            "vkWaitSemaphores");
+    {
+        std::lock_guard lock(g_traceMutex);
+        g_trace.timeline_wait_calls++;
+        g_trace.timeline_wait_failures += result == 0 ? 0 : 1;
+        g_trace.last_timeline_semaphore = semaphore;
+        g_trace.last_timeline_value = value;
+    }
+    return result;
 }
 
 SLBRIDGE_EXPORT int32_t slbridge_supports_feature(uint32_t feature, uint64_t physical_device) {

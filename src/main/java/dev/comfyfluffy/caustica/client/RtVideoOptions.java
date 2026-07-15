@@ -80,7 +80,7 @@ public final class RtVideoOptions {
     }
 
     public static OptionInstance<?>[] frameGenerationOptions() {
-        List<String> modes = List.of("off", "fixed", "auto");
+        List<String> modes = List.of("off", "fixed");
         int reportedMaximum = RtDlssFg.INSTANCE.multiFrameCountMax();
         // Streamline 2.12 supports at most five generated frames (6x). Until the plugin has been attached
         // to a swapchain and reports this adapter's cap, keep the complete range discoverable; submission
@@ -106,13 +106,6 @@ public final class RtVideoOptions {
         options.add(bool("caustica.options.rt.fg.uiRecomposition", CausticaConfig.Rt.Fg.UI_RECOMPOSITION));
         options.add(bool("caustica.options.rt.fg.fullscreenMenu", CausticaConfig.Rt.Fg.FULLSCREEN_MENU_DETECTION));
         options.add(reflexMode());
-        options.add(new OptionInstance<>(
-                "caustica.options.rt.fg.queueParallelism",
-                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fg.queueParallelism.tooltip")),
-                (caption, value) -> Component.translatable("caustica.options.rt.fg.queueParallelism." + value),
-                new OptionInstance.Enum<>(List.of("safe", "no-client-queues"), Codec.STRING),
-                CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.get(),
-                CausticaConfig.Rt.Fg.QUEUE_PARALLELISM::set));
         if (!StreamlineRuntime.productionVariant()) {
             options.add(bool("caustica.options.rt.fg.showInterpolated", CausticaConfig.Rt.Fg.SHOW_ONLY_INTERPOLATED));
         }

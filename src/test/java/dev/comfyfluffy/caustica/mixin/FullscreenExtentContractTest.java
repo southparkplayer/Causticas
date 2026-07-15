@@ -46,7 +46,7 @@ final class FullscreenExtentContractTest {
         assertTrue(coordinator.contains("GpuSurface.PresentMode.MAILBOX"));
         assertTrue(coordinator.contains(
                 "new GpuSurface.Configuration(configuration.width(), configuration.height(), presentMode)"));
-        assertTrue(coordinator.contains("boolean desiredPlugin = CausticaConfig.Rt.Fg.requested() && !vsync"));
+        assertTrue(coordinator.contains("boolean desiredPlugin = CausticaConfig.Rt.Fg.requested() && !physicalFifo"));
         assertTrue(coordinator.contains("A surface without MAILBOX stays on the requested FIFO mode and DLSS-G fails closed"));
         assertTrue(frameGeneration.contains("int limit = requested() ? 0"));
         assertFalse(frameGeneration.contains("FrameDeadlinePacer"));

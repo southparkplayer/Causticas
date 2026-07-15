@@ -15,7 +15,7 @@ public final class StreamlineSwapchainCoordinator {
     private boolean configuring;
     private boolean configured;
     private boolean pluginForSwapchain;
-    private boolean vsync;
+    private boolean physicalFifo;
     private boolean vsyncRequested;
     private boolean mailboxSupported;
     private boolean mailboxVsyncCompatibility;
@@ -92,9 +92,9 @@ public final class StreamlineSwapchainCoordinator {
 
     /** Called after the old swapchain is destroyed and immediately before replacement creation. */
     public boolean prepareReplacement(GpuSurface.Configuration configuration) {
-        vsync = isVsyncConfiguration(configuration);
+        physicalFifo = isVsyncConfiguration(configuration);
         presentMode = configuration.presentMode();
-        boolean desiredPlugin = CausticaConfig.Rt.Fg.requested() && !vsync;
+        boolean desiredPlugin = CausticaConfig.Rt.Fg.requested() && !physicalFifo;
         // On the initial Off swapchain, capture adapter support while DLSS-G is still loaded from slInit;
         // the feature is deliberately unloaded immediately below to remove disabled-present overhead.
         RtDlssFg.INSTANCE.probeAvailabilityOnce();
@@ -119,8 +119,8 @@ public final class StreamlineSwapchainCoordinator {
         imageCount = buffers;
         generation++;
         nativeSwapchain = StreamlineRuntime.nativeSwapchainTrace();
-        RtDlssFg.INSTANCE.onSwapchainConfigured(width, height, format, imageCount, vsync, pluginForSwapchain,
-                generation);
+        RtDlssFg.INSTANCE.onSwapchainConfigured(width, height, format, imageCount, vsyncRequested,
+                physicalFifo, pluginForSwapchain, generation);
         CausticaMod.LOGGER.info(
                 "Streamline swapchain generation {}: {}x{}, format={}, images={}, plugin={}, requestedPresentMode={}, normalizedPresentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}, nativePresentMode={} (value={}), nativeMinImages={}, nativeImages={}, nativeCreateResult={}, nativeProxyDispatch={}, nativeSwapchain={}",
                 generation, width, height, format, imageCount, pluginForSwapchain, requestedPresentMode, presentMode, vsyncRequested,
@@ -201,6 +201,10 @@ public final class StreamlineSwapchainCoordinator {
 
     public int nativeImageCount() {
         return nativeSwapchain.imageCount();
+    }
+
+    public int applicationImageCount() {
+        return imageCount;
     }
 
     public int nativeCreateResult() {

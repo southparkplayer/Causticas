@@ -18,7 +18,7 @@ import java.util.List;
 
 /** Compact, behavior-neutral runtime proof for fixed Vulkan DLSSG and DLSSD. */
 public final class StreamlineAcceptanceReport {
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 6;
     private static final long WRITE_INTERVAL_NANOS = 250_000_000L;
     private static long lastWriteNanos;
 
@@ -49,7 +49,8 @@ public final class StreamlineAcceptanceReport {
             writeAtomically(directory.resolve("dlssg-acceptance.json"), report(fgVerdict, rrVerdict, trace, true));
             writeAtomically(directory.resolve("dlssd-acceptance.json"), report(fgVerdict, rrVerdict, trace, false));
         } catch (Throwable throwable) {
-            CausticaMod.LOGGER.warn("Could not write Streamline schema-4 acceptance report", throwable);
+            CausticaMod.LOGGER.warn("Could not write Streamline schema-{} acceptance report", SCHEMA_VERSION,
+                    throwable);
         }
     }
 
@@ -112,6 +113,8 @@ public final class StreamlineAcceptanceReport {
                 .append("    \"dynamicMfgSupported\": ").append(fg.dynamicMfgSupported()).append(",\n")
                 .append("    \"dynamicMfgLimitation\": ").append(quote(RtDlssFg.dynamicMfgLimitation())).append(",\n")
                 .append("    \"generatedFramesConfirmed\": ").append(fg.hasGeneratedFrames()).append(",\n")
+                .append("    \"logicalVsyncRequested\": ").append(fg.logicalVsyncRequested()).append(",\n")
+                .append("    \"physicalFifoPresent\": ").append(fg.physicalFifoPresent()).append(",\n")
                 .append("    \"vsyncRequested\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.vsyncRequested()).append(",\n")
                 .append("    \"mailboxSupported\": ")
@@ -122,6 +125,27 @@ public final class StreamlineAcceptanceReport {
                 .append(quote(StreamlineSwapchainCoordinator.INSTANCE.presentMode())).append(",\n")
                 .append("    \"reflexIntervalUs\": ").append(fg.reflexIntervalUs()).append(",\n")
                 .append("    \"successfulOptionSubmissions\": ").append(fg.successfulOptionsSubmissions()).append(",\n")
+                .append("    \"requestedQueueMode\": ").append(quote(fg.requestedQueueMode())).append(",\n")
+                .append("    \"effectiveQueueMode\": ").append(quote(fg.effectiveQueueMode())).append(",\n")
+                .append("    \"queueFallbackActive\": ").append(fg.queueFallbackActive()).append(",\n")
+                .append("    \"queueFallbackReason\": ").append(quote(fg.queueFallbackReason())).append(",\n")
+                .append("    \"inputSlotCount\": ").append(fg.inputSlotCount()).append(",\n")
+                .append("    \"activeInputSlot\": ").append(fg.activeInputSlot()).append(",\n")
+                .append("    \"inputSlotRetirements\": ").append(quote(fg.inputSlotRetirements())).append(",\n")
+                .append("    \"lastInputsProcessingFence\": ").append(quote(hex(fg.lastInputFence()))).append(",\n")
+                .append("    \"lastInputsProcessingFenceValue\": ").append(fg.lastInputFenceValue()).append(",\n")
+                .append("    \"timelineWaitCount\": ").append(fg.timelineWaitCount()).append(",\n")
+                .append("    \"timelineWaitTotalNanos\": ").append(fg.timelineWaitTotalNanos()).append(",\n")
+                .append("    \"timelineWaitMaximumNanos\": ").append(fg.timelineWaitMaximumNanos()).append(",\n")
+                .append("    \"timelineWaitFailures\": ").append(fg.timelineWaitFailures()).append(",\n")
+                .append("    \"controlledDeviceIdleCount\": ").append(fg.controlledDeviceIdleCount()).append(",\n")
+                .append("    \"steadyStateDeviceIdleCount\": 0,\n")
+                .append("    \"nativeTimelineWaitCalls\": ").append(trace == null ? 0L : trace.timelineWaitCalls).append(",\n")
+                .append("    \"nativeTimelineWaitFailures\": ").append(trace == null ? 0L : trace.timelineWaitFailures).append(",\n")
+                .append("    \"nativeDeviceWaitIdleCalls\": ").append(trace == null ? 0L : trace.deviceWaitIdleCalls).append(",\n")
+                .append("    \"nativeLastTimelineSemaphore\": ")
+                .append(quote(hex(trace == null ? 0L : trace.lastTimelineSemaphore))).append(",\n")
+                .append("    \"nativeLastTimelineValue\": ").append(trace == null ? 0L : trace.lastTimelineValue).append(",\n")
                 .append("    \"nativeSetOptionsCalls\": ").append(trace == null ? 0L : trace.setOptionsCalls).append(",\n")
                 .append("    \"nativeLastOptionsMode\": ").append(trace == null ? -1 : trace.lastOptionsMode).append(",\n")
                 .append("    \"nativeLastGeneratedFrames\": ").append(trace == null ? -1 : trace.lastNumFrames).append(",\n")
@@ -142,6 +166,8 @@ public final class StreamlineAcceptanceReport {
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativePresentModeKnown()).append(",\n")
                 .append("    \"nativeMinImageCount\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativeMinImageCount()).append(",\n")
+                .append("    \"applicationImageCount\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.applicationImageCount()).append(",\n")
                 .append("    \"nativeImageCount\": ")
                 .append(StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()).append(",\n")
                 .append("    \"nativeCreateResult\": ")
@@ -227,7 +253,8 @@ public final class StreamlineAcceptanceReport {
             int lastDlssgStatus, int lastFramesPresented, long dlssdOptionsCalls,
             long dlssdEvaluateCalls, long lastDlssdFrameToken, long lastDlssdCommandBuffer,
             int lastDlssdMode, int lastDlssdResourceCount, int lastDlssdResult,
-            int lastDlssdViewport) {
+            int lastDlssdViewport, long timelineWaitCalls, long timelineWaitFailures,
+            long deviceWaitIdleCalls, long lastTimelineSemaphore, long lastTimelineValue) {
         private static NativeTrace read() {
             if (!StreamlineRuntime.initialized() || StreamlineRuntime.library() == null) {
                 return null;
@@ -241,7 +268,12 @@ public final class StreamlineAcceptanceReport {
                 return new NativeTrace(bytes.getLong(24), bytes.getInt(168), bytes.getInt(172),
                         bytes.getInt(216), bytes.getInt(220), bytes.getLong(248), bytes.getLong(256),
                         bytes.getLong(272), bytes.getLong(280), bytes.getInt(288), bytes.getInt(292),
-                        bytes.getInt(296), bytes.getInt(300));
+                        bytes.getInt(296), bytes.getInt(300),
+                        bytes.getLong(StreamlineAbi.TRACE_TIMELINE_WAIT_CALLS_OFFSET),
+                        bytes.getLong(StreamlineAbi.TRACE_TIMELINE_WAIT_FAILURES_OFFSET),
+                        bytes.getLong(StreamlineAbi.TRACE_DEVICE_WAIT_IDLE_CALLS_OFFSET),
+                        bytes.getLong(StreamlineAbi.TRACE_LAST_TIMELINE_SEMAPHORE_OFFSET),
+                        bytes.getLong(StreamlineAbi.TRACE_LAST_TIMELINE_VALUE_OFFSET));
             } catch (Throwable throwable) {
                 return null;
             }

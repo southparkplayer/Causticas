@@ -58,7 +58,8 @@ public final class RtDlssFg {
     private boolean pclSupported;
     private boolean dlssgFailed;
     private boolean pluginForSwapchain;
-    private boolean swapchainVsync;
+    private boolean logicalVsyncRequested;
+    private boolean physicalFifoPresent;
     private boolean frameInputsSubmitted;
     private boolean optionsEnabled;
     private int lastAppliedOffFlags = Integer.MIN_VALUE;
@@ -85,6 +86,7 @@ public final class RtDlssFg {
     private int framesActuallyPresented;
     private int maxFramesActuallyPresented;
     private int lastSubmittedGeneratedFrameCount;
+    private int lastFrameInputGeneratedCount = -1;
     private int lastSubmittedMode;
     private long successfulOptionsSubmissions;
     private boolean generatedFramesConfirmed;
@@ -95,7 +97,14 @@ public final class RtDlssFg {
     private boolean lastSubmissionReset;
     private long inputsProcessingFence;
     private long inputsProcessingFenceValue;
-    private boolean inputFenceWaitRequired;
+    private final DlssgInputSlotRing inputSlots = new DlssgInputSlotRing();
+    private boolean queueFallback;
+    private String queueFallbackReason = "";
+    private long timelineWaitCount;
+    private long timelineWaitTotalNanos;
+    private long timelineWaitMaximumNanos;
+    private long timelineWaitFailures;
+    private long controlledDeviceIdleCount;
     private long estimatedVramUsage;
     private String featureVersion = "Unknown";
     private int lastReflexMode = Integer.MIN_VALUE;
@@ -116,7 +125,7 @@ public final class RtDlssFg {
     }
 
     public boolean isAvailable() {
-        return dlssgSupported && !dlssgFailed && pluginForSwapchain && !swapchainVsync;
+        return dlssgSupported && !dlssgFailed && pluginForSwapchain && !physicalFifoPresent;
     }
 
     public boolean isSupported() {
@@ -128,7 +137,7 @@ public final class RtDlssFg {
     }
 
     public String unavailableReason() {
-        if (swapchainVsync && requested()) {
+        if (physicalFifoPresent && requested()) {
             return "DLSS-G VSync compatibility requires MAILBOX on this Vulkan surface";
         }
         if (dlssgSupported && !pluginForSwapchain) {
@@ -161,6 +170,70 @@ public final class RtDlssFg {
 
     public long successfulOptionsSubmissions() {
         return successfulOptionsSubmissions;
+    }
+
+    public boolean logicalVsyncRequested() {
+        return logicalVsyncRequested;
+    }
+
+    public boolean physicalFifoPresent() {
+        return physicalFifoPresent;
+    }
+
+    public int inputSlotCount() {
+        return inputSlots.count();
+    }
+
+    public int activeInputSlot() {
+        return inputSlots.active();
+    }
+
+    public String requestedQueueMode() {
+        return diagnosticQueueOverride();
+    }
+
+    public String effectiveQueueMode() {
+        return useNoClientQueues() ? "no-client-queues" : "block-presenting-queue";
+    }
+
+    public boolean queueFallbackActive() {
+        return queueFallback;
+    }
+
+    public String queueFallbackReason() {
+        return queueFallbackReason;
+    }
+
+    public long timelineWaitCount() {
+        return timelineWaitCount;
+    }
+
+    public long timelineWaitTotalNanos() {
+        return timelineWaitTotalNanos;
+    }
+
+    public long timelineWaitMaximumNanos() {
+        return timelineWaitMaximumNanos;
+    }
+
+    public long timelineWaitFailures() {
+        return timelineWaitFailures;
+    }
+
+    public long controlledDeviceIdleCount() {
+        return controlledDeviceIdleCount;
+    }
+
+    public long lastInputFence() {
+        return inputsProcessingFence;
+    }
+
+    public long lastInputFenceValue() {
+        return inputsProcessingFenceValue;
+    }
+
+    public String inputSlotRetirements() {
+        return inputSlots.snapshot();
     }
 
     public boolean capabilityStateValid() {
@@ -342,16 +415,21 @@ public final class RtDlssFg {
         refreshReflexState();
     }
 
-    public void onSwapchainConfigured(int width, int height, int format, int imageCount, boolean vsync,
-            boolean pluginEnabled, long generation) {
+    public void onSwapchainConfigured(int width, int height, int format, int imageCount,
+            boolean userVsyncRequested, boolean fifoPresent, boolean pluginEnabled, long generation) {
         swapchainWidth = width;
         swapchainHeight = height;
         swapchainFormat = format;
         swapchainImageCount = imageCount;
-        swapchainVsync = vsync;
+        logicalVsyncRequested = userVsyncRequested;
+        physicalFifoPresent = fifoPresent;
         pluginForSwapchain = pluginEnabled;
         swapchainGeneration = generation;
+        resetInputSlots(Math.max(0, imageCount));
+        queueFallback = "safe".equals(diagnosticQueueOverride());
+        queueFallbackReason = queueFallback ? "Forced blocking queue diagnostic" : "";
         forceResetNextSubmission = true;
+        lastFrameInputGeneratedCount = -1;
         dlssgStateKnown = false;
         vsyncSupportAvailable = false;
         optionsEnabled = false;
@@ -385,7 +463,7 @@ public final class RtDlssFg {
 
     /** Must run before Minecraft begins any swapchain mutation. */
     public void suspendForSwapchainChange() {
-        waitForInputsIfNeeded();
+        drainInputSlots("swapchain change");
         setOff(false);
         frameInputsSubmitted = false;
         frameToken = 0L;
@@ -393,7 +471,40 @@ public final class RtDlssFg {
 
     /** Must run before Caustica writes or destroys any previously tagged frame input. */
     public boolean beforeFrameInputs() {
-        return waitForInputsIfNeeded();
+        if (inputSlots.prepared() || !useNoClientQueues()) {
+            inputSlots.markPrepared();
+            return true;
+        }
+        if (!inputSlots.hasActive()) {
+            return false;
+        }
+        int activeInputSlot = inputSlots.active();
+        if (!inputSlots.pending(activeInputSlot)) {
+            inputSlots.markPrepared();
+            return true;
+        }
+        if (!inputSlots.valid(activeInputSlot)) {
+            return enterBlockingQueueFallback("Streamline returned no completion fence/value for input slot "
+                    + activeInputSlot);
+        }
+        int result = waitForInputSlot(activeInputSlot);
+        if (result != RESULT_OK) {
+            timelineWaitFailures++;
+            return enterBlockingQueueFallback("Timeline wait failed for input slot " + activeInputSlot + ": "
+                    + StreamlineRuntime.lastError());
+        }
+        inputSlots.markPrepared();
+        return true;
+    }
+
+    /** Drain every outstanding tagged-input retirement before their owning image ring is destroyed. */
+    public void beforeInputResourcesDestroyed() {
+        drainInputSlots("input resource destruction");
+    }
+
+    /** Associate the next frame's tagged resources with the application-visible acquired image. */
+    public void onImageAcquired(int imageIndex) {
+        inputSlots.acquire(imageIndex);
     }
 
     /** Called immediately before the one real proxy present. */
@@ -450,7 +561,9 @@ public final class RtDlssFg {
         try (Arena arena = Arena.ofConfined()) {
             StreamlineLibrary library = StreamlineRuntime.library();
             MemorySegment constants = StreamlineAbi.allocate(arena, StreamlineAbi.CONSTANTS_SIZE);
+            int generatedFrameCount = effectiveMultiFrameCount();
             boolean effectiveReset = reset || forceResetNextSubmission
+                    || generatedFrameCount != lastFrameInputGeneratedCount
                     || lastSubmittedSwapchainGeneration != swapchainGeneration;
             writeConstants(constants, projection, currentViewProjection, previousViewProjection, viewRotation,
                     jitterX, jitterY, renderWidth, renderHeight, cameraX, cameraY, cameraZ,
@@ -483,8 +596,8 @@ public final class RtDlssFg {
             lastRenderHeight = renderHeight;
             lastHudlessFormat = hudlessFormat;
             lastUiAlphaValid = uiValid;
-            inputFenceWaitRequired = "no-client-queues".equals(CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.get());
             lastSubmittedSwapchainGeneration = swapchainGeneration;
+            lastFrameInputGeneratedCount = generatedFrameCount;
             forceResetNextSubmission = false;
             lastAppliedOffFlags = Integer.MIN_VALUE;
             submissionStatus = "Submitted; waiting for generated present";
@@ -496,7 +609,7 @@ public final class RtDlssFg {
                         "DLSS-G staged first world frame for swapchain {}: mode={}, generated={}, render={}x{}, output={}x{}, ui={}, queue={}, reset={}",
                         swapchainGeneration, CausticaConfig.Rt.Fg.mode(), effectiveMultiFrameCount(),
                         renderWidth, renderHeight, colorWidth, colorHeight, uiValid,
-                        CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.get(), effectiveReset);
+                        effectiveQueueMode(), effectiveReset);
             }
             return true;
         } catch (Throwable throwable) {
@@ -719,6 +832,10 @@ public final class RtDlssFg {
             stateDynamicMfgSupported = bytes.getInt(28) != 0;
             inputsProcessingFence = bytes.getLong(32);
             inputsProcessingFenceValue = bytes.getLong(40);
+            if (frameInputsSubmitted && optionsEnabled && useNoClientQueues()
+                    && inputSlots.hasActive()) {
+                inputSlots.retireActive(inputsProcessingFence, inputsProcessingFenceValue);
+            }
             if (runtimeStatus != 0) {
                 unavailableReason = statusDescription(runtimeStatus);
                 if (optionsEnabled) {
@@ -762,29 +879,96 @@ public final class RtDlssFg {
         }
     }
 
-    private boolean waitForInputsIfNeeded() {
-        if (!inputFenceWaitRequired) {
-            return true;
+    private int waitForInputSlot(int slot) {
+        if (!StreamlineRuntime.initialized()
+                || !(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend()
+                instanceof VulkanDevice device)) {
+            return -1;
         }
-        if (!StreamlineRuntime.initialized()) {
+        long started = System.nanoTime();
+        int result = StreamlineRuntime.library().vkWaitTimeline(device.vkDevice().address(),
+                inputSlots.fence(slot), inputSlots.value(slot), -1L);
+        long elapsed = Math.max(0L, System.nanoTime() - started);
+        timelineWaitCount++;
+        timelineWaitTotalNanos += elapsed;
+        timelineWaitMaximumNanos = Math.max(timelineWaitMaximumNanos, elapsed);
+        if (result == RESULT_OK) {
+            clearInputSlot(slot);
+        }
+        return result;
+    }
+
+    private boolean enterBlockingQueueFallback(String reason) {
+        if (!StreamlineRuntime.initialized()
+                || !(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend()
+                instanceof VulkanDevice device)) {
             return false;
         }
-        if (!(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend() instanceof VulkanDevice device)) {
-            return false;
-        }
-        int result = inputsProcessingFence != 0L && inputsProcessingFenceValue != 0L
-                ? StreamlineRuntime.library().vkWaitTimeline(device.vkDevice().address(),
-                        inputsProcessingFence, inputsProcessingFenceValue, -1L)
-                : StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
+        int result = StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
+        controlledDeviceIdleCount++;
         if (result != RESULT_OK) {
             dlssgFailed = true;
-            unavailableReason = "Could not wait for Streamline input consumption: " + StreamlineRuntime.lastError();
+            unavailableReason = "Could not quiesce for Streamline queue fallback: " + StreamlineRuntime.lastError();
             CausticaMod.LOGGER.error(unavailableReason);
             return false;
         }
-        inputFenceWaitRequired = false;
-        inputsProcessingFenceValue = 0L;
+        queueFallback = true;
+        queueFallbackReason = reason;
+        clearAllInputSlots();
+        inputSlots.markPrepared();
+        forceResetNextSubmission = true;
+        CausticaMod.LOGGER.warn("DLSS-G queue parallelism fell back to blocking mode: {}", reason);
         return true;
+    }
+
+    private void drainInputSlots(String reason) {
+        boolean needsDeviceIdle = false;
+        for (int slot = 0; slot < inputSlots.count(); slot++) {
+            if (!inputSlots.pending(slot)) {
+                continue;
+            }
+            if (!inputSlots.valid(slot)
+                    || waitForInputSlot(slot) != RESULT_OK) {
+                needsDeviceIdle = true;
+                break;
+            }
+        }
+        if (needsDeviceIdle && StreamlineRuntime.initialized()
+                && ((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend() instanceof VulkanDevice device) {
+            int result = StreamlineRuntime.vkDeviceWaitIdle(device.vkDevice());
+            controlledDeviceIdleCount++;
+            if (result != RESULT_OK) {
+                CausticaMod.LOGGER.error("Could not quiesce Streamline inputs for {}: {}", reason,
+                        StreamlineRuntime.lastError());
+            }
+        }
+        clearAllInputSlots();
+    }
+
+    private void resetInputSlots(int count) {
+        inputSlots.reset(count);
+    }
+
+    private void clearAllInputSlots() {
+        inputSlots.clearAll();
+    }
+
+    private void clearInputSlot(int slot) {
+        inputSlots.clear(slot);
+    }
+
+    private boolean useNoClientQueues() {
+        String override = diagnosticQueueOverride();
+        return "no-client-queues".equals(override) || ("auto".equals(override) && !queueFallback);
+    }
+
+    private static String diagnosticQueueOverride() {
+        String value = System.getProperty("caustica.streamline.queueParallelism", "auto")
+                .trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (value) {
+            case "safe", "no-client-queues" -> value;
+            default -> "auto";
+        };
     }
 
     /** Expensive, user-triggered estimate query; never called from the per-frame state path. */
@@ -867,7 +1051,7 @@ public final class RtDlssFg {
         // uiBufferFormat describes kBufferTypeUIColorAndAlpha. Caustica supplies the preferred
         // single-channel kBufferTypeUIAlpha tag, whose R32 format is already in its Resource.
         bytes.putInt(56, 0);
-        bytes.putInt(60, "no-client-queues".equals(CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.get()) ? 1 : 0);
+        bytes.putInt(60, useNoClientQueues() ? 1 : 0);
         bytes.putInt(64, uiValid && CausticaConfig.Rt.Fg.UI_RECOMPOSITION.value() ? 1 : 0);
         bytes.putFloat(68, CausticaConfig.Rt.Fg.DYNAMIC_TARGET_FPS.value());
     }
@@ -897,7 +1081,7 @@ public final class RtDlssFg {
     static int streamlineModeForVulkan(String mode) {
         return switch (mode) {
             case "fixed" -> 1;
-            case "auto" -> 2;
+            case "auto" -> 1;
             // Streamline Dynamic MFG is D3D12-only. Preserve the selected generated-frame count and run
             // the supported fixed mode until the stale selection is migrated on settings save.
             case "dynamic" -> 1;
@@ -1060,12 +1244,13 @@ public final class RtDlssFg {
 
     public void destroy() {
         StreamlineAcceptanceReport.publishNow();
+        drainInputSlots("shutdown");
         setOff(false);
         frameToken = 0L;
         currentFrameIndex = -1;
         frameInputsSubmitted = false;
         triggerFlashPending = false;
-        inputFenceWaitRequired = false;
+        resetInputSlots(0);
         pluginForSwapchain = false;
         optionsEnabled = false;
         lastAppliedOffFlags = Integer.MIN_VALUE;

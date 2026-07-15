@@ -18,8 +18,8 @@ if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 $failures = New-Object 'System.Collections.Generic.List[string]'
 
-if ($report.schemaVersion -ne 4) {
-    $failures.Add("schemaVersion is $($report.schemaVersion), expected 4")
+if ($report.schemaVersion -ne 6) {
+    $failures.Add("schemaVersion is $($report.schemaVersion), expected 6")
 }
 if ($RequireProduction -and -not $report.identity.production) {
     $failures.Add("runtime identity is $($report.identity.streamlineVariant), expected production")
@@ -49,6 +49,21 @@ if ($PSBoundParameters.ContainsKey('GeneratedFrames')) {
 }
 if (-not $report.dlssg.capabilityStateValid) {
     $failures.Add('DLSSG capability state is not valid')
+}
+if ($report.dlssg.effectiveQueueMode -ne 'no-client-queues') {
+    $failures.Add("effective queue mode is $($report.dlssg.effectiveQueueMode), expected no-client-queues")
+}
+if ($report.dlssg.queueFallbackActive) {
+    $failures.Add("queue fallback is active: $($report.dlssg.queueFallbackReason)")
+}
+if ($report.dlssg.timelineWaitFailures -ne 0) {
+    $failures.Add("timeline wait failures is $($report.dlssg.timelineWaitFailures), expected 0")
+}
+if ($report.dlssg.steadyStateDeviceIdleCount -ne 0) {
+    $failures.Add("steady-state device idle count is $($report.dlssg.steadyStateDeviceIdleCount), expected 0")
+}
+if ($report.dlssg.inputSlotCount -ne $report.dlssg.applicationImageCount) {
+    $failures.Add("input slot count $($report.dlssg.inputSlotCount) does not match application image count $($report.dlssg.applicationImageCount)")
 }
 if ($report.dlssg.dynamicMfgSupported) {
     $failures.Add('Vulkan unexpectedly reports Dynamic MFG; fixed mode is the accepted target')

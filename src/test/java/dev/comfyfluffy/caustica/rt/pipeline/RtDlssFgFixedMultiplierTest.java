@@ -25,11 +25,11 @@ final class RtDlssFgFixedMultiplierTest {
     }
 
     @Test
-    void dynamicSelectionFallsBackToFixedAndAutoRemainsLegacy() {
+    void staleDynamicAndAutoSelectionsFallBackToFixed() {
         assertEquals(0, RtDlssFg.streamlineModeForVulkan("off"));
         assertEquals(1, RtDlssFg.streamlineModeForVulkan("fixed"));
         assertEquals(1, RtDlssFg.streamlineModeForVulkan("dynamic"));
-        assertEquals(2, RtDlssFg.streamlineModeForVulkan("auto"));
+        assertEquals(1, RtDlssFg.streamlineModeForVulkan("auto"));
     }
 
     @Test
@@ -39,7 +39,7 @@ final class RtDlssFgFixedMultiplierTest {
         maximum.setAccessible(true);
         maximum.setInt(fg, 5);
 
-        fg.onSwapchainConfigured(3840, 2160, 64, 6, false, false, 2L);
+        fg.onSwapchainConfigured(3840, 2160, 64, 6, false, false, false, 2L);
         assertEquals(5, fg.multiFrameCountMax());
 
         fg.destroy();
