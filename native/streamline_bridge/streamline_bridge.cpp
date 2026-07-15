@@ -589,15 +589,37 @@ SLBRIDGE_EXPORT void slbridge_vk_destroy_surface(uint64_t instance, uint64_t sur
 
 SLBRIDGE_EXPORT int32_t slbridge_vk_create_swapchain(uint64_t device, uint64_t create_info,
         uint64_t allocator, uint64_t swapchain_out) {
+    const auto* info = reinterpret_cast<const VkSwapchainCreateInfoKHR*>(create_info);
     auto function = deviceProc<FnVkCreateSwapchainKHR>(reinterpret_cast<VkDevice>(device),
             "vkCreateSwapchainKHR");
     if (!function || !swapchain_out) {
+        {
+            std::lock_guard lock(g_traceMutex);
+            g_trace.last_swapchain_handle = 0;
+            g_trace.last_swapchain_present_mode = info ? static_cast<uint32_t>(info->presentMode) : 0;
+            g_trace.last_swapchain_min_image_count = info ? info->minImageCount : 0;
+            g_trace.last_swapchain_image_count = 0;
+            g_trace.last_swapchain_create_result = VK_ERROR_INITIALIZATION_FAILED;
+            g_trace.last_swapchain_proxy_dispatch = function ? 1u : 0u;
+            g_trace.last_swapchain_present_mode_known = info ? 1u : 0u;
+        }
         setError("Streamline did not provide vkCreateSwapchainKHR");
         return -1;
     }
     const VkResult result = function(reinterpret_cast<VkDevice>(device),
-            reinterpret_cast<const VkSwapchainCreateInfoKHR*>(create_info),
-            reinterpret_cast<const VkAllocationCallbacks*>(allocator), reinterpret_cast<VkSwapchainKHR*>(swapchain_out));
+            info, reinterpret_cast<const VkAllocationCallbacks*>(allocator),
+            reinterpret_cast<VkSwapchainKHR*>(swapchain_out));
+    {
+        std::lock_guard lock(g_traceMutex);
+        g_trace.last_swapchain_handle = result == VK_SUCCESS
+                ? reinterpret_cast<uint64_t>(*reinterpret_cast<VkSwapchainKHR*>(swapchain_out)) : 0;
+        g_trace.last_swapchain_present_mode = info ? static_cast<uint32_t>(info->presentMode) : 0;
+        g_trace.last_swapchain_min_image_count = info ? info->minImageCount : 0;
+        g_trace.last_swapchain_image_count = 0;
+        g_trace.last_swapchain_create_result = static_cast<int32_t>(result);
+        g_trace.last_swapchain_proxy_dispatch = 1u;
+        g_trace.last_swapchain_present_mode_known = info ? 1u : 0u;
+    }
     return vkResult(result, "vkCreateSwapchainKHR");
 }
 
@@ -620,8 +642,15 @@ SLBRIDGE_EXPORT int32_t slbridge_vk_get_swapchain_images(uint64_t device, uint64
         setError("Streamline did not provide vkGetSwapchainImagesKHR");
         return -1;
     }
-    return vkResult(function(reinterpret_cast<VkDevice>(device), reinterpret_cast<VkSwapchainKHR>(swapchain),
-            reinterpret_cast<uint32_t*>(count), reinterpret_cast<VkImage*>(images)), "vkGetSwapchainImagesKHR");
+    auto* imageCount = reinterpret_cast<uint32_t*>(count);
+    const VkResult result = function(reinterpret_cast<VkDevice>(device),
+            reinterpret_cast<VkSwapchainKHR>(swapchain), imageCount,
+            reinterpret_cast<VkImage*>(images));
+    if (result == VK_SUCCESS && imageCount) {
+        std::lock_guard lock(g_traceMutex);
+        g_trace.last_swapchain_image_count = *imageCount;
+    }
+    return vkResult(result, "vkGetSwapchainImagesKHR");
 }
 
 SLBRIDGE_EXPORT int32_t slbridge_vk_acquire_next_image(uint64_t device, uint64_t swapchain,

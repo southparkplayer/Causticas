@@ -19,6 +19,7 @@ public final class StreamlineSwapchainCoordinator {
     private boolean vsyncRequested;
     private boolean mailboxSupported;
     private boolean mailboxVsyncCompatibility;
+    private GpuSurface.PresentMode requestedPresentMode;
     private GpuSurface.PresentMode presentMode;
     private int width;
     private int height;
@@ -26,6 +27,7 @@ public final class StreamlineSwapchainCoordinator {
     private int imageCount;
     private long generation;
     private boolean reconfigureRequested;
+    private StreamlineRuntime.SwapchainTrace nativeSwapchain = StreamlineRuntime.SwapchainTrace.unknown();
 
     private StreamlineSwapchainCoordinator() {
     }
@@ -57,6 +59,7 @@ public final class StreamlineSwapchainCoordinator {
         configuring = true;
         configured = false;
         reconfigureRequested = false;
+        nativeSwapchain = StreamlineRuntime.SwapchainTrace.unknown();
         RtDlssFg.INSTANCE.suspendForSwapchainChange();
     }
 
@@ -70,6 +73,7 @@ public final class StreamlineSwapchainCoordinator {
      */
     public GpuSurface.Configuration normalizeConfiguration(GpuSurface.Configuration configuration,
             Collection<GpuSurface.PresentMode> supportedPresentModes) {
+        requestedPresentMode = configuration.presentMode();
         vsyncRequested = isVsyncConfiguration(configuration);
         mailboxSupported = supportedPresentModes.contains(GpuSurface.PresentMode.MAILBOX);
         mailboxVsyncCompatibility = false;
@@ -114,12 +118,21 @@ public final class StreamlineSwapchainCoordinator {
         format = nativeFormat;
         imageCount = buffers;
         generation++;
+        nativeSwapchain = StreamlineRuntime.nativeSwapchainTrace();
         RtDlssFg.INSTANCE.onSwapchainConfigured(width, height, format, imageCount, vsync, pluginForSwapchain,
                 generation);
         CausticaMod.LOGGER.info(
-                "Streamline swapchain generation {}: {}x{}, format={}, images={}, plugin={}, presentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}",
-                generation, width, height, format, imageCount, pluginForSwapchain, presentMode, vsyncRequested,
-                mailboxVsyncCompatibility);
+                "Streamline swapchain generation {}: {}x{}, format={}, images={}, plugin={}, requestedPresentMode={}, normalizedPresentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}, nativePresentMode={} (value={}), nativeMinImages={}, nativeImages={}, nativeCreateResult={}, nativeProxyDispatch={}, nativeSwapchain={}",
+                generation, width, height, format, imageCount, pluginForSwapchain, requestedPresentMode, presentMode, vsyncRequested,
+                mailboxVsyncCompatibility, nativeSwapchain.presentMode(), nativeSwapchain.presentModeValue(),
+                nativeSwapchain.minImageCount(), nativeSwapchain.imageCount(), nativeSwapchain.createResult(),
+                nativeSwapchain.proxyDispatch(), nativeSwapchain.handleHex());
+        if (mailboxVsyncCompatibility && nativeSwapchain.presentModeKnown()
+                && !"MAILBOX".equals(nativeSwapchain.presentMode())) {
+            CausticaMod.LOGGER.error(
+                    "DLSS-G MAILBOX VSync proof failed: requested MAILBOX but native proxy observed {} (value={})",
+                    nativeSwapchain.presentMode(), nativeSwapchain.presentModeValue());
+        }
     }
 
     public void configureFailed() {
@@ -160,6 +173,46 @@ public final class StreamlineSwapchainCoordinator {
 
     public String presentMode() {
         return presentMode == null ? "unknown" : presentMode.name();
+    }
+
+    public String requestedPresentMode() {
+        return requestedPresentMode == null ? "unknown" : requestedPresentMode.name();
+    }
+
+    public String normalizedPresentMode() {
+        return presentMode();
+    }
+
+    public String nativePresentMode() {
+        return nativeSwapchain.presentMode();
+    }
+
+    public int nativePresentModeValue() {
+        return nativeSwapchain.presentModeValue();
+    }
+
+    public boolean nativePresentModeKnown() {
+        return nativeSwapchain.presentModeKnown();
+    }
+
+    public int nativeMinImageCount() {
+        return nativeSwapchain.minImageCount();
+    }
+
+    public int nativeImageCount() {
+        return nativeSwapchain.imageCount();
+    }
+
+    public int nativeCreateResult() {
+        return nativeSwapchain.createResult();
+    }
+
+    public boolean nativeProxyDispatch() {
+        return nativeSwapchain.proxyDispatch();
+    }
+
+    public String nativeSwapchainHandle() {
+        return nativeSwapchain.handleHex();
     }
 
     private static boolean isVsyncRequested() {

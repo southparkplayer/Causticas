@@ -81,6 +81,7 @@ public final class RtDlssFg {
     private int multiFrameCountMax;
     private int minWidthOrHeight;
     private int runtimeStatus;
+    private boolean vsyncSupportAvailable;
     private int framesActuallyPresented;
     private int maxFramesActuallyPresented;
     private int lastSubmittedGeneratedFrameCount;
@@ -172,6 +173,11 @@ public final class RtDlssFg {
 
     public int runtimeStatus() {
         return runtimeStatus;
+    }
+
+    /** Streamline's official DLSS-G VSync/RSync capability, distinct from physical Vulkan MAILBOX. */
+    public boolean vsyncSupportAvailable() {
+        return vsyncSupportAvailable;
     }
 
     public int framesActuallyPresented() {
@@ -347,6 +353,7 @@ public final class RtDlssFg {
         swapchainGeneration = generation;
         forceResetNextSubmission = true;
         dlssgStateKnown = false;
+        vsyncSupportAvailable = false;
         optionsEnabled = false;
         lastAppliedOffFlags = Integer.MIN_VALUE;
         generatedFramesConfirmed = false;
@@ -678,6 +685,7 @@ public final class RtDlssFg {
             runtimeStatus = bytes.getInt(8);
             minWidthOrHeight = bytes.getInt(12);
             framesActuallyPresented = bytes.getInt(16);
+            vsyncSupportAvailable = bytes.getInt(24) != 0;
             maxFramesActuallyPresented = Math.max(maxFramesActuallyPresented, framesActuallyPresented);
             int generatedNow = optionsEnabled ? Math.max(0, framesActuallyPresented - 1) : 0;
             if (generatedNow > 0) {

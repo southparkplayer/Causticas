@@ -37,6 +37,6 @@ final class RtDlssRrResourceContractTest {
 
     @Test
     void acceptanceSchemaIsFour() {
-        assertEquals(4, StreamlineAcceptanceReport.SCHEMA_VERSION);
+        assertEquals(5, StreamlineAcceptanceReport.SCHEMA_VERSION);
     }
 }

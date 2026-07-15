@@ -18,7 +18,7 @@ import java.util.List;
 
 /** Compact, behavior-neutral runtime proof for fixed Vulkan DLSSG and DLSSD. */
 public final class StreamlineAcceptanceReport {
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
     private static final long WRITE_INTERVAL_NANOS = 250_000_000L;
     private static long lastWriteNanos;
 
@@ -126,7 +126,30 @@ public final class StreamlineAcceptanceReport {
                 .append("    \"nativeLastOptionsMode\": ").append(trace == null ? -1 : trace.lastOptionsMode).append(",\n")
                 .append("    \"nativeLastGeneratedFrames\": ").append(trace == null ? -1 : trace.lastNumFrames).append(",\n")
                 .append("    \"nativeLastStateStatus\": ").append(trace == null ? -1 : trace.lastDlssgStatus).append(",\n")
-                .append("    \"nativeLastFramesPresented\": ").append(trace == null ? -1 : trace.lastFramesPresented).append("\n")
+                .append("    \"nativeLastFramesPresented\": ").append(trace == null ? -1 : trace.lastFramesPresented).append(",\n")
+                .append("    \"flipMeteringState\": ")
+                .append(quote(StreamlineRuntime.flipMeteringState())).append(",\n")
+                .append("    \"streamlineVsyncSupportAvailable\": ").append(fg.vsyncSupportAvailable()).append(",\n")
+                .append("    \"requestedPresentMode\": ")
+                .append(quote(StreamlineSwapchainCoordinator.INSTANCE.requestedPresentMode())).append(",\n")
+                .append("    \"normalizedPresentMode\": ")
+                .append(quote(StreamlineSwapchainCoordinator.INSTANCE.normalizedPresentMode())).append(",\n")
+                .append("    \"nativePresentMode\": ")
+                .append(quote(StreamlineSwapchainCoordinator.INSTANCE.nativePresentMode())).append(",\n")
+                .append("    \"nativePresentModeValue\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativePresentModeValue()).append(",\n")
+                .append("    \"nativePresentModeKnown\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativePresentModeKnown()).append(",\n")
+                .append("    \"nativeMinImageCount\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeMinImageCount()).append(",\n")
+                .append("    \"nativeImageCount\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()).append(",\n")
+                .append("    \"nativeCreateResult\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeCreateResult()).append(",\n")
+                .append("    \"nativeProxyDispatch\": ")
+                .append(StreamlineSwapchainCoordinator.INSTANCE.nativeProxyDispatch()).append(",\n")
+                .append("    \"nativeSwapchain\": ")
+                .append(quote(StreamlineSwapchainCoordinator.INSTANCE.nativeSwapchainHandle())).append("\n")
                 .append("  },\n")
                 .append("  \"dlssd\": {\n")
                 .append("    \"verdict\": ").append(quote(rrVerdict)).append(",\n")

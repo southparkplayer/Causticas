@@ -2,6 +2,7 @@ package dev.comfyfluffy.caustica.client;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
+import dev.comfyfluffy.caustica.streamline.StreamlineRuntime;
 import dev.comfyfluffy.caustica.streamline.StreamlineSwapchainCoordinator;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
@@ -81,10 +82,10 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
         RtDlssFg fg = RtDlssFg.INSTANCE;
         if (vsyncWidget != null) {
             boolean enabled = options.enableVsync().get();
-            String state = !enabled ? "Off — immediate presentation"
+            String state = !enabled ? "Off - immediate presentation"
                     : StreamlineSwapchainCoordinator.INSTANCE.mailboxSupported()
-                            ? "On — MAILBOX"
-                            : "On — FIFO unsupported (MAILBOX unavailable)";
+                            ? "On - MAILBOX VSync"
+                            : "On - FIFO (MAILBOX unavailable; DLSS-G fail-closed)";
             vsyncWidget.setMessage(Component.literal("DLSS-G VSync: " + state));
         }
         String availability = fg.isActive() ? "Active"
@@ -117,9 +118,15 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
                 : overrides.size() + " (first: " + overrides.getFirst().key() + ")";
         detailsWidget.setMessage(Component.literal(
                 "Reflex " + reflex
-                        + " | Present " + StreamlineSwapchainCoordinator.INSTANCE.presentMode()
-                        + (StreamlineSwapchainCoordinator.INSTANCE.mailboxVsyncCompatibility()
-                                ? " (VSync compatibility)" : "")
+                        + " | VSync " + StreamlineSwapchainCoordinator.INSTANCE.requestedPresentMode()
+                        + " -> " + StreamlineSwapchainCoordinator.INSTANCE.normalizedPresentMode()
+                        + " -> native " + StreamlineSwapchainCoordinator.INSTANCE.nativePresentMode()
+                        + (StreamlineSwapchainCoordinator.INSTANCE.nativeProxyDispatch()
+                                ? " (Streamline proxy)" : " (native dispatch)")
+                        + " | Pacer " + (fg.isActive() ? "DLSS-G generated" : "waiting")
+                        + " | Flip metering " + StreamlineRuntime.flipMeteringState()
+                        + " | SDK FG VSync " + (fg.vsyncSupportAvailable() ? "available" : "unsupported")
+                        + " | Native images " + StreamlineSwapchainCoordinator.INSTANCE.nativeImageCount()
                         + " | Reflex interval " + fg.reflexIntervalUs() + "us"
                         + " | DLSSD configured/effective "
                         + CausticaConfig.Rt.DlssRr.ENABLED.configuredValue() + "/"

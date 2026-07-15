@@ -73,16 +73,24 @@ def streamlineVariant = (findProperty("streamlineVariant") ?: "production")
 if (!(streamlineVariant in ["development", "production"])) {
 	throw new GradleException("Unknown Streamline variant '${streamlineVariant}'. Expected 'development' or 'production'.")
 }
+def streamlineVulkanMailboxVsync = (findProperty("streamlineVulkanMailboxVsync") ?: "false")
+		.toString().toBoolean()
+if (streamlineVulkanMailboxVsync && streamlineVariant != "development") {
+	throw new GradleException("Streamline 2.12 exposes vSyncConfig only in its development plugin; "
+			+ "use -PstreamlineVariant=development with -PstreamlineVulkanMailboxVsync=true.")
+}
 
 processResources {
 	inputs.property "version", project.version
 	inputs.property "streamlineVariant", streamlineVariant
+	inputs.property "streamlineVulkanMailboxVsync", streamlineVulkanMailboxVsync
 
 	filesMatching("fabric.mod.json") {
 		expand "version": inputs.properties.version
 	}
 	filesMatching("caustica/streamline.properties") {
-		expand "streamlineVariant": streamlineVariant
+		expand "streamlineVariant": streamlineVariant,
+				"streamlineVulkanMailboxVsync": streamlineVulkanMailboxVsync
 	}
 }
 

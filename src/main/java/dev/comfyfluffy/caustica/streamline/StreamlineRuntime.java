@@ -19,8 +19,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -45,6 +48,9 @@ public final class StreamlineRuntime {
             "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "nvngx_dlssg.dll", "nvngx_dlssd.dll", "NvLowLatencyVk.dll",
             "reflex.license.txt", "nvngx_dlss.license.txt");
     private static final ThreadLocal<Integer> VULKAN_AVAILABILITY_PROBE_DEPTH = new ThreadLocal<>();
+    private static final String VULKAN_MAILBOX_VSYNC_CONFIGURATION = "{\n  \"vSyncConfig\": 1\n}\n";
+    private static final int METERING_LOG_TAIL_BYTES = 64 * 1024;
+    private static final long METERING_LOG_CACHE_NANOS = 500_000_000L;
 
     private static final StreamlineRuntime INSTANCE = new StreamlineRuntime();
 
@@ -53,6 +59,9 @@ public final class StreamlineRuntime {
     private boolean initialized;
     private boolean failed;
     private boolean featureLoaded;
+    private long meteringLogProbeNanos;
+    private long meteringLogSize = Long.MIN_VALUE;
+    private String meteringState = "unknown";
 
     private StreamlineRuntime() {
     }
@@ -107,13 +116,60 @@ public final class StreamlineRuntime {
         return "production".equalsIgnoreCase(variant());
     }
 
-    /** Development behavior JSON is deliberately unsupported in normal packages. */
     public static boolean behaviorOverrideActive() {
-        return false;
+        return vulkanMailboxVsyncCompatibilityEnabled();
+    }
+
+    public static boolean vulkanMailboxVsyncCompatibilityEnabled() {
+        Properties properties = packagedProperties();
+        return "development".equals(normalizeVariant(properties.getProperty("variant")))
+                && Boolean.parseBoolean(properties.getProperty("vulkanMailboxVsync", "false"));
     }
 
     public static Path diagnosticsDirectory() {
         return gameDirectory().resolve("caustica-streamline");
+    }
+
+    /**
+     * Read the last Streamline flip-metering state without treating its Vulkan SDK VSync flag as proof
+     * of physical synchronization. This is cached because the options screen refreshes every frame.
+     */
+    public static String flipMeteringState() {
+        return INSTANCE.readFlipMeteringState();
+    }
+
+    private synchronized String readFlipMeteringState() {
+        long now = System.nanoTime();
+        Path log = diagnosticsDirectory().resolve("sl.log");
+        try {
+            long size = Files.size(log);
+            if (now - meteringLogProbeNanos < METERING_LOG_CACHE_NANOS && size == meteringLogSize) {
+                return meteringState;
+            }
+            String tail = readTail(log, size);
+            meteringState = tail.contains("Achieved 'good' FC feedback state") ? "good"
+                    : tail.contains("VK_NV_present_metering available") ? "available"
+                    : tail.contains("VK_NV_present_metering unavailable") ? "unavailable" : "unknown";
+            meteringLogSize = size;
+        } catch (IOException ignored) {
+            meteringState = "unknown";
+            meteringLogSize = Long.MIN_VALUE;
+        }
+        meteringLogProbeNanos = now;
+        return meteringState;
+    }
+
+    private static String readTail(Path path, long size) throws IOException {
+        long start = Math.max(0L, size - METERING_LOG_TAIL_BYTES);
+        int length = (int) Math.min(Integer.MAX_VALUE, size - start);
+        ByteBuffer buffer = ByteBuffer.allocate(length);
+        try (SeekableByteChannel channel = Files.newByteChannel(path)) {
+            channel.position(start);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) {
+                // Continue until the bounded tail is filled or the file ends.
+            }
+        }
+        return new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8);
     }
 
     public static int vkCreateInstance(VkInstanceCreateInfo createInfo, VkAllocationCallbacks allocator,
@@ -239,6 +295,65 @@ public final class StreamlineRuntime {
         return INSTANCE.library;
     }
 
+    /**
+     * Read the last native swapchain create observed by the Streamline bridge.
+     *
+     * <p>The requested/normalized Java present mode is not sufficient proof of the native path. This
+     * snapshot records the mode and counts at the proxy boundary, plus whether the call was dispatched
+     * through Streamline and whether the driver create succeeded.</p>
+     */
+    public static SwapchainTrace nativeSwapchainTrace() {
+        StreamlineLibrary current = INSTANCE.library;
+        if (!INSTANCE.initialized || current == null) {
+            return SwapchainTrace.unknown();
+        }
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment state = StreamlineAbi.allocate(arena, StreamlineAbi.TRACE_STATE_SIZE);
+            if (current.getTraceState(state) != 0) {
+                return SwapchainTrace.unknown();
+            }
+            ByteBuffer bytes = StreamlineAbi.bytes(state);
+            return new SwapchainTrace(
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_PRESENT_MODE_KNOWN_OFFSET) != 0,
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_PRESENT_MODE_OFFSET),
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_MIN_IMAGE_COUNT_OFFSET),
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_IMAGE_COUNT_OFFSET),
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_CREATE_RESULT_OFFSET),
+                    bytes.getInt(StreamlineAbi.TRACE_SWAPCHAIN_PROXY_DISPATCH_OFFSET) != 0,
+                    bytes.getLong(StreamlineAbi.TRACE_SWAPCHAIN_HANDLE_OFFSET));
+        } catch (Throwable throwable) {
+            return SwapchainTrace.unknown();
+        }
+    }
+
+    public record SwapchainTrace(boolean presentModeKnown, int presentModeValue, int minImageCount,
+            int imageCount, int createResult, boolean proxyDispatch, long handle) {
+        public static SwapchainTrace unknown() {
+            return new SwapchainTrace(false, -1, 0, 0, Integer.MIN_VALUE, false, 0L);
+        }
+
+        public String presentMode() {
+            if (!presentModeKnown) {
+                return "UNKNOWN";
+            }
+            return switch (presentModeValue) {
+                case 0 -> "IMMEDIATE";
+                case 1 -> "MAILBOX";
+                case 2 -> "FIFO";
+                case 3 -> "FIFO_RELAXED";
+                default -> "VK_" + Integer.toUnsignedString(presentModeValue);
+            };
+        }
+
+        public boolean createSucceeded() {
+            return createResult == VK10.VK_SUCCESS;
+        }
+
+        public String handleHex() {
+            return "0x" + Long.toUnsignedString(handle, 16);
+        }
+    }
+
     public static void shutdown() {
         synchronized (INSTANCE) {
             if (INSTANCE.library != null) {
@@ -351,13 +466,11 @@ public final class StreamlineRuntime {
         String packagedVariant = variant();
         Path directory = packagedNativeDirectory(gameDirectory(), packagedVariant);
         Files.createDirectories(directory);
-        // Older development builds wrote behavior-changing plugin JSON beside the DLLs. A package never
-        // creates those files, and extraction removes stale copies before Streamline sees this directory.
-        removeStaleBehaviorConfiguration(directory);
         boolean complete = true;
         for (String name : WINDOWS_NATIVE_NAMES) {
             complete &= extractBundled(name, directory.resolve(name));
         }
+        configureBehaviorConfiguration(directory, vulkanMailboxVsyncCompatibilityEnabled());
         return complete ? directory : null;
     }
 
@@ -404,6 +517,27 @@ public final class StreamlineRuntime {
 
     static void removeStaleBehaviorConfiguration(Path pluginDirectory) throws IOException {
         Files.deleteIfExists(pluginDirectory.resolve("sl.dlss_g.json"));
+    }
+
+    static void configureBehaviorConfiguration(Path pluginDirectory, boolean vulkanMailboxVsync) throws IOException {
+        Path configuration = pluginDirectory.resolve("sl.dlss_g.json");
+        if (vulkanMailboxVsync) {
+            Files.writeString(configuration, VULKAN_MAILBOX_VSYNC_CONFIGURATION);
+        } else {
+            Files.deleteIfExists(configuration);
+        }
+    }
+
+    private static Properties packagedProperties() {
+        Properties properties = new Properties();
+        try (InputStream stream = StreamlineRuntime.class.getResourceAsStream("/caustica/streamline.properties")) {
+            if (stream != null) {
+                properties.load(stream);
+            }
+        } catch (IOException exception) {
+            CausticaMod.LOGGER.warn("Could not read packaged Streamline properties", exception);
+        }
+        return properties;
     }
 
     private static String normalizeVariant(String value) {
