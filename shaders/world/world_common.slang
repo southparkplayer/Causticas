@@ -46,7 +46,7 @@ public struct WorldPush {
     [vk::offset(288)] public float4   sunUv;         // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     [vk::offset(304)] public float4   moonUv;        // vanilla current-moon-phase sprite atlas rect
     [vk::offset(320)] public float4   waterParams;   // xyz camera-biome water tint, w wave time (s)
-    [vk::offset(336)] public float4   waterAnchor;   // xy world-stable wave-domain anchor
+    [vk::offset(336)] public float4   waterAnchor;   // xy world-stable wave anchor, z previous wave time
     [vk::offset(352)] public float4x4 curViewProj;   // forward camera-relative view-projection
     [vk::offset(416)] public uint     breakCount;
     [vk::offset(432)] public BreakEntry breaking[8]; // generated Java capacity/serialization

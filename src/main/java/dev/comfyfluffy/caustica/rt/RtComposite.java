@@ -212,6 +212,12 @@ public final class RtComposite {
     private boolean fgPreviousViewProjectionValid;
     private float frameJitterX;
     private float frameJitterY;
+    // Animated reflection motion needs the exact wave phase from the previous submitted RT frame. Use
+    // renderer-relative monotonic seconds (rather than wrapping wall-clock seconds) so the wave field
+    // never jumps at an arbitrary modulo boundary.
+    private final long waterWaveEpochNanos = System.nanoTime();
+    private float previousWaterWaveTime;
+    private boolean previousWaterWaveTimeValid;
     // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
     // specular albedo, and reflection motion.
     private RtImage gNormal;
@@ -342,6 +348,7 @@ public final class RtComposite {
         rrProducedPreviousFrame = false;
         lastDebugView = Integer.MIN_VALUE;
         hasCapturedProjection = false;
+        previousWaterWaveTimeValid = false;
         RtDlssRr.INSTANCE.requestHistoryReset();
         CausticaJitter.INSTANCE.reset();
     }
@@ -901,7 +908,7 @@ public final class RtComposite {
                 flags |= FRAME_FLAG_FG_GUIDES;
             }
 
-            // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
+            // W1/W2 water parameters: camera-biome tint plus continuous animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
             float wtr = 0.25f, wtg = 0.46f, wtb = 0.9f; // neutral ocean-ish default if no level/biome
             if (level != null) {
@@ -910,13 +917,17 @@ public final class RtComposite {
                 wtg = ((wc >> 8) & 0xFF) / 255f;
                 wtb = (wc & 0xFF) / 255f;
             }
-            Float4 waterParams = new Float4(wtr, wtg, wtb,
-                    (float) (System.nanoTime() / 1.0e9 % 3600.0));
+            float waterWaveTime = (float) ((System.nanoTime() - waterWaveEpochNanos) / 1.0e9);
+            float previousWaveTime = previousWaterWaveTimeValid ? previousWaterWaveTime : waterWaveTime;
+            previousWaterWaveTime = waterWaveTime;
+            previousWaterWaveTimeValid = true;
+            Float4 waterParams = new Float4(wtr, wtg, wtb, waterWaveTime);
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
+            // z carries the previous frame's phase for animated-water reflection reprojection.
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
-                    terrain.blockZ & WATER_ANCHOR_MASK, 0f, 0f);
+                    terrain.blockZ & WATER_ANCHOR_MASK, previousWaveTime, 0f);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
@@ -1307,6 +1318,7 @@ public final class RtComposite {
         }
         fgReset = true;
         fgPreviousViewProjectionValid = false;
+        previousWaterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;

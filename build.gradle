@@ -210,14 +210,14 @@ abstract class CompileShaders extends DefaultTask {
 				compileOne(src, spv, [])
 			}
 		}
-		// Slang 2026.13 compiles the reviewed streamline-core raygen to 114,068 bytes. Glass-only is
-		// allowed a small bounded delta, including the optical-pixel-only two-trace glass exit guide, but
+		// Slang 2026.13 compiles the reviewed streamline-core raygen to 114,068 bytes. Keep a tightly
+		// bounded allowance for optical-pixel-only glass guides and animated-water reflection reprojection,
 		// never the multi-hundred-KB expansion that halved all-scene performance in the rejected hybrid integration.
 		["world.rgen.spv", "world_nv.rgen.spv"].each { name ->
 			def raygen = new File(scratchDir, name)
-			if (!raygen.isFile() || raygen.length() > 121_500L) {
+			if (!raygen.isFile() || raygen.length() > 123_000L) {
 				throw new GradleException("Glass-only world raygen complexity budget exceeded: ${name} is "
-						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 121500)")
+						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 123000)")
 			}
 		}
 		outDirFile.mkdirs()

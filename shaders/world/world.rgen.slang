@@ -60,6 +60,8 @@ static float3 gv_motionObjDisp;
 static float3 gv_opticalGuideDir;
 static uint gv_opticalGuideMode; // 0 none, 1 water, 2 glass exit, 3 glass entry (trace exact exit)
 static float gv_opticalExitEta;
+// Previous animated-reflector normal; zero selects the current normal for static surfaces.
+static float3 gv_specPreviousNormal;
 
 static const uint PAYLOAD_MATERIAL_MASK = 3u;
 
@@ -181,6 +183,48 @@ float2 waterWaveGrad(float2 p, float t) {
         lambda /= 1.5;
     }
     return g * WATER_WAVE_STRENGTH;
+}
+
+void waterWaveGradPair(float2 p, float currentT, float previousT,
+                       out float2 currentGrad, out float2 previousGrad) {
+    const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
+    currentT *= WAVE_SPEED;
+    previousT *= WAVE_SPEED;
+    currentGrad = float2(0.0, 0.0);
+    float2 timeDerivative = float2(0.0, 0.0);
+    float lambda = 14.0;
+    for (int i = 0; i < WAVE_COUNT; i++) {
+        float k = 2.0 * PI / lambda;
+        float w = sqrt(WAVE_G * k);
+        float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3);
+        float cs = cos(spread), sn = sin(spread);
+        float2 d = float2(WAVE_WIND.x * cs - WAVE_WIND.y * sn, WAVE_WIND.x * sn + WAVE_WIND.y * cs);
+        float phase = k * dot(d, p) - w * currentT + 1.7 * float(i) * float(i);
+        float phaseDt = -w;
+        float2 dph = k * d;
+        float2 dphDt = float2(0.0, 0.0);
+        if (i < 4) {
+            float2 pd = float2(-d.y, d.x);
+            float wph = 0.4 * k * dot(pd, p) + 0.5 * w * currentT;
+            float wphDt = 0.5 * w;
+            phase += WAVE_MEANDER * sin(wph);
+            phaseDt += WAVE_MEANDER * cos(wph) * wphDt;
+            dph += (WAVE_MEANDER * cos(wph) * 0.4 * k) * pd;
+            dphDt = (-WAVE_MEANDER * sin(wph) * wphDt * 0.4 * k) * pd;
+        }
+        float S = 1.2 + 0.12 * float(i);
+        float snPhase = sin(phase);
+        float csPhase = cos(phase);
+        float e = exp(S * (snPhase - 1.0));
+        float amplitude = Q[i] / k * S;
+        currentGrad += amplitude * csPhase * e * dph;
+        timeDerivative += amplitude * e * (phaseDt * (-snPhase + S * csPhase * csPhase) * dph
+                + csPhase * dphDt);
+        lambda /= 1.5;
+    }
+    previousGrad = currentGrad - (currentT - previousT) * timeDerivative;
+    currentGrad *= WATER_WAVE_STRENGTH;
+    previousGrad *= WATER_WAVE_STRENGTH;
 }
 
 // Perturb a (near-)horizontal water surface normal by the wave field. Flowing side faces (|n.y| small)
@@ -621,8 +665,9 @@ float2 projectPrevNdc(float3 worldPos) {
 // explodes at grazing angles and produces non-zero MV in a static scene. Mirroring is division-free, so
 // static MV is bit-exact zero at any incidence. The reflector is assumed static (terrain / water);
 // reflectedMotionPrev carries the reflected content's own displacement.
-float2 previousReflectionNdc(float3 surfacePos, float3 surfaceNormal, float3 reflectedWorldPos, float3 reflectedMotionPrev) {
-    float3 n = normalize(surfaceNormal); // mirror(P) is orientation-independent, so no viewer flip needed
+float2 previousReflectionNdc(float3 surfacePos, float3 previousSurfaceNormal,
+                             float3 reflectedWorldPos, float3 reflectedMotionPrev) {
+    float3 n = normalize(previousSurfaceNormal); // mirror(P) is orientation-independent
     float3 prevHit = reflectedWorldPos - reflectedMotionPrev;
     float3 mirroredHit = prevHit - 2.0 * n * dot(prevHit - surfacePos, n);
     return projectPrevNdc(mirroredHit);
@@ -633,7 +678,8 @@ float2 previousReflectionNdc(float3 surfacePos, float3 surfaceNormal, float3 ref
 // sharp specular lobe (specular albedo > 0, roughness <= 0.5). A sky miss is treated as a reflected
 // hit at infinity along the reflected direction, so the same mirror-image reprojection handles surface
 // and sky reflections uniformly (continuous as the reflected distance -> infinity).
-float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float surfaceRoughness,
+float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 previousSurfaceNormal,
+                                float surfaceRoughness,
                                 float3 surfaceSpecularAlbedo, float3 primaryDir,
                                 float2 currentNdc, float2 size, float primaryConeSpread) {
     if (length(surfaceNormal) < 0.5
@@ -668,7 +714,8 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float s
         reflectedHit = surfacePos + specDir * 1.0e6; // sky reflection: virtual image at infinity along specDir
         reflectedMotionPrev = float3(0.0, 0.0, 0.0);
     }
-    float2 prevNdc = previousReflectionNdc(surfacePos, n, reflectedHit, reflectedMotionPrev);
+    float3 prevN = length(previousSurfaceNormal) >= 0.5 ? normalize(previousSurfaceNormal) : n;
+    float2 prevNdc = previousReflectionNdc(surfacePos, prevN, reflectedHit, reflectedMotionPrev);
     return (prevNdc - currentNdc) * 0.5 * size;
 }
 
@@ -966,15 +1013,26 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
             // reflections, wobbling refraction. This water body's biome tint (carried in payload.albedo
             // for water hits) sets the absorption applied to the next submerged segment.
+            float3 previousWaterNormal = n;
             if (waterWaves) {
                 // World-stable wave domain: rebased hit XZ + the pushed anchor (terrain origin mod 4096)
                 // reconstructs a world-pinned coordinate that survives the per-move terrain rebase.
-                n = applyWaterWaves(n, hitPos.xz + pc.waterAnchor.xy, pc.waterParams.w);
+                float2 waterDomain = hitPos.xz + pc.waterAnchor.xy;
+                if (abs(n.y) >= 0.5) {
+                    float2 currentGrad, previousGrad;
+                    waterWaveGradPair(waterDomain, pc.waterParams.w, pc.waterAnchor.z,
+                            currentGrad, previousGrad);
+                    float orientation = n.y >= 0.0 ? 1.0 : -1.0;
+                    n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
+                    previousWaterNormal = orientation
+                            * normalize(float3(-previousGrad.x, 1.0, -previousGrad.y));
+                }
             }
             if (captureGuides && bounce == 0) { // primary water hit: feed RR a smooth dielectric specular surface
                 gv_normal = n;
                 gv_rough = WATER_GUIDE_ROUGH;
                 gv_hitCamRel = hitPos - pc.camOffset; // depth + reflection start at the water surface
+                gv_specPreviousNormal = previousWaterNormal;
                 if (captureRefractedGuides) {
                     float etaI = inWater ? WATER_IOR : 1.0;
                     float etaT = inWater ? 1.0 : WATER_IOR;
@@ -1196,6 +1254,7 @@ void main() {
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     gv_opticalGuideMode = 0u;
     gv_opticalExitEta = 1.0;
+    gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
     for (uint s = 0u; s < pathCount; s++) {
         seed = pcg(seed); // decorrelate per-sample paths (shared camera ray, no AA jitter yet)
         // The primary ray is shared by all SPP samples. Preserve guides from sample zero; the radiance path
@@ -1209,6 +1268,7 @@ void main() {
     // glass/water interface. Preserve that interface before replacing ordinary guides with the destination.
     float3 specSurfaceCamRel = gv_hitCamRel;
     float3 specSurfaceNormal = gv_normal;
+    float3 specSurfacePreviousNormal = gv_specPreviousNormal;
     float specSurfaceRoughness = gv_rough;
     float3 specSurfaceAlbedo = gv_specAlb;
 
@@ -1272,7 +1332,8 @@ void main() {
     float2 specMotion = float2(0.0, 0.0);
     if (writeRrGuides || debugSpecMotion) {
         specMotion = specularReflectionMotion(
-                specSurfaceCamRel + pc.camOffset, specSurfaceNormal, specSurfaceRoughness,
+                specSurfaceCamRel + pc.camOffset, specSurfaceNormal, specSurfacePreviousNormal,
+                specSurfaceRoughness,
                 specSurfaceAlbedo, dir, jndc, size, rayConeSpread);
     }
 
