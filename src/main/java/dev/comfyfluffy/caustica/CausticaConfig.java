@@ -73,7 +73,7 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_TICK, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED,
             Rt.FirstPerson.DISABLE_VANILLA_MODEL, Rt.EntityTextures.MAX_TEXTURES,
             Rt.DlssRr.ENABLED,
@@ -129,12 +129,9 @@ public final class CausticaConfig {
                 " Caustica RT renderer configuration.\n"
                         + " A matching -Dcaustica.* system property overrides the value below.");
         FILE.setComment("terrain",
-                " Wall-clock budget for one streaming pass (snapshot dispatch + upload drain). The per-frame\n"
-                        + " slice scales with queue pressure from stream-budget-ms (near-idle) up to\n"
-                        + " stream-budget-max-ms (big backlog: initial fill, F3+A, teleport, fast flight) so fill\n"
-                        + " throughput recovers when it matters and the cost drops back once the queue clears.\n"
-                        + " stream-fallback-budget-ms is the per-tick slice used only when no world frame is\n"
-                        + " streaming (loading screens), where a long pass hitches nothing.");
+                " Render-thread terrain work is bounded by dispatch/result counts per streaming pass.\n"
+                        + " Buffer fill and BLAS/OMM preparation run on workers. max-inflight-sections bounds\n"
+                        + " the complete snapshot -> worker -> GPU build -> publication lifecycle.");
         FILE.setComment("frame-generation",
                 " Streamline DLSS Frame Generation. mode is off or fixed; legacy auto/dynamic values migrate to fixed.\n"
                         + " multi-frame-count is generated frames per rendered frame (1 = 2x, 2 = 3x, ...).\n"
@@ -672,18 +669,14 @@ public final class CausticaConfig {
         }
 
         public static final class Terrain {
-            public static final IntSetting ASYNC_DISPATCH_PER_TICK =
+            // External keys retain their historical "per-tick" names for config compatibility; terrain
+            // streaming is render-pass driven and these Java names reflect the actual scheduling unit.
+            public static final IntSetting ASYNC_DISPATCH_PER_PASS =
                     intAtLeast("caustica.rt.asyncDispatchPerTick", "terrain.async-dispatch-per-tick", 64, 0);
-            public static final IntSetting SECTION_RESULTS_PER_TICK =
+            public static final IntSetting COMPLETION_RESULTS_PER_PASS =
                     intAtLeast("caustica.rt.sectionResultsPerTick", "terrain.section-results-per-tick", 64, 0);
-            public static final FloatSetting STREAM_BUDGET_MS =
-                    clampedFloat("caustica.rt.streamBudgetMs", "terrain.stream-budget-ms", 1.5f, 0.05f, 100f);
-            public static final FloatSetting STREAM_BUDGET_MAX_MS =
-                    clampedFloat("caustica.rt.streamBudgetMaxMs", "terrain.stream-budget-max-ms", 6f, 0.05f, 100f);
-            public static final FloatSetting STREAM_FALLBACK_BUDGET_MS =
-                    clampedFloat("caustica.rt.streamFallbackBudgetMs", "terrain.stream-fallback-budget-ms", 8f, 0.05f, 100f);
             public static final IntSetting MAX_INFLIGHT_SECTIONS =
-                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 192, 0);
+                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 128, 0);
             public static final IntSetting SECTION_TABLE_INITIAL_CAPACITY =
                     intAtLeast("caustica.rt.sectionTableInitialCapacity", "terrain.section-table-initial-capacity", 512, 1);
             public static final IntSetting REBASE_DISTANCE_BLOCKS =
@@ -711,8 +704,15 @@ public final class CausticaConfig {
                     bool("caustica.rt.glow", "entities.glow.enabled", true);
             public static final BooleanSetting NAME_TAGS_ENABLED =
                     bool("caustica.rt.nameTags", "entities.name-tags.enabled", true);
-            public static final IntSetting MAX_ENTITIES =
-                    intAtLeast("caustica.rt.maxEntities", "entities.max-entities", 1024, 1);
+            /** Debug-only: render each model submission twice and require bitwise-identical CPU captures. */
+            public static final BooleanSetting CAPTURE_PARITY =
+                    bool("caustica.rt.entityCaptureParity", "entities.debug.capture-parity", false);
+            public static final IntSetting MAX_ORDINARY_ENTITIES =
+                    intAtLeast("caustica.rt.maxOrdinaryEntities", "entities.max-ordinary-entities", 1024, 0);
+            public static final IntSetting MAX_BLOCK_ENTITIES =
+                    intAtLeast("caustica.rt.maxBlockEntities", "entities.block-entities.max-entities", 1024, 0);
+            public static final IntSetting MAX_PARTICLES =
+                    intAtLeast("caustica.rt.maxParticles", "particles.max-particles", 1024, 0);
             public static final IntSetting BE_VIEW_CHUNKS =
                     intAtLeast("caustica.rt.beViewChunks", "entities.block-entities.view-chunks", 8, 0);
             public static final IntSetting BE_BUILDS_PER_FRAME =
@@ -723,16 +723,18 @@ public final class CausticaConfig {
             private Entities() {
             }
 
-            public static int entityListCapacity() {
-                return Math.max(16, MAX_ENTITIES.value());
+            public static int maxEntities() {
+                return Math.addExact(Math.addExact(
+                        MAX_ORDINARY_ENTITIES.value(), MAX_BLOCK_ENTITIES.value()), MAX_PARTICLES.value());
             }
 
-            public static int entityBufferListCapacity() {
-                return (int) Math.min(Integer.MAX_VALUE, (long) entityListCapacity() * 5L);
+            public static int entityListCapacity() {
+                return Math.max(16, maxEntities());
             }
 
             public static int entityMapCapacity() {
-                return (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) MAX_ENTITIES.value() * 2L));
+                // Fastutil expected-size constructors apply their own load-factor headroom.
+                return Math.max(16, MAX_ORDINARY_ENTITIES.value());
             }
         }
 

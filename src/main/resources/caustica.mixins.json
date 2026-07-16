@@ -16,6 +16,7 @@
 		"MinecraftMixin",
 		"MouseHandlerMixin",
 		"MinecraftReloadMixin",
+		"ModelPartAccessor",
 		"OptionsMixin",
 		"OptionsScreenMixin",
 		"OptionsSubScreenAccessor",

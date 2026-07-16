@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 final class GlassOnlyIntegrationContractTest {
     @Test
     void terrainClassifiesGlassWithoutChangingTheWaterBucket() throws IOException {
-        String terrain = source("src/main/java/dev/comfyfluffy/caustica/rt/terrain/RtTerrain.java");
+        String terrain = source("src/main/java/dev/comfyfluffy/caustica/rt/terrain/RtTerrainMesher.java");
         assertTrue(terrain.contains("OPTICAL_THIN_GLASS = 2"));
         assertTrue(terrain.contains("OPTICAL_SOLID_GLASS = 3"));
         assertTrue(terrain.contains("block == Blocks.GLASS_PANE"));

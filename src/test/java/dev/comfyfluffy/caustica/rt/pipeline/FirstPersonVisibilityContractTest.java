@@ -20,6 +20,19 @@ final class FirstPersonVisibilityContractTest {
     }
 
     @Test
+    void filteredPassesKeepDistinctLongKeysAndBypassFullModelCuboidTemplates() throws Exception {
+        String entities = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/entity/RtEntities.java"));
+        String collector = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/entity/RtEntityCollector.java")).replace("\r\n", "\n");
+
+        assertTrue(entities.contains("Long2ObjectOpenHashMap<EntityPrev> prevVerts"));
+        assertTrue(entities.contains("private static long captureKey(long entityToken, int part)"));
+        assertTrue(collector.contains("captureMode == CaptureMode.FULL\n                ? cuboidEmitter.prepare(model) : null"));
+        assertTrue(collector.contains("renderFilteredHumanoid"));
+    }
+
+    @Test
     void vanillaHandSuppressionIsDefaultOnAndFailOpen() throws Exception {
         String config = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java"));
