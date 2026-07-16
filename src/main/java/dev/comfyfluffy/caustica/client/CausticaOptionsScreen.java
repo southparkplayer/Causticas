@@ -18,7 +18,6 @@ public final class CausticaOptionsScreen extends OptionsSubScreen {
         for (var option : RtVideoOptions.generalOptions()) {
             list.addBig(option);
         }
-        list.addBig(RtVideoOptions.offlineRendererButton(this, list::applyUnsavedChanges));
         list.addBig(RtVideoOptions.tonemappingButton(this, list::applyUnsavedChanges));
         list.addBig(RtVideoOptions.frameGenerationButton(this, list::applyUnsavedChanges));
 

@@ -291,62 +291,6 @@ public final class RtVideoOptions {
                 .build();
     }
 
-    public static Button offlineRendererButton(Screen parent, Runnable beforeOpen) {
-        return Button.builder(Component.translatable("caustica.options.offline"), button -> {
-            beforeOpen.run();
-            Minecraft.getInstance().setScreenAndShow(
-                    new OfflineRendererOptionsScreen(parent, Minecraft.getInstance().options));
-        }).width(Button.BIG_WIDTH)
-                .tooltip(Tooltip.create(Component.translatable("caustica.options.offline.tooltip")))
-                .build();
-    }
-
-    public static OptionInstance<?>[] offlineOptions() {
-        return new OptionInstance<?>[] {
-            bool("caustica.options.offline.adaptive", CausticaConfig.Rt.Offline.ADAPTIVE),
-            intOption("caustica.options.offline.samplesPerBatch",
-                    CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH, 1, 8),
-            enumInt("caustica.options.offline.minSamples", CausticaConfig.Rt.Offline.MIN_SAMPLES,
-                    List.of(16, 32, 64, 128, 256, 512, 1024)),
-            enumInt("caustica.options.offline.maxSamples", CausticaConfig.Rt.Offline.MAX_SAMPLES,
-                    List.of(256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
-                            131072, 262144, 524288, 1048576)),
-            intOption("caustica.options.offline.maxBounces",
-                    CausticaConfig.Rt.Offline.MAX_BOUNCES, 2, 64),
-            relativeError(),
-            absoluteError(),
-            bool("caustica.options.offline.saveExr", CausticaConfig.Rt.Offline.SAVE_EXR),
-            bool("caustica.options.offline.savePng", CausticaConfig.Rt.Offline.SAVE_PNG),
-        };
-    }
-
-    public static OptionInstance<?>[] offlineOutputOptions() {
-        return new OptionInstance<?>[] {
-            bool("caustica.options.offline.saveExr", CausticaConfig.Rt.Offline.SAVE_EXR),
-            bool("caustica.options.offline.savePng", CausticaConfig.Rt.Offline.SAVE_PNG),
-        };
-    }
-
-    public static void applyOfflinePreset(String preset) {
-        switch (preset) {
-            case "Preview" -> setOfflinePreset(true, 8, 64, 1024, 12, 0.02f, 0.002f);
-            case "Reference" -> setOfflinePreset(false, 8, 16384, 16384, 32, 0.005f, 0.0005f);
-            default -> setOfflinePreset(true, 8, 256, 8192, 16, 0.01f, 0.001f);
-        }
-        CausticaConfig.save();
-    }
-
-    private static void setOfflinePreset(boolean adaptive, int batch, int min, int max, int bounces,
-                                         float relative, float absolute) {
-        CausticaConfig.Rt.Offline.ADAPTIVE.set(adaptive);
-        CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH.set(batch);
-        CausticaConfig.Rt.Offline.MIN_SAMPLES.set(min);
-        CausticaConfig.Rt.Offline.MAX_SAMPLES.set(max);
-        CausticaConfig.Rt.Offline.MAX_BOUNCES.set(bounces);
-        CausticaConfig.Rt.Offline.RELATIVE_ERROR.set(relative);
-        CausticaConfig.Rt.Offline.ABSOLUTE_ERROR.set(absolute);
-    }
-
     public static TonemapControl[] legacyPsychoOptions() {
         TonemapControl[] sdr = sdrPsychoOptions();
         TonemapControl[] hdr = hdrPsychoOptions();
@@ -639,32 +583,6 @@ public final class RtVideoOptions {
                 new OptionInstance.Enum<>(values, Codec.INT),
                 initial,
                 setting::set);
-    }
-
-    private static OptionInstance<Integer> relativeError() {
-        FloatSetting setting = CausticaConfig.Rt.Offline.RELATIVE_ERROR;
-        return new OptionInstance<>(
-                "caustica.options.offline.relativeError",
-                OptionInstance.cachedConstantTooltip(Component.translatable(
-                        "caustica.options.offline.relativeError.tooltip")),
-                (caption, basisPoints) -> Options.genericValueLabel(caption,
-                        Component.literal(String.format(Locale.ROOT, "%.2f%%", basisPoints / 100.0f))),
-                new OptionInstance.IntRange(1, 2500),
-                Math.clamp(Math.round(setting.configuredValue() * 10000.0f), 1, 2500),
-                basisPoints -> setting.set(basisPoints / 10000.0f));
-    }
-
-    private static OptionInstance<Integer> absoluteError() {
-        FloatSetting setting = CausticaConfig.Rt.Offline.ABSOLUTE_ERROR;
-        return new OptionInstance<>(
-                "caustica.options.offline.absoluteError",
-                OptionInstance.cachedConstantTooltip(Component.translatable(
-                        "caustica.options.offline.absoluteError.tooltip")),
-                (caption, units) -> Options.genericValueLabel(caption,
-                        Component.literal(String.format(Locale.ROOT, "%.5f", units / 100000.0f))),
-                new OptionInstance.IntRange(1, 10000),
-                Math.clamp(Math.round(setting.configuredValue() * 100000.0f), 1, 10000),
-                units -> setting.set(units / 100000.0f));
     }
 
     private static String decimal(float value, int decimals) {

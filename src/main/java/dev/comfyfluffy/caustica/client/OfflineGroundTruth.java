@@ -8,12 +8,15 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
-import java.util.concurrent.CompletableFuture;
-import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineExporter;
 
-/** Progressive, native-resolution, un-denoised path-tracing reference mode. */
+/** Persistent, uncapped native-resolution accumulation controlled by F7 and a transparent HUD. */
 public final class OfflineGroundTruth {
-    private static final int QUERY_SAMPLE_INTERVAL = 32;
+    private static final int DEFAULT_BATCH = 8;
+    private static final int[] BENCHMARK_BATCHES = {1, 2, 4, 8};
+    private static final long BENCHMARK_WARMUP_NANOS = 350_000_000L;
+    private static final long BENCHMARK_MEASURE_NANOS = 1_250_000_000L;
+    private static final long RATE_WINDOW_NANOS = 500_000_000L;
+
     public static final OfflineGroundTruth INSTANCE = new OfflineGroundTruth();
     public static final KeyMapping KEY = new KeyMapping(
             "key.caustica.offline_ground_truth", GLFW.GLFW_KEY_F7, KeyMapping.Category.MISC);
@@ -21,97 +24,88 @@ public final class OfflineGroundTruth {
     private boolean active;
     private boolean startPending;
     private boolean previousFrozen;
-    private boolean complete;
-    private boolean exportPending;
-    private int submittedSamples;
-    private int convergedPixels;
-    private int samplesSinceQuery;
-    private boolean progressQueryPending;
-    private CompletableFuture<RtOfflineExporter.ExportResult> exportFuture;
+    private long submittedSamples;
     private long startedNanos;
-    private long lastProgressNanos;
+    private int samplesPerBatch = DEFAULT_BATCH;
+    private int sessionSignature;
+
+    private long rateWindowNanos;
+    private long rateWindowSamples;
+    private double samplesPerSecond;
+
+    private boolean benchmarking;
+    private boolean benchmarkMeasuring;
+    private int benchmarkIndex;
+    private long benchmarkPhaseNanos;
+    private long benchmarkPhaseSamples;
+    private double benchmarkBestRate;
+    private int benchmarkBestBatch = DEFAULT_BATCH;
 
     private OfflineGroundTruth() {
     }
 
-    public boolean active() {
-        return active;
-    }
-
-    /** True while preparing or rendering; used by UI actions so a pending start can be cancelled. */
-    public boolean engaged() {
-        return startPending || active;
-    }
-
-    public boolean complete() {
-        return complete;
-    }
-
-    public int submittedSamples() {
-        return submittedSamples;
-    }
-
-    public int convergedPixels() {
-        return convergedPixels;
+    public boolean active() { return active; }
+    public boolean engaged() { return startPending || active; }
+    public long submittedSamples() { return submittedSamples; }
+    public int samplesPerBatch() { return samplesPerBatch; }
+    public int maxBounces() { return 64; }
+    public int sessionSignature() { return sessionSignature; }
+    public double samplesPerSecond() { return samplesPerSecond; }
+    public boolean benchmarking() { return benchmarking; }
+    public int benchmarkStage() { return benchmarkIndex + 1; }
+    public int benchmarkStageCount() { return BENCHMARK_BATCHES.length; }
+    public boolean benchmarkMeasuring() { return benchmarkMeasuring; }
+    public String phaseLabel() {
+        if (startPending) return "PREPARING";
+        if (benchmarking) return "CALIBRATING";
+        return active ? "RENDERING" : "IDLE";
     }
 
     public double elapsedSeconds() {
         return startedNanos == 0L ? 0.0 : (System.nanoTime() - startedNanos) / 1.0e9;
     }
 
-    public String status() {
-        if (!active) {
-            return startPending ? "Preparing first terrain snapshot" : "Idle";
-        }
-        int target = CausticaConfig.Rt.Offline.MAX_SAMPLES.value();
-        int pixels = RtComposite.INSTANCE.offlinePixelCount();
-        String convergence = pixels > 0 ? " — " + convergedPixels + " / " + pixels + " px" : "";
-        return complete ? "Complete" + convergence
-                : "Rendering — up to " + Math.min(submittedSamples, target) + " / " + target + " spp" + convergence;
-    }
-
-    public void toggle(Minecraft minecraft) {
+    /** F7 toggles the renderer. Starting automatically calibrates the work batch. */
+    public void handleHotkey(Minecraft minecraft) {
         if (engaged()) {
-            deactivate(minecraft, "Offline ground truth disabled");
+            deactivate(minecraft, "Offline renderer stopped");
             return;
         }
+        start(minecraft);
+    }
+
+    private void start(Minecraft minecraft) {
         if (minecraft.level == null || minecraft.player == null) {
-            notify(minecraft, "Offline ground truth requires an active world");
+            notify(minecraft, "Offline renderer requires an active world");
             return;
         }
         if (!CausticaConfig.Rt.ENABLED.value()) {
-            notify(minecraft, "Offline ground truth requires ray tracing");
+            notify(minecraft, "Offline renderer requires ray tracing");
             return;
         }
         if (UltraScreenshot.INSTANCE.active()) {
-            notify(minecraft, "Cancel the ultra screenshot before enabling offline ground truth");
+            notify(minecraft, "Cancel Ultra Screenshot before starting the offline renderer");
             return;
         }
         if (!RtTerrain.hasPublishedSnapshot()) {
             startPending = true;
-            notify(minecraft, "Offline renderer preparing the first terrain snapshot (F7 opens controls)");
+            notify(minecraft, "Offline renderer is freezing the terrain snapshot");
             return;
         }
-
         activate(minecraft);
     }
 
     private void activate(Minecraft minecraft) {
         startPending = false;
         previousFrozen = minecraft.level.tickRateManager().isFrozen();
+        sessionSignature = CausticaConfig.renderSettingsSignature();
         active = true;
-        complete = false;
-        exportPending = false;
-        submittedSamples = 0;
-        convergedPixels = 0;
-        samplesSinceQuery = 0;
-        progressQueryPending = false;
-        exportFuture = null;
-        startedNanos = System.nanoTime();
-        lastProgressNanos = startedNanos;
+        resetProgress();
+        beginBenchmark(System.nanoTime());
         minecraft.level.tickRateManager().setFrozen(true);
+        RtComposite.INSTANCE.beginOfflineSession();
         RtComposite.INSTANCE.requestTemporalReset();
-        notify(minecraft, "Offline renderer started: native adaptive accumulation (F7 opens controls)");
+        notify(minecraft, "Offline renderer started");
     }
 
     public void tick(Minecraft minecraft) {
@@ -129,79 +123,105 @@ public final class OfflineGroundTruth {
         }
         if (minecraft.level == null || minecraft.player == null) {
             active = false;
+            benchmarking = false;
+            RtComposite.INSTANCE.endOfflineSession();
             RtComposite.INSTANCE.requestTemporalReset();
             return;
         }
         minecraft.level.tickRateManager().setFrozen(true);
-        if (progressQueryPending && !complete) {
-            progressQueryPending = false;
-            convergedPixels = RtComposite.INSTANCE.queryOfflineConvergedPixels();
-            int pixelCount = RtComposite.INSTANCE.offlinePixelCount();
-            if (pixelCount > 0 && convergedPixels >= pixelCount) {
-                complete = true;
-                exportPending = true;
-                notify(minecraft, String.format(java.util.Locale.ROOT,
-                        "Offline render converged: %d pixels, up to %d spp in %.1fs; saving...",
-                        pixelCount, submittedSamples, elapsedSeconds()));
-            }
-        }
-        if (complete && exportPending) {
-            exportPending = false;
-            try {
-                exportFuture = RtComposite.INSTANCE.exportOfflineSnapshotAsync();
-            } catch (Throwable t) {
-                CausticaMod.LOGGER.error("Offline renderer export failed", t);
-                notify(minecraft, "Offline render export failed; see latest.log");
-            }
-        }
-        if (exportFuture != null && exportFuture.isDone()) {
-            try {
-                var result = exportFuture.join();
-                notify(minecraft, "Offline render saved: " + result.manifest().getFileName());
-            } catch (Throwable t) {
-                CausticaMod.LOGGER.error("Offline renderer export failed", t);
-                notify(minecraft, "Offline render export failed; see latest.log");
-            } finally {
-                exportFuture = null;
-            }
+        if (CausticaConfig.renderSettingsSignature() != sessionSignature) {
+            deactivate(minecraft, "Offline renderer stopped: render settings changed");
         }
     }
 
     /** Called at frame tail after a fresh native offline batch reached the display image. */
-    public void frameRendered(Minecraft minecraft) {
-        if (!active || complete || !RtComposite.INSTANCE.producedFreshOfflineFrame()) {
+    public void frameRendered() {
+        if (!active || !RtComposite.INSTANCE.producedFreshOfflineFrame()) {
             return;
         }
-        int target = CausticaConfig.Rt.Offline.MAX_SAMPLES.value();
-        submittedSamples = Math.min(target,
-                submittedSamples + CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH.value());
+        submittedSamples += samplesPerBatch;
         long now = System.nanoTime();
-        samplesSinceQuery += CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH.value();
-        if (submittedSamples >= CausticaConfig.Rt.Offline.MIN_SAMPLES.value()
-                && (samplesSinceQuery >= QUERY_SAMPLE_INTERVAL || submittedSamples >= target)) {
-            samplesSinceQuery = 0;
-            progressQueryPending = true;
-        }
-        if (now - lastProgressNanos >= 1_000_000_000L) {
-            lastProgressNanos = now;
-            notify(minecraft, "Offline renderer: " + submittedSamples + " / " + target + " spp");
+        updateRate(now);
+        if (benchmarking) {
+            advanceBenchmark(now);
         }
     }
 
-    /** Keeps UI progress honest whenever camera, scene, settings, or resources invalidate accumulation. */
+    /** Used only when GPU images must actually be recreated; ordinary temporal resets preserve progress. */
     public void onRendererReset() {
         if (!active) {
             return;
         }
-        complete = false;
-        exportPending = false;
-        submittedSamples = 0;
-        convergedPixels = 0;
-        samplesSinceQuery = 0;
-        progressQueryPending = false;
-        exportFuture = null;
+        resetProgress();
+        beginBenchmark(System.nanoTime());
+    }
+
+    private void resetProgress() {
+        submittedSamples = 0L;
         startedNanos = System.nanoTime();
-        lastProgressNanos = startedNanos;
+        rateWindowNanos = startedNanos;
+        rateWindowSamples = 0L;
+        samplesPerSecond = 0.0;
+        samplesPerBatch = DEFAULT_BATCH;
+    }
+
+    private void updateRate(long now) {
+        long elapsed = now - rateWindowNanos;
+        if (elapsed < RATE_WINDOW_NANOS) {
+            return;
+        }
+        samplesPerSecond = (submittedSamples - rateWindowSamples) * 1.0e9 / elapsed;
+        rateWindowNanos = now;
+        rateWindowSamples = submittedSamples;
+    }
+
+    private void beginBenchmark(long now) {
+        benchmarking = true;
+        benchmarkMeasuring = false;
+        benchmarkIndex = 0;
+        benchmarkPhaseNanos = now;
+        benchmarkPhaseSamples = submittedSamples;
+        benchmarkBestRate = 0.0;
+        benchmarkBestBatch = DEFAULT_BATCH;
+        samplesPerBatch = BENCHMARK_BATCHES[0];
+    }
+
+    private void advanceBenchmark(long now) {
+        long elapsed = now - benchmarkPhaseNanos;
+        if (!benchmarkMeasuring) {
+            if (elapsed >= BENCHMARK_WARMUP_NANOS) {
+                benchmarkMeasuring = true;
+                benchmarkPhaseNanos = now;
+                benchmarkPhaseSamples = submittedSamples;
+            }
+            return;
+        }
+        if (elapsed < BENCHMARK_MEASURE_NANOS) {
+            return;
+        }
+
+        double rate = (submittedSamples - benchmarkPhaseSamples) * 1.0e9 / elapsed;
+        int testedBatch = BENCHMARK_BATCHES[benchmarkIndex];
+        CausticaMod.LOGGER.info("Offline calibration: batch={} max spp, throughput={} max spp/s",
+                testedBatch, String.format(java.util.Locale.ROOT, "%.2f", rate));
+        if (rate > benchmarkBestRate) {
+            benchmarkBestRate = rate;
+            benchmarkBestBatch = testedBatch;
+        }
+
+        benchmarkIndex++;
+        if (benchmarkIndex >= BENCHMARK_BATCHES.length) {
+            benchmarking = false;
+            benchmarkMeasuring = false;
+            samplesPerBatch = benchmarkBestBatch;
+            CausticaMod.LOGGER.info("Offline calibration selected batch={} at {} max spp/s",
+                    benchmarkBestBatch, String.format(java.util.Locale.ROOT, "%.2f", benchmarkBestRate));
+            return;
+        }
+        samplesPerBatch = BENCHMARK_BATCHES[benchmarkIndex];
+        benchmarkMeasuring = false;
+        benchmarkPhaseNanos = now;
+        benchmarkPhaseSamples = submittedSamples;
     }
 
     private void deactivate(Minecraft minecraft, String message) {
@@ -211,20 +231,20 @@ public final class OfflineGroundTruth {
         boolean wasActive = active;
         startPending = false;
         active = false;
-        complete = false;
-        exportPending = false;
+        benchmarking = false;
         if (wasActive && minecraft.level != null) {
             minecraft.level.tickRateManager().setFrozen(previousFrozen);
         }
-        if (wasActive) {
-            RtComposite.INSTANCE.requestTemporalReset();
-        }
-        submittedSamples = 0;
-        convergedPixels = 0;
-        samplesSinceQuery = 0;
-        progressQueryPending = false;
-        exportFuture = null;
+        RtComposite.INSTANCE.endOfflineSession();
+        RtComposite.INSTANCE.requestTemporalReset();
+        submittedSamples = 0L;
+        startedNanos = 0L;
         notify(minecraft, message);
+    }
+
+    /** Renderer-owned terminal condition such as resize or resource reload. */
+    public void abort(String reason) {
+        deactivate(Minecraft.getInstance(), reason);
     }
 
     private static void notify(Minecraft minecraft, String message) {

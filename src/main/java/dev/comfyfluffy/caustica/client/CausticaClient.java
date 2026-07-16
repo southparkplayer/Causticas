@@ -15,6 +15,8 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.InvalidateRenderStateCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.minecraft.resources.Identifier;
 
 public final class CausticaClient implements ClientModInitializer {
 	private static boolean rtInitDone = false;
@@ -22,12 +24,15 @@ public final class CausticaClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		CausticaMod.LOGGER.info("Caustica client initialized");
+		HudElementRegistry.addLast(
+				Identifier.fromNamespaceAndPath(CausticaMod.MOD_ID, "offline-renderer"),
+				OfflineRendererHud::extractRenderState);
 
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.
 		ClientTickEvents.START_CLIENT_TICK.register(client -> {
 			while (OfflineGroundTruth.KEY.consumeClick()) {
-				client.setScreenAndShow(new OfflineRendererOptionsScreen(null, client.options));
+				OfflineGroundTruth.INSTANCE.handleHotkey(client);
 			}
 			OfflineGroundTruth.INSTANCE.tick(client);
 			while (UltraScreenshot.KEY.consumeClick()) {
@@ -77,6 +82,9 @@ public final class CausticaClient implements ClientModInitializer {
 		// world. Fixes stale geometry persisting across an End→Overworld switch (coords alone aren't
 		// world-unique). Resource reloads do NOT fire this; that path is handled separately.
 		InvalidateRenderStateCallback.EVENT.register(() -> {
+			if (OfflineGroundTruth.INSTANCE.engaged()) {
+				OfflineGroundTruth.INSTANCE.abort("Offline renderer stopped: world render state changed");
+			}
 			RtTerrain.requestFullClear();
 			RtComposite.INSTANCE.requestTemporalReset();
 			if (VanillaRenderController.INSTANCE.shouldResetRtFailureLatchForInvalidation()) {

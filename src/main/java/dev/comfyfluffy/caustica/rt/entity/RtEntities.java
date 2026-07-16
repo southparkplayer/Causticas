@@ -194,6 +194,9 @@ public final class RtEntities {
     private int tableSlot;
 
     private final FrameLists[] frameLists = new FrameLists[FRAME_LIST_RING];
+    private boolean offlineSession;
+    private FrameEntities offlineSnapshot;
+    private FrameLists offlineSnapshotLists;
 
     // Previous frame's captured (rebase-space) vertex positions + that frame's rebase origin, keyed by
     // entity id. Maps are swapped/reused each frame: entries not seen this frame fall out, while visible
@@ -447,6 +450,9 @@ public final class RtEntities {
     public FrameEntities beginFrame(RtContext ctx, List<RtAccel.Instance> base, int rbx, int rby, int rbz,
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
         processDeferred();
+        if (offlineSession && offlineSnapshot != null) {
+            return offlineSnapshot;
+        }
         if (!enabled()) {
             clearEntityFrameHistory();
             evictStaleAccels();
@@ -478,7 +484,20 @@ public final class RtEntities {
         evictStaleBes();
 
         if (build.instances == null) {
-            return new FrameEntities(base, List.of(), 0L);
+            FrameEntities terrainOnly = new FrameEntities(base, List.of(), 0L);
+            if (offlineSession) {
+                offlineSnapshot = terrainOnly;
+            }
+            return terrainOnly;
+        }
+        FrameEntities result = new FrameEntities(build.instances, build.blas, build.geomTableAddr);
+        if (offlineSession) {
+            // Offline rendering owns an immutable scene. Keep the captured mesh buffers, BLASes, geometry
+            // table slot, and instance list alive until the session explicitly ends instead of rebuilding
+            // and retiring them for every progressive batch.
+            offlineSnapshot = result;
+            offlineSnapshotLists = build.lists;
+            return result;
         }
         // Retire this frame's transient meshes + scratch + pooled-BUILD BLAS once it is no longer in flight
         // (their build + the trace that reads them must complete first). Refit AS persist in entityAccels.
@@ -488,7 +507,24 @@ public final class RtEntities {
             // The deferred horizon guarantees these are off all queues, so destroying them now is safe.
             listsForFree.releaseDeferred();
         }));
-        return new FrameEntities(build.instances, build.blas, build.geomTableAddr);
+        return result;
+    }
+
+    /** Begin an immutable offline entity snapshot; the next beginFrame captures it exactly once. */
+    public void beginOfflineSession() {
+        offlineSession = true;
+        offlineSnapshot = null;
+        offlineSnapshotLists = null;
+    }
+
+    /** Release a snapshot after RtComposite has drained the GPU queue. */
+    public void endOfflineSession() {
+        offlineSession = false;
+        offlineSnapshot = null;
+        if (offlineSnapshotLists != null) {
+            offlineSnapshotLists.releaseDeferred();
+            offlineSnapshotLists = null;
+        }
     }
 
     /** Capture animated entities (mobs, items, falling blocks) with per-object motion-vector displacement. */
@@ -1521,6 +1557,9 @@ public final class RtEntities {
 
     /** Free the geometry-table ring + any outstanding per-frame entity resources (teardown; GPU idle). */
     public void shutdown() {
+        // Device teardown is already GPU-idle. Release any retained offline FrameLists before destroying
+        // cache-owned AS/buffers so a stopped client cannot carry stale device handles into reinitialization.
+        endOfflineSession();
         // Drain outstanding deferred releases first (they destroy buffers/AS), then destroy the persistent
         // per-entity AS. Runs after waitIdle, so immediate destruction is safe.
         for (Deferred d : deferred) {

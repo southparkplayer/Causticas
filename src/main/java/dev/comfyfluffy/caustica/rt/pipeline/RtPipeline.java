@@ -398,6 +398,19 @@ public final class RtPipeline {
         }
     }
 
+    /** Update one extra image in the descriptor-ring slot selected by the latest setTlas call. */
+    public void setCurrentExtraStorageImage(int slot, long imageView) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
+            imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
+            write.get(0).sType$Default().dstSet(descriptorSets[currentSet])
+                    .dstBinding(firstExtraBinding + slot).descriptorCount(1)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
+            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
+        }
+    }
+
     /** Bind the block atlas (combined image sampler) into every ring slot — only valid if created withAtlasSampler. */
     public void setAtlasSampler(long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {

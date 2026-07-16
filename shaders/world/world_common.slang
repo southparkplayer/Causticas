@@ -53,12 +53,6 @@ public struct WorldPush {
     [vk::offset(424)] public uint     psrMaxMirrors; // live exact-mirror recursion limit (1..32)
     [vk::offset(432)] public BreakEntry breaking[8]; // generated Java capacity/serialization
     [vk::offset(560)] public uint64_t sampleSequenceAddr; // interleaved 8D Sobol values, 1048576 samples
-    [vk::offset(568)] public uint     accumulationFrame; // zero-based offline ground-truth batch index
-    [vk::offset(572)] public uint     offlineAdaptive;
-    [vk::offset(576)] public uint     offlineMinSamples;
-    [vk::offset(580)] public uint     offlineMaxSamples;
-    [vk::offset(584)] public float    offlineRelativeError;
-    [vk::offset(588)] public float    offlineAbsoluteError;
 };
 
 // Radiance-ray payload (location 0). Member order and types are a cross-stage ABI.

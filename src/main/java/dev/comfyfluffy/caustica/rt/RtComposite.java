@@ -36,11 +36,9 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
-import org.lwjgl.util.vma.Vma;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkClearColorValue;
-import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkImageBlit;
@@ -68,12 +66,10 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPathSampleSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
-import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineExporter;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), use
@@ -102,10 +98,11 @@ public final class RtComposite {
     // Real inline push constants (fast constant-bank reads), separate from the WorldPush BDA ring above.
     // tableAddr/entityTableAddr/frameIndex are duplicated so hit shaders skip a global-memory dereference;
     // PushAddrData is generated from the same Slang module and owns this second ABI as well.
-    private static final int GUIDE_COUNT = 10; // six RR guides, offline mean+RGB variance+counter, animated responsivity
+    private static final int GUIDE_COUNT = 10; // six RR guides, offline mean + pilot ping-pong, animated responsivity
     private static final int FRAME_FLAG_RR_GUIDES = 1 << 5;
     private static final int FRAME_FLAG_FG_GUIDES = 1 << 6;
     private static final int FRAME_FLAG_OFFLINE_GROUND_TRUTH = 1 << 7;
+    private static final int FRAME_FLAG_OFFLINE_CALIBRATING = 1 << 8;
     private static final double TEMPORAL_TELEPORT_DISTANCE_SQ = 64.0 * 64.0;
     private static final long TEMPORAL_GAP_NANOS = 500_000_000L;
     // Frames a retired per-frame TLAS must outlive before it's freed (> frames-in-flight); matches
@@ -119,13 +116,13 @@ public final class RtComposite {
 
     private static int spp() {
         return OfflineGroundTruth.INSTANCE.active()
-                ? CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH.value()
+                ? OfflineGroundTruth.INSTANCE.samplesPerBatch()
                 : CausticaConfig.Rt.Composite.SPP.value();
     }
 
     private static int maxBounces() {
         return OfflineGroundTruth.INSTANCE.active()
-                ? CausticaConfig.Rt.Offline.MAX_BOUNCES.value()
+                ? OfflineGroundTruth.INSTANCE.maxBounces()
                 : CausticaConfig.Rt.Composite.MAX_BOUNCES.value();
     }
 
@@ -134,7 +131,7 @@ public final class RtComposite {
     }
 
     private static int groundTruthSettingsSignature() {
-        return CausticaConfig.offlineRenderSignature();
+        return OfflineGroundTruth.INSTANCE.sessionSignature();
     }
 
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
@@ -245,8 +242,8 @@ public final class RtComposite {
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
     private RtImage groundTruthAccum;
-    private RtImage groundTruthVariance;
-    private RtImage groundTruthConverged;
+    private RtImage offlinePilotA;
+    private RtImage offlinePilotB;
     private RtImage gAnimatedGuide;
     private RtImage gDepthHistoryA;
     private RtImage gDepthHistoryB;
@@ -306,6 +303,7 @@ public final class RtComposite {
     private double camZ;
     private boolean frameCaptured;
     private boolean hasCapturedProjection;
+    private boolean offlineCameraCaptured;
     private boolean rtFrameProducedThisFrame;
     private long lastFrameBeginNanos;
     private long celestialUvAtlasHandle;
@@ -323,6 +321,9 @@ public final class RtComposite {
     // RtAccel.TlasRing — replaces the old create-and-defer-destroy-per-frame churn whose VMA slow path
     // showed up as rare multi-ms prepareTlas spikes).
     private final RtAccel.TlasRing tlasRing = new RtAccel.TlasRing();
+    private RtAccel.PreparedTlas offlineTlas;
+    private long offlineLastPresentNanos;
+    private static final long OFFLINE_PRESENT_INTERVAL_NANOS = 125_000_000L;
 
     // This frame's TLAS handle, published after prepareTlas so the world-overlay pass (block outline's
     // rayQueryEXT occlusion test) can bind the exact same acceleration structure the primary trace used —
@@ -376,10 +377,15 @@ public final class RtComposite {
         lastDebugView = Integer.MIN_VALUE;
         hasCapturedProjection = false;
         previousWaterWaveTimeValid = false;
-        groundTruthAccumulationFrames = 0;
-        groundTruthSettingsSignature = Integer.MIN_VALUE;
-        groundTruthWaterWaveTime = Float.NaN;
-        OfflineGroundTruth.INSTANCE.onRendererReset();
+        // RR/FG resets are routine (FOV transitions, reload notifications, debug changes). Once an
+        // offline session owns a frozen camera and scene, those unrelated temporal resets must not erase
+        // expensive accumulation. Actual offline image recreation still calls onRendererReset directly.
+        if (!OfflineGroundTruth.INSTANCE.active()) {
+            groundTruthAccumulationFrames = 0;
+            groundTruthSettingsSignature = Integer.MIN_VALUE;
+            groundTruthWaterWaveTime = Float.NaN;
+            OfflineGroundTruth.INSTANCE.onRendererReset();
+        }
         RtDlssRr.INSTANCE.requestHistoryReset();
         CausticaJitter.INSTANCE.reset();
     }
@@ -399,51 +405,14 @@ public final class RtComposite {
         return rtFrameProducedThisFrame && OfflineGroundTruth.INSTANCE.active() && !failed;
     }
 
-    /** Read the one-word completion reduction from the most recently submitted offline dispatch. */
-    public int queryOfflineConvergedPixels() {
-        RtContext ctx = RtContext.currentOrNull();
-        if (ctx == null || groundTruthConverged == null || !OfflineGroundTruth.INSTANCE.active()) {
-            return 0;
-        }
-        RtBuffer readback = ctx.createBuffer(Integer.BYTES, VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                "offline convergence counter readback");
-        try {
-            ctx.waitIdle("offline convergence query");
-            ctx.submitSync(cmd -> {
-                try (MemoryStack stack = MemoryStack.stackPush()) {
-                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
-                    VkBufferImageCopy.Buffer copy = VkBufferImageCopy.calloc(1, stack);
-                    copy.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0)
-                            .imageSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                                    .mipLevel(0).baseArrayLayer(0).layerCount(1))
-                            .imageOffset(o -> o.set(0, 0, 0)).imageExtent(e -> e.set(1, 1, 1));
-                    VK10.vkCmdCopyImageToBuffer(cmd, groundTruthConverged.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
-                            readback.handle, copy);
-                }
-            });
-            Vma.vmaInvalidateAllocation(ctx.vma(), readback.allocation, 0, Integer.BYTES);
-            return MemoryUtil.memGetInt(readback.mapped);
-        } finally {
-            readback.destroy();
-        }
-    }
-
-    public int offlinePixelCount() {
-        return Math.max(displayW, 0) * Math.max(displayH, 0);
-    }
-
-    /** Read back the completed raw mean and world-only display image after the prior frame has presented. */
-    public CompletableFuture<RtOfflineExporter.ExportResult> exportOfflineSnapshotAsync() {
-        RtContext ctx = RtContext.currentOrNull();
-        if (ctx == null || groundTruthAccum == null || displayImage == null
-                || !OfflineGroundTruth.INSTANCE.active()) {
-            throw new IllegalStateException("Offline renderer export is not available");
-        }
-        return RtOfflineExporter.exportAsync(ctx, groundTruthAccum, displayImage);
-    }
-
     /** Capture the frame's camera for the next composite. Called from GameRendererMixin. */
     public void captureFrame(Matrix4f projection, Matrix4fc viewRotation, double cameraX, double cameraY, double cameraZ) {
+        if (OfflineGroundTruth.INSTANCE.active() && offlineCameraCaptured) {
+            // Continue submitting the immutable session camera even if recoil, FOV animation, commands,
+            // or another mod tries to move the live camera. Blending distinct views is never acceptable.
+            frameCaptured = true;
+            return;
+        }
         if (hasCapturedProjection && projectionDiscontinuity(previousCapturedProjection, projection)) {
             requestTemporalReset();
         }
@@ -455,6 +424,27 @@ public final class RtComposite {
         camY = cameraY;
         camZ = cameraZ;
         frameCaptured = true;
+        if (OfflineGroundTruth.INSTANCE.active()) {
+            offlineCameraCaptured = true;
+        }
+    }
+
+    public void beginOfflineSession() {
+        offlineCameraCaptured = false;
+        offlineTlas = null;
+        offlineLastPresentNanos = 0L;
+        RtEntities.INSTANCE.beginOfflineSession();
+    }
+
+    public void endOfflineSession() {
+        RtContext activeContext = RtContext.currentOrNull();
+        if (activeContext != null && offlineTlas != null) {
+            activeContext.waitIdle("offline scene snapshot release");
+        }
+        RtEntities.INSTANCE.endOfflineSession();
+        offlineTlas = null;
+        offlineLastPresentNanos = 0L;
+        offlineCameraCaptured = false;
     }
 
     private static boolean projectionDiscontinuity(Matrix4fc previous, Matrix4fc current) {
@@ -713,6 +703,9 @@ public final class RtComposite {
      * {@code markAllDirty()} so material flags pick up the new pack.
      */
     public void onResourceReloadStart() {
+        if (OfflineGroundTruth.INSTANCE.active()) {
+            OfflineGroundTruth.INSTANCE.abort("Offline renderer stopped: resources reloaded");
+        }
         requestTemporalReset();
         reloadRebindRequested = true;
         materialBindingsReady = false;
@@ -739,8 +732,8 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
         worldPipeline.setExtraStorageImage(6, groundTruthAccum.view);
         worldPipeline.setExtraStorageImage(7, gAnimatedGuide.view);
-        worldPipeline.setExtraStorageImage(8, groundTruthVariance.view);
-        worldPipeline.setExtraStorageImage(9, groundTruthConverged.view);
+        worldPipeline.setExtraStorageImage(8, offlinePilotA.view);
+        worldPipeline.setExtraStorageImage(9, offlinePilotB.view);
     }
 
     private void destroyGuideImages() {
@@ -800,18 +793,23 @@ public final class RtComposite {
             groundTruthAccum.destroy();
             groundTruthAccum = null;
         }
-        if (groundTruthVariance != null) {
-            groundTruthVariance.destroy();
-            groundTruthVariance = null;
+        if (offlinePilotA != null) {
+            offlinePilotA.destroy();
+            offlinePilotA = null;
         }
-        if (groundTruthConverged != null) {
-            groundTruthConverged.destroy();
-            groundTruthConverged = null;
+        if (offlinePilotB != null) {
+            offlinePilotB.destroy();
+            offlinePilotB = null;
         }
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
+        if (offlineGroundTruth && renderSizeGroundTruth && displayW > 0
+                && (displayW != width || displayH != height)) {
+            OfflineGroundTruth.INSTANCE.abort("Offline renderer stopped: resolution changed");
+            offlineGroundTruth = false;
+        }
         boolean rrOperational = !offlineGroundTruth && RtDlssRr.INSTANCE.isOperational();
         int rrQuality = rrOperational ? RtDlssRr.quality() : Integer.MIN_VALUE;
         boolean fgGuidesRequired = !offlineGroundTruth && RtDlssFg.requested();
@@ -822,7 +820,7 @@ public final class RtComposite {
                 && renderSizeRrEnabled == rrOperational && renderSizeRrQuality == rrQuality
                 && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled
                 && renderSizeGroundTruth == offlineGroundTruth
-                && groundTruthAccum != null && groundTruthVariance != null && groundTruthConverged != null) {
+                && groundTruthAccum != null && offlinePilotA != null && offlinePilotB != null) {
             return;
         }
         ctx.waitIdle("output resize or mode change"); // no in-flight frame may use old images/descriptors
@@ -898,12 +896,12 @@ public final class RtComposite {
                 offlineGroundTruth ? height : 1, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
                 offlineGroundTruth ? "offline ground-truth FP32 radiance sum " + width + "x" + height
                         : "inactive ground-truth accumulation");
-        groundTruthVariance = ctx.createStorageImage(offlineGroundTruth ? width : 1,
-                offlineGroundTruth ? height : 1, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
-                offlineGroundTruth ? "offline ground-truth RGB M2 " + width + "x" + height
-                        : "inactive ground-truth variance");
-        groundTruthConverged = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_UINT,
-                offlineGroundTruth ? "offline converged-pixel counter" : "inactive offline convergence counter");
+        int pilotW = offlineGroundTruth ? (width + 7) / 8 : 1;
+        int pilotH = offlineGroundTruth ? (height + 7) / 8 : 1;
+        offlinePilotA = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                offlineGroundTruth ? "offline adaptive pilot A " + pilotW + "x" + pilotH : "inactive offline pilot A");
+        offlinePilotB = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                offlineGroundTruth ? "offline adaptive pilot B " + pilotW + "x" + pilotH : "inactive offline pilot B");
         gAnimatedGuide = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
                 "DLSSD animated-surface responsivity");
         gDepthHistoryA = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
@@ -947,15 +945,6 @@ public final class RtComposite {
         double dx = camX - mvPrevCamX;
         double dy = camY - mvPrevCamY;
         double dz = camZ - mvPrevCamZ;
-        if (OfflineGroundTruth.INSTANCE.active() && mvHasPrev
-                && (dx * dx + dy * dy + dz * dz > 1.0e-12
-                        || !mvPrevProjView.equals(mvCurProjView, 1.0e-6f))) {
-            // Safety net for non-mouse camera changes (commands, recoil, FOV animation): never blend two
-            // distinct views into the offline reference even if an input path bypasses the F7 camera lock.
-            groundTruthAccumulationFrames = 0;
-            groundTruthWaterWaveTime = Float.NaN;
-            OfflineGroundTruth.INSTANCE.onRendererReset();
-        }
         if (mvHasPrev && dx * dx + dy * dy + dz * dz > TEMPORAL_TELEPORT_DISTANCE_SQ) {
             requestTemporalReset();
         }
@@ -1023,7 +1012,6 @@ public final class RtComposite {
                 groundTruthSettingsSignature = Integer.MIN_VALUE;
             }
             if (offlineGroundTruth) {
-                clearOfflineConvergence(cmd, stack);
             }
             if (offlineGroundTruth && groundTruthAccumulationFrames == 0) {
                 clearOfflineAccumulation(cmd, stack);
@@ -1085,6 +1073,9 @@ public final class RtComposite {
             }
             if (offlineGroundTruth) {
                 flags |= FRAME_FLAG_OFFLINE_GROUND_TRUTH;
+                if (OfflineGroundTruth.INSTANCE.benchmarking()) {
+                    flags |= FRAME_FLAG_OFFLINE_CALIBRATING;
+                }
             }
 
             // W1/W2 water parameters: camera-biome tint plus continuous animation time. Per-water-body tint
@@ -1158,42 +1149,50 @@ public final class RtComposite {
                     emissiveIntensity,
                     CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS.value(),
                     breaking,
-                    pathSampleSequence.deviceAddress(),
-                    groundTruthAccumulationFrames,
-                    CausticaConfig.Rt.Offline.ADAPTIVE.value() ? 1 : 0,
-                    Math.min(CausticaConfig.Rt.Offline.MIN_SAMPLES.value(),
-                            CausticaConfig.Rt.Offline.MAX_SAMPLES.value()),
-                    CausticaConfig.Rt.Offline.MAX_SAMPLES.value(),
-                    CausticaConfig.Rt.Offline.RELATIVE_ERROR.value(),
-                    CausticaConfig.Rt.Offline.ABSOLUTE_ERROR.value()
+                    pathSampleSequence.deviceAddress()
             ).write(push);
             // Upload any entity textures registered this frame into the bindless set before the trace.
-            RtFrameStats.FRAME.count("entityTextureSlots", RtEntityTextures.INSTANCE.usedSlots());
-            RtFrameStats.FRAME.count("entityTexturePending", RtEntityTextures.INSTANCE.pendingUploads());
-            RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
+            boolean buildOfflineSnapshot = offlineGroundTruth && offlineTlas == null;
+            if (!offlineGroundTruth || buildOfflineSnapshot) {
+                RtFrameStats.FRAME.count("entityTextureSlots", RtEntityTextures.INSTANCE.usedSlots());
+                RtFrameStats.FRAME.count("entityTexturePending", RtEntityTextures.INSTANCE.pendingUploads());
+                RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Re-upload the LabPBR _s atlas if extraction added sprites since the last frame (the
             // view handle is stable, so no re-bind needed). Before the trace records, like uploadPending.
-            RtBlockMaterials.INSTANCE.flush();
-            RtEntityMaterials.INSTANCE.flushAll(); // block-entity parallel _s/_n blitted during capture
+                RtBlockMaterials.INSTANCE.flush();
+                RtEntityMaterials.INSTANCE.flushAll(); // block-entity parallel _s/_n blitted during capture
+            }
             // Build the entity BLAS this frame, then the TLAS that references them (+ the already-built
             // terrain BLAS), then the trace — each separated by a barrier. The frame TLAS is retired
             // KEEP_FRAMES later (entity meshes/BLAS are retired by RtEntities on the same horizon).
-            if (!fe.blas().isEmpty()) {
+            if ((!offlineGroundTruth || buildOfflineSnapshot) && !fe.blas().isEmpty()) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blasRecord")) {
                     RtAccel.recordBlasBuilds(ctx, cmd, fe.blas());
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // entity BLAS writes visible to the TLAS build
             }
-            RtAccel.PreparedTlas frameTlas;
-            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
-                frameTlas = RtAccel.prepareTlas(ctx, fe.instances(), tlasRing);
+            RtAccel.PreparedTlas frameTlas = offlineGroundTruth ? offlineTlas : null;
+            if (frameTlas == null) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
+                    frameTlas = RtAccel.prepareTlas(ctx, fe.instances(), tlasRing);
+                }
             }
             active.setTlas(frameTlas.accel.handle);
             currentTlasHandle = frameTlas.accel.handle;
-            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.recordTlas")) {
-                RtAccel.recordTlasBuild(ctx, cmd, frameTlas);
+            if (offlineGroundTruth) {
+                boolean evenPilotFrame = (groundTruthAccumulationFrames & 1) == 0;
+                active.setCurrentExtraStorageImage(8, evenPilotFrame ? offlinePilotA.view : offlinePilotB.view);
+                active.setCurrentExtraStorageImage(9, evenPilotFrame ? offlinePilotB.view : offlinePilotA.view);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
+            if (!offlineGroundTruth || buildOfflineSnapshot) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.recordTlas")) {
+                    RtAccel.recordTlasBuild(ctx, cmd, frameTlas);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
+            }
+            if (buildOfflineSnapshot) {
+                offlineTlas = frameTlas;
+            }
 
             // Push the BDA ring slot's address plus the small hot subset that rchit/rahit read on every
             // hit (tableAddr/entityTableAddr/frameIndex) as real inline push constants, so those lookups
@@ -1245,21 +1244,27 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display input visible to exposure histogram
 
+            boolean screenshotRequested = Minecraft.getInstance().options.keyScreenshot.isDown();
+            boolean refreshDisplay = !offlineGroundTruth || screenshotRequested || offlineLastPresentNanos == 0L
+                    || System.nanoTime() - offlineLastPresentNanos >= OFFLINE_PRESENT_INTERVAL_NANOS;
             // Auto-exposure meters the post-RR image when RR ran, otherwise the native-resolution trace.
             // RR has no exposure input of its own; this compositor-owned meter stays after reconstruction
             // when reconstruction exists and avoids an otherwise redundant copy on the native path.
-            try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
-                 RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
-                exposure.record(ctx, cmd, stack, displayInput, offlineGroundTruth);
-            }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
+            if (refreshDisplay) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
+                    exposure.record(ctx, cmd, stack, displayInput, offlineGroundTruth);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
-            try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
-                 RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
-                displayPipeline.dispatch(cmd, displayW, displayH, RtHdr.effective());
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
+                    displayPipeline.dispatch(cmd, displayW, displayH, RtHdr.effective());
+                }
+                offlineLastPresentNanos = offlineGroundTruth ? System.nanoTime() : 0L;
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }
             hdrWrittenThisFrame = RtHdr.effective();
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "copy composite to main target");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.copyOutput")) {
@@ -1281,17 +1286,8 @@ public final class RtComposite {
         range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                 .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
         VK10.vkCmdClearColorImage(cmd, groundTruthAccum.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
-        VK10.vkCmdClearColorImage(cmd, groundTruthVariance.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
-    }
-
-    private void clearOfflineConvergence(VkCommandBuffer cmd, MemoryStack stack) {
-        VkClearColorValue zero = VkClearColorValue.calloc(stack);
-        zero.uint32(0, 0).uint32(1, 0).uint32(2, 0).uint32(3, 0);
-        VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
-        range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-        VK10.vkCmdClearColorImage(cmd, groundTruthConverged.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
-        VulkanCommandEncoder.memoryBarrier(cmd, stack);
+        VK10.vkCmdClearColorImage(cmd, offlinePilotA.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
+        VK10.vkCmdClearColorImage(cmd, offlinePilotB.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
     }
 
     /**

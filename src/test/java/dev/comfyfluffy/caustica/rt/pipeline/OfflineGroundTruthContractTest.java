@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 final class OfflineGroundTruthContractTest {
     @Test
-    void f7UsesNativeAdaptiveFp32AccumulationWithoutDenoising() throws Exception {
+    void f7UsesNativeUncappedFp32AccumulationWithoutDenoising() throws Exception {
         String mode = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/client/OfflineGroundTruth.java"));
         String composite = Files.readString(Path.of(
@@ -18,14 +18,18 @@ final class OfflineGroundTruthContractTest {
                 "src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java"));
 
         assertTrue(mode.contains("GLFW.GLFW_KEY_F7"));
+        assertTrue(mode.contains("beginBenchmark(System.nanoTime())"));
+        assertTrue(shader.contains("throughput /= q"));
         assertTrue(composite.contains("boolean rrOperational = !offlineGroundTruth"));
         assertTrue(composite.contains("boolean fgGuidesRequired = !offlineGroundTruth"));
         assertTrue(composite.contains("VK10.VK_FORMAT_R32G32B32A32_SFLOAT"));
         assertTrue(shader.contains("[format(\"rgba32f\")] RWTexture2D<float4> groundTruthAccum"));
-        assertTrue(shader.contains("[format(\"rgba32f\")] RWTexture2D<float4> groundTruthVariance"));
-        assertTrue(shader.contains("[format(\"r32ui\")] RWTexture2D<uint> groundTruthConverged"));
         assertTrue(shader.contains("runningMean += (sampleRadiance - runningMean) / float(runningCount)"));
-        assertTrue(shader.contains("statisticallyConverged = all(standardError <= threshold)"));
+        assertTrue(!shader.contains("offlineMaxSamples"));
+        assertTrue(!shader.contains("InterlockedAdd(groundTruthConverged"));
+        assertTrue(shader.contains("offlinePilotRead"));
+        assertTrue(shader.contains("pilotSample"));
+        assertTrue(shader.contains("max(1u, uint(predictedError"));
         assertTrue(shader.contains("groundTruthAccum[pix] = float4(runningMean, float(runningCount))"));
         assertTrue(composite.contains("clearOfflineAccumulation(cmd, stack)"));
         assertTrue(composite.contains("exposure.beginOfflineSession(ctx)"));
@@ -48,31 +52,42 @@ final class OfflineGroundTruthContractTest {
         assertTrue(composite.contains("groundTruthAccumulationFrames = 0"));
         assertTrue(composite.contains("!OfflineGroundTruth.INSTANCE.active()"));
         assertTrue(mode.contains("RtTerrain.hasPublishedSnapshot()"));
-        assertTrue(mode.contains("Preparing first terrain snapshot"));
-        assertTrue(composite.contains("CausticaConfig.offlineRenderSignature()"));
+        assertTrue(composite.contains("offlineCameraCaptured"));
+        assertTrue(composite.contains("if (!OfflineGroundTruth.INSTANCE.active())"));
+        assertTrue(composite.contains("OfflineGroundTruth.INSTANCE.sessionSignature()"));
+        assertTrue(composite.contains("offlineTlas"));
+        assertTrue(composite.contains("RtEntities.INSTANCE.beginOfflineSession()"));
     }
 
     @Test
-    void productionModeExportsRawAndDisplayArtifactsAndOwnsAUnifiedMenu() throws Exception {
-        String exporter = Files.readString(Path.of(
-                "src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtOfflineExporter.java"));
+    void f7RunsDirectlyBehindATransparentHudWithoutAutomaticExport() throws Exception {
         String menu = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/client/CausticaOptionsScreen.java"));
+        String options = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java"));
         String videoMixin = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/mixin/VideoSettingsScreenMixin.java"));
         String client = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/client/CausticaClient.java"));
+        String mode = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/OfflineGroundTruth.java"));
+        String hud = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/OfflineRendererHud.java"));
 
-        assertTrue(exporter.contains("writeExr(exr"));
-        assertTrue(exporter.contains("writePng(png"));
-        assertTrue(exporter.contains("writeManifest(manifest"));
-        assertTrue(menu.contains("offlineRendererButton"));
+        assertTrue(!options.contains("offlineOptions()"));
+        assertTrue(!menu.contains("offlineRendererButton"));
         assertTrue(menu.contains("tonemappingButton"));
         assertTrue(menu.contains("frameGenerationButton"));
         assertTrue(menu.contains("runtimeOptions"));
         assertTrue(menu.contains("firstPersonOptions"));
         assertTrue(videoMixin.contains("RtVideoOptions.causticaButton"));
-        assertTrue(client.contains("new OfflineRendererOptionsScreen(null, client.options)"));
+        assertTrue(client.contains("OfflineGroundTruth.INSTANCE.handleHotkey(client)"));
+        assertTrue(client.contains("HudElementRegistry.addLast"));
+        assertTrue(mode.contains("F7 toggles the renderer"));
+        assertTrue(!mode.contains("exportOfflineSnapshotAsync"));
+        assertTrue(!mode.contains("queryOfflineConvergedPixels"));
+        assertTrue(hud.contains("F2 screenshot   F7 stop"));
+        assertTrue(!hud.contains("graphics.fill("));
         String pauseMixin = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/mixin/PauseScreenMixin.java"));
         assertTrue(pauseMixin.contains("new CausticaOptionsScreen(this, minecraft.options)"));

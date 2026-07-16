@@ -35,8 +35,8 @@ import world_common;
 [[vk::binding(8, 0)]] [format("rg16f")]   RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
 [[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean + sample count
 [[vk::binding(10, 0)]] [format("r16f")] RWTexture2D<float> gAnimatedGuide; // temporal responsivity source
-[[vk::binding(11, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthVariance; // RGB Welford M2
-[[vk::binding(12, 0)]] [format("r32ui")] RWTexture2D<uint> groundTruthConverged; // pixels complete this dispatch
+[[vk::binding(11, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotRead;
+[[vk::binding(12, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotWrite;
 
 // Per-frame push data loaded once from the BDA buffer at the top of main() (same pattern as the GLSL
 // `pc` global). Layout constants generated from this module's SPIR-V — see world_common.WorldPush.
@@ -86,6 +86,7 @@ static const uint OPTICAL_TRANSLUCENT_SURFACE = 5u;
 static const uint FRAME_FLAG_RR_GUIDES = 1u << 5u;
 static const uint FRAME_FLAG_FG_GUIDES = 1u << 6u;
 static const uint FRAME_FLAG_OFFLINE_GROUND_TRUTH = 1u << 7u;
+static const uint FRAME_FLAG_OFFLINE_CALIBRATING = 1u << 8u;
 
 uint payloadMaterial() { return payload.flags & PAYLOAD_MATERIAL_MASK; }
 uint payloadOpticalClass() {
@@ -1431,16 +1432,9 @@ void main() {
     float2 uv = (float2(pix) + 0.5) / size;
     float2 ndc = uv * 2.0 - 1.0;
     bool offlineGroundTruth = (pc.flags & FRAME_FLAG_OFFLINE_GROUND_TRUTH) != 0u;
+    bool offlineCalibrating = (pc.flags & FRAME_FLAG_OFFLINE_CALIBRATING) != 0u;
     float4 offlineState = offlineGroundTruth ? groundTruthAccum[pix] : float4(0.0);
-    float4 varianceState = offlineGroundTruth ? groundTruthVariance[pix] : float4(0.0);
-    float3 runningM2 = varianceState.rgb;
     uint completedSamples = offlineGroundTruth ? uint(max(offlineState.a, 0.0) + 0.5) : 0u;
-    if (offlineGroundTruth && varianceState.a > 0.5) {
-        uint ignored;
-        InterlockedAdd(groundTruthConverged[int2(0, 0)], 1u, ignored);
-        outImage[pix] = float4(offlineState.rgb, 1.0);
-        return;
-    }
 
     uint spp = max(pc.spp, 1u);
     bool primaryOnly = pc.debugView != 0u;
@@ -1449,9 +1443,14 @@ void main() {
     bool captureGuides = writeMotionGuides || primaryOnly;
     bool captureRefractedGuides = writeMotionGuides
             || pc.debugView == 2u || pc.debugView == 5u || pc.debugView == 6u || pc.debugView == 7u;
-    uint remainingSamples = offlineGroundTruth
-            ? max(pc.offlineMaxSamples, 1u) - completedSamples : spp;
-    uint pathCount = primaryOnly ? 1u : min(spp, remainingSamples);
+    int2 pilotTile = pix >> 3;
+    float4 pilotState = offlineGroundTruth ? offlinePilotRead[pilotTile] : float4(0.0);
+    uint pathCount = primaryOnly ? 1u : spp;
+    if (offlineGroundTruth && !offlineCalibrating && pilotState.a >= 4.0) {
+        float relativeNoise = sqrt(max(pilotState.r, max(pilotState.g, pilotState.b)));
+        float predictedError = relativeNoise / sqrt(float(completedSamples + 1u));
+        pathCount = min(spp, max(1u, uint(predictedError * 100.0 + 0.999)));
+    }
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     float3 runningMean = offlineState.rgb;
     uint runningCount = completedSamples;
@@ -1463,10 +1462,30 @@ void main() {
     gv_animatedGuide = 0.0;
     gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
     gv_psrMirror = false;
-    for (uint s = 0u; s < pathCount; s++) {
+    uint pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
+    bool pilotLeader = offlineGroundTruth && !offlineCalibrating
+            && (pix.x & 7) == 0 && (pix.y & 7) == 0;
+    uint totalPathCount = pathCount + (pilotLeader ? 2u : 0u);
+    float3 pilotA = float3(0.0);
+    float3 pilotB = float3(0.0);
+    for (uint s = 0u; s < totalPathCount; s++) {
+        bool pilotSample = s >= pathCount;
+        uint pilotLane = s - pathCount;
         PathSampler sampler;
-        sampler.pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
-        sampler.sampleIndex = offlineGroundTruth ? completedSamples + s : pc.frameIndex * spp + s;
+        float2 sampleUv = uv;
+        if (pilotSample) {
+            int2 tileOrigin = pilotTile << 3;
+            int2 tileExtent = min(int2(8), int2(size) - tileOrigin);
+            uint tilePixels = uint(tileExtent.x * tileExtent.y);
+            uint offset = (pc.frameIndex + uint(pilotTile.x) * 17u + uint(pilotTile.y) * 29u) % tilePixels;
+            int2 probePix = tileOrigin + int2(int(offset % uint(tileExtent.x)), int(offset / uint(tileExtent.x)));
+            sampleUv = (float2(probePix) + 0.5) / size;
+            sampler.pixelHash = sampleHash(pixelHash ^ (0x68bc21ebu + pilotLane * 0x2dc966b0u));
+            sampler.sampleIndex = pc.frameIndex * 2u + pilotLane;
+        } else {
+            sampler.pixelHash = pixelHash;
+            sampler.sampleIndex = offlineGroundTruth ? completedSamples + s : pc.frameIndex * spp + s;
+        }
         sampler.bounceHash = 0u;
         sampler.dimension = 0u;
 
@@ -1475,7 +1494,7 @@ void main() {
             beginBounce(sampler, 0xfffffffeu);
             pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5);
         }
-        jndc = (uv + pixelJitter / size) * 2.0 - 1.0;
+        jndc = (sampleUv + pixelJitter / size) * 2.0 - 1.0;
         float4 nearH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
         float4 farH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
         float3 nearP = nearH.xyz / nearH.w;
@@ -1485,12 +1504,14 @@ void main() {
         rayConeSpread = primaryRayConeSpread(jndc, size, dir);
 
         float3 sampleRadiance = tracePath(origin, dir, rayConeSpread,
-                captureGuides && s == 0u, captureRefractedGuides && s == 0u, primaryOnly, sampler);
-        if (offlineGroundTruth) {
-            float3 previousMean = runningMean;
+                !pilotSample && captureGuides && s == 0u,
+                !pilotSample && captureRefractedGuides && s == 0u, primaryOnly, sampler);
+        if (pilotSample) {
+            if (pilotLane == 0u) pilotA = sampleRadiance;
+            else pilotB = sampleRadiance;
+        } else if (offlineGroundTruth) {
             runningCount++;
             runningMean += (sampleRadiance - runningMean) / float(runningCount);
-            runningM2 += (sampleRadiance - previousMean) * (sampleRadiance - runningMean);
         } else {
             frameRadiance += sampleRadiance;
         }
@@ -1609,24 +1630,16 @@ void main() {
     }
 
     if (offlineGroundTruth) {
-        // Welford accumulation avoids the precision loss of an ever-growing FP32 radiance sum. Alpha is
-        // the exact per-pixel sample count; the separate RGBA32F image stores RGB M2 for error estimates.
+        // Alpha stores an exact integer count through 16,777,216 samples, far beyond a practical session.
         groundTruthAccum[pix] = float4(runningMean, float(runningCount));
-        bool reachedMaximum = runningCount >= max(pc.offlineMaxSamples, 1u);
-        bool statisticallyConverged = false;
-        if (pc.offlineAdaptive != 0u && runningCount >= max(pc.offlineMinSamples, 2u)) {
-            float3 variance = max(runningM2 / float(runningCount - 1u), float3(0.0));
-            float3 standardError = sqrt(variance / float(runningCount));
-            float3 threshold = max(float3(pc.offlineAbsoluteError),
-                    pc.offlineRelativeError * abs(runningMean));
-            statisticallyConverged = all(standardError <= threshold);
+        if (pilotLeader) {
+            float3 scale = max(abs(pilotA) + abs(pilotB), float3(0.02));
+            float3 relativeDelta = (pilotA - pilotB) / scale;
+            float3 pairVariance = 0.5 * relativeDelta * relativeDelta;
+            float pilotCount = pilotState.a + 1.0;
+            float3 pilotMean = pilotState.rgb + (pairVariance - pilotState.rgb) / pilotCount;
+            offlinePilotWrite[pilotTile] = float4(pilotMean, pilotCount);
         }
-        if (reachedMaximum || statisticallyConverged) {
-            uint ignored;
-            InterlockedAdd(groundTruthConverged[int2(0, 0)], 1u, ignored);
-        }
-        groundTruthVariance[pix] = float4(runningM2,
-                (reachedMaximum || statisticallyConverged) ? 1.0 : 0.0);
         outImage[pix] = float4(runningMean, 1.0);
     } else {
         // Single noisy estimate; the denoiser (DLSS-RR) handles temporal convergence.

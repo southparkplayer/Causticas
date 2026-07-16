@@ -60,7 +60,7 @@ public abstract class GameRendererMixin {
 	private void caustica$endRtFrameStats(DeltaTracker deltaTracker, boolean advanceGameTime, CallbackInfo ci) {
 		RtComposite.INSTANCE.endFrame();
 		UltraScreenshot.INSTANCE.frameRendered(net.minecraft.client.Minecraft.getInstance());
-		OfflineGroundTruth.INSTANCE.frameRendered(net.minecraft.client.Minecraft.getInstance());
+		OfflineGroundTruth.INSTANCE.frameRendered();
 	}
 
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V",

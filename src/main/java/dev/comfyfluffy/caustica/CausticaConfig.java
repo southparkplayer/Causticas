@@ -54,8 +54,8 @@ public final class CausticaConfig {
         }
     }
 
-    /** Conservative fingerprint for an offline render: any runtime setting change invalidates the snapshot. */
-    public static int offlineRenderSignature() {
+    /** Fingerprint of every live renderer setting; offline sessions use it to reject mixed estimators. */
+    public static int renderSettingsSignature() {
         ensureRegistered();
         int hash = 1;
         for (RuntimeSetting<?> setting : SETTINGS) {
@@ -79,9 +79,6 @@ public final class CausticaConfig {
             Rt.DlssRr.ENABLED,
             Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Offline.ADAPTIVE, Rt.Offline.SAMPLES_PER_BATCH, Rt.Offline.MIN_SAMPLES,
-            Rt.Offline.MAX_SAMPLES, Rt.Offline.MAX_BOUNCES, Rt.Offline.RELATIVE_ERROR,
-            Rt.Offline.ABSOLUTE_ERROR, Rt.Offline.SAVE_EXR, Rt.Offline.SAVE_PNG,
             Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE, Rt.PsychoV23.COMPRESSION,
         };
     }
@@ -111,6 +108,15 @@ public final class CausticaConfig {
         FILE.remove("sdr.psychov23.gamut-compression");
         FILE.remove("hdr.psychov23.compression");
         FILE.remove("hdr.psychov23.gamut-compression");
+        FILE.remove("offline-renderer.adaptive");
+        FILE.remove("offline-renderer.samples-per-batch");
+        FILE.remove("offline-renderer.min-samples");
+        FILE.remove("offline-renderer.max-samples");
+        FILE.remove("offline-renderer.max-bounces");
+        FILE.remove("offline-renderer.relative-error");
+        FILE.remove("offline-renderer.absolute-error");
+        FILE.remove("offline-renderer.save-exr");
+        FILE.remove("offline-renderer.save-png");
         writeComments();
         for (RuntimeSetting<?> setting : SETTINGS) {
             setting.writeToFile(FILE);
@@ -140,9 +146,9 @@ public final class CausticaConfig {
                         + " minimum-interval-us applies only while DLSS-G is off; DLSS-G always submits 0 (unlimited).\n"
                         + " PCL markers and sleep still run when Reflex is Off.");
         FILE.setComment("offline-renderer",
-                " Progressive native-resolution reference rendering. The scene, camera, water time, and display\n"
-                        + " exposure are frozen for a session. Adaptive convergence uses per-pixel luminance\n"
-                        + " standard error; max-samples is also the hard completion and export boundary.");
+                " Uncapped progressive native-resolution rendering started with F7.\n"
+                        + " The scene, camera, water time, and exposure are frozen for the session.\n"
+                        + " The HUD stays transparent; screenshots are always initiated by the player.");
         FILE.setComment("sdr",
                 " SDR display mapping for the vanilla main target. tonemap-mode defaults to psychov23.\n"
                         + " Caustica's existing SDR look. Other modes are pbr-neutral, reinhard, aces, lottes,\n"
@@ -1075,30 +1081,6 @@ public final class CausticaConfig {
                     }
                 }
                 return TONEMAP_PSYCHOV23;
-            }
-        }
-
-        public static final class Offline {
-            public static final BooleanSetting ADAPTIVE =
-                    bool("caustica.rt.offlineAdaptive", "offline-renderer.adaptive", true);
-            public static final IntSetting SAMPLES_PER_BATCH =
-                    clampedInt("caustica.rt.offlineSamplesPerBatch", "offline-renderer.samples-per-batch", 4, 1, 8);
-            public static final IntSetting MIN_SAMPLES =
-                    clampedInt("caustica.rt.offlineMinSamples", "offline-renderer.min-samples", 64, 1, 65536);
-            public static final IntSetting MAX_SAMPLES =
-                    clampedInt("caustica.rt.offlineMaxSamples", "offline-renderer.max-samples", 4096, 1, 1048576);
-            public static final IntSetting MAX_BOUNCES =
-                    clampedInt("caustica.rt.offlineMaxBounces", "offline-renderer.max-bounces", 32, 2, 64);
-            public static final FloatSetting RELATIVE_ERROR = clampedFloat(
-                    "caustica.rt.offlineRelativeError", "offline-renderer.relative-error", 0.01f, 0.0001f, 0.25f);
-            public static final FloatSetting ABSOLUTE_ERROR = clampedFloat(
-                    "caustica.rt.offlineAbsoluteError", "offline-renderer.absolute-error", 0.001f, 0.00001f, 1.0f);
-            public static final BooleanSetting SAVE_EXR =
-                    bool("caustica.rt.offlineSaveExr", "offline-renderer.save-exr", true);
-            public static final BooleanSetting SAVE_PNG =
-                    bool("caustica.rt.offlineSavePng", "offline-renderer.save-png", true);
-
-            private Offline() {
             }
         }
 

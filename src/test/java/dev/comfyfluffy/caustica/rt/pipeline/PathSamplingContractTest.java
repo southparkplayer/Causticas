@@ -24,7 +24,8 @@ final class PathSamplingContractTest {
         assertFalse(raygen.contains("sequenceCycle"));
         assertEquals(1 << 20, RtPathSampleSequence.SAMPLE_COUNT);
         assertTrue(raygen.contains("pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5)"));
-        assertTrue(raygen.contains("uint pathCount = primaryOnly ? 1u : min(spp, remainingSamples)"));
+        assertTrue(raygen.contains("uint pathCount = primaryOnly ? 1u : spp"));
+        assertFalse(raygen.contains("remainingSamples"));
         assertFalse(raygen.contains("uint pcg(inout uint s)"));
         assertFalse(raygen.contains("[noinline]"));
         assertFalse(raygen.contains("[noRefInline]"));

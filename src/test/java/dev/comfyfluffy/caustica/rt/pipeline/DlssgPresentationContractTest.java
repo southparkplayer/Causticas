@@ -23,7 +23,8 @@ class DlssgPresentationContractTest {
     @Test
     void mailboxKeepsLogicalVsyncSeparateFromPhysicalFifo() throws Exception {
         String coordinator = source("src/main/java/dev/comfyfluffy/caustica/streamline/StreamlineSwapchainCoordinator.java");
-        assertTrue(coordinator.contains("vsyncRequested,\n                physicalFifo, pluginForSwapchain"));
+        assertTrue(coordinator.replace("\r\n", "\n")
+                .contains("vsyncRequested,\n                physicalFifo, pluginForSwapchain"));
         assertTrue(coordinator.contains("presentMode = GpuSurface.PresentMode.MAILBOX"));
         assertTrue(coordinator.contains("desiredPlugin = CausticaConfig.Rt.Fg.requested() && !physicalFifo"));
     }
