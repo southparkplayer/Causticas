@@ -46,7 +46,7 @@ final class RtMaterialPageTexture {
                     .initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
             imageInfo.extent().set(width, height, 1);
             VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack)
-                    .usage(Vma.VMA_MEMORY_USAGE_AUTO);
+                    .usage(Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
             LongBuffer imageOut = stack.mallocLong(1);
             PointerBuffer allocationOut = stack.mallocPointer(1);
             check(Vma.vmaCreateImage(vma, imageInfo, allocationInfo, imageOut, allocationOut, null),
@@ -67,8 +67,7 @@ final class RtMaterialPageTexture {
 
             long totalBytes = 0L;
             for (byte[] level : levels) totalBytes = Math.addExact(totalBytes, level.length);
-            staging = ctx.createBuffer(totalBytes, VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true,
-                    label + " upload");
+            staging = ctx.createUploadBuffer(totalBytes, label + " upload");
             ByteBuffer mapped = MemoryUtil.memByteBuffer(staging.mapped, Math.toIntExact(totalBytes));
             long[] offsets = new long[levels.size()];
             int offset = 0;

@@ -1016,8 +1016,14 @@ public final class RtTerrain {
     /** Build/query, then compact-copy a terrain BLAS before making it eligible for publication. */
     private void submitTerrainBuild(RtContext ctx, SectionTask task, PreparedSection prepared) {
         ctx.gpuExecutor().submit(
-                cmd -> RtAccel.recordBlasBuilds(ctx, cmd, List.of(prepared.blas())),
-                () -> RtAccel.freeBlasScratch(List.of(prepared.blas())),
+                cmd -> {
+                    RtSectionBuilder.recordUpload(cmd, prepared);
+                    RtAccel.recordBlasBuilds(ctx, cmd, List.of(prepared.blas()));
+                },
+                () -> {
+                    RtAccel.freeBlasScratch(List.of(prepared.blas()));
+                    prepared.releaseUpload();
+                },
                 (build, failure) -> {
                     if (failure != null) {
                         completeTask(task, prepared, build, failure);
@@ -1039,7 +1045,10 @@ public final class RtTerrain {
         try {
             ctx.gpuExecutor().submit(
                     cmd -> RtAccel.recordTerrainCompaction(ctx, cmd, compaction),
-                    () -> RtAccel.finishTerrainCompaction(compaction),
+                    () -> {
+                        RtAccel.finishTerrainCompaction(compaction);
+                        prepared.releaseBuildInputs();
+                    },
                     (copyBuild, failure) -> {
                         if (failure != null) {
                             Throwable terminal = failure;
@@ -1339,7 +1348,7 @@ public final class RtTerrain {
         }
 
         for (PreparedSection ps : prepared) {
-            SectionGeom g = new SectionGeom(ps.key(), ps.positions(), ps.indices(), ps.uvs(), ps.material(),
+            SectionGeom g = new SectionGeom(ps.key(), ps.uvs(), ps.material(),
                     ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz());
             if (!desired.contains(ps.key())) {
                 // Left the window while its batched BLAS build was in flight (window sync keeps running
