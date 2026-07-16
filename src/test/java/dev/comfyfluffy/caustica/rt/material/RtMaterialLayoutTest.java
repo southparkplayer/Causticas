@@ -2,7 +2,7 @@ package dev.comfyfluffy.caustica.rt.material;
 
 import dev.comfyfluffy.caustica.rt.gen.MaterialHeaderData;
 import dev.comfyfluffy.caustica.rt.gen.MaterialHeaderData.Float4;
-import dev.comfyfluffy.caustica.rt.gen.PushAddrData;
+import dev.comfyfluffy.caustica.rt.gen.WorldPushConstantsData;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -33,12 +33,13 @@ final class RtMaterialLayoutTest {
     }
 
     @Test
-    void reflectedPushAddressBlockIncludesMaterialTable() {
-        assertEquals(40, PushAddrData.BYTE_SIZE);
-        ByteBuffer data = ByteBuffer.allocateDirect(PushAddrData.BYTE_SIZE)
+    void reflectedWorldPushConstantsIncludeMaterialTableAndDebugView() {
+        assertEquals(40, WorldPushConstantsData.BYTE_SIZE);
+        ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new PushAddrData(1L, 2L, 3L, 4L, 5).write(data);
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5, 6).write(data);
         assertEquals(4L, data.getLong(24));
         assertEquals(5, data.getInt(32));
+        assertEquals(6, data.getInt(36));
     }
 }

@@ -131,9 +131,10 @@ abstract class CompileShaders extends DefaultTask {
 		}
 		def compileOneSlang = { File src, File spv, List<String> extra ->
 			execOps.exec {
+				// Embed Slang source and line mappings in SPIR-V for RenderDoc/Nsight source debugging.
 				commandLine([slangc.get(), src.absolutePath, "-target", "spirv",
 						"-profile", "spirv_1_5", "-matrix-layout-column-major",
-						"-warnings-as-errors", "all", "-warnings-disable", "41012"] + extra
+						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g"] + extra
 						+ ["-o", spv.absolutePath])
 			}
 			validate(spv)

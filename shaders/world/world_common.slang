@@ -9,15 +9,15 @@ module world_common;
 // this alias is the single layout switch and generated Java serialization stays in lock-step.
 public typealias ConstPtr<T> = Ptr<T, Access.Read, AddressSpace.Device, Std430DataLayout>;
 
-// Push constant block. Only the first 8 bytes (worldPushAddr) are meaningful to rgen/rchit/rmiss;
-// the hot inline lanes (tableAddr/entityTableAddr/materialTableAddr/frameIndex) exist so hit-stage
-// Section/EntityGeom fetch skips the extra global-memory load of dereferencing WorldPush first.
-public struct PushAddr {
+// Push constant block. The hot inline lanes avoid dereferencing WorldPush for values that are read in
+// hit shaders or used for raygen control flow.
+public struct WorldPushConstants {
     public uint64_t worldPushAddr;
     public uint64_t tableAddr;
     public uint64_t entityTableAddr;
     public uint64_t materialTableAddr;
     public uint frameIndex;
+    public uint debugView;
 };
 
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
@@ -32,7 +32,6 @@ public struct WorldPush {
     public float4x4 invViewProj;
     public float3   camOffset;
     public uint64_t tableAddr;        // section table
-    public uint     debugView;
     public uint     frameIndex;
     public float4x4 prevViewProj;
     public float3   camDelta;

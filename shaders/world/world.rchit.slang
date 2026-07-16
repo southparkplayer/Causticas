@@ -2,13 +2,13 @@
 // from the push constant) holding this section's {prim, uv} buffer addresses. Per-primitive
 // {normal, tint} plus barycentric atlas UVs produce the payload guides; lighting is deferred to raygen.
 //
-// tableAddr/entityTableAddr are read from the inline push-constant lanes (pcAddr), not through the
+// tableAddr/entityTableAddr are read from the inline push-constant lanes (pc), not through the
 // WorldPush BDA struct: they're read on every single hit (the hottest chain in the frame), and going
 // through worldPushAddr first would cost an extra global-memory load just to find the address of the
 // load we actually want. The cold WorldPush struct is dereferenced only for the breaking overlay.
 import world_common;
 
-[[vk::push_constant]] PushAddr pcAddr;
+[[vk::push_constant]] WorldPushConstants pc;
 
 [[vk::binding(2, 0)]] Sampler2D blockAlbedoAtlas;
 // Independent bindless arrays: per-draw entity albedo slots and compact canonical material-page bundles.
@@ -183,7 +183,7 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
 // SheetedDecalTextureGenerator) and multiply-blends the matching destroy-stage crack texture in,
 // mirroring vanilla's crumbling blend (DST_COLOR*SRC_COLOR, doubled).
 float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDir, float hitT, float3 n) {
-    ConstPtr<WorldPush> pcRef = ConstPtr<WorldPush>(pcAddr.worldPushAddr);
+    ConstPtr<WorldPush> pcRef = ConstPtr<WorldPush>(pc.worldPushAddr);
     uint breakCount = pcRef[0].breakCount;
     if (breakCount == 0u) {
         return albedo;
@@ -216,7 +216,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // emission or specular response. Reached only by the primary ray (instance mask 0x02). Cutout: rahit.
     if ((InstanceID() & PARTICLE_BIT) != 0u) {
         uint idx = InstanceID() & IDX_MASK;
-        EntityGeom g = ConstPtr<EntityGeom>(pcAddr.entityTableAddr)[idx];
+        EntityGeom g = ConstPtr<EntityGeom>(pc.entityTableAddr)[idx];
         Prim pr = ConstPtr<Prim>(g.primAddr)[PrimitiveIndex()];
         ConstPtr<uint> ib = ConstPtr<uint>(g.idxAddr);
         ConstPtr<float2> uvb = ConstPtr<float2>(g.uvAddr);
@@ -257,7 +257,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // geometry; the low bits index the entity geometry table, not the section table.
     if ((InstanceID() & ENTITY_BIT) != 0u) {
         uint eidx = InstanceID() & ~ENTITY_BIT;
-        EntityGeom g = ConstPtr<EntityGeom>(pcAddr.entityTableAddr)[eidx];
+        EntityGeom g = ConstPtr<EntityGeom>(pc.entityTableAddr)[eidx];
         Prim pr = ConstPtr<Prim>(g.primAddr)[PrimitiveIndex()];
         // Rigid-reuse instances (still / spinning entities re-referencing a cached BLAS) carry a real
         // rotation in the instance transform; per-frame-built entities are identity. The cached prim
@@ -288,7 +288,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float entityLod = rayConeTextureLod(rayCone, texSizePx(entityAlbedoTex[NonUniformResourceIndex(texSlot)]),
                 ep0, ep1, ep2, euv[e0], euv[e1], euv[e2]);
         float4 entityTexel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod);
-        MaterialHeader header = ConstPtr<MaterialHeader>(pcAddr.materialTableAddr)[pr.materialId];
+        MaterialHeader header = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
         uint material = header.model;
         float3 baseAlbedo = srgbToLinear(entityTexel.rgb) * pr.tint.rgb;
         float3 albedo = material == MATERIAL_GLASS
@@ -322,14 +322,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         return;
     }
 
-    Section sec = ConstPtr<Section>(pcAddr.tableAddr)[InstanceID()];
+    Section sec = ConstPtr<Section>(pc.tableAddr)[InstanceID()];
     // Any-hit/SBT opt: the section BLAS has one fixed geometry per material bucket (solid / cutout /
     // translucent / water). PrimitiveIndex() restarts at 0 per geometry, so re-add this geometry's
     // triangle base to land in the section's packed prim/uv arrays (concatenated in BUCKET order).
     // Water prims keep tint.w == 1, converted to the packed material enum below.
     uint pid = PrimitiveIndex() + sec.triBase[GeometryIndex()];
     TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[pid];
-    MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pcAddr.materialTableAddr)[pr.materialId];
+    MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
     float3 n = normalize(pr.normal.xyz);
     float3 tint = pr.tint.rgb;
 

@@ -230,12 +230,12 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map materialHeaderType = materialProbeArray.type.elementType as Map
         int materialHeaderByteSize = materialProbeArray.type.uniformStride as int
 
-        def pushParameter = reflection.parameters.find { it.name == "pushAddrLayoutProbe" }
-        if (pushParameter?.type?.elementType?.name != "PushAddr") {
-            throw new GradleException("Slang reflection omitted pushAddrLayoutProbe")
+        def pushParameter = reflection.parameters.find { it.name == "pushConstantsLayoutProbe" }
+        if (pushParameter?.type?.elementType?.name != "WorldPushConstants") {
+            throw new GradleException("Slang reflection omitted pushConstantsLayoutProbe")
         }
-        Map pushAddrType = pushParameter.type.elementType as Map
-        int pushAddrByteSize = pushParameter.type.elementVarLayout.binding.size as int
+        Map pushConstantsType = pushParameter.type.elementType as Map
+        int pushConstantsByteSize = pushParameter.type.elementVarLayout.binding.size as int
 
         def generatedRoot = outDir.get().asFile
         if (generatedRoot.exists() && !generatedRoot.deleteDir()) {
@@ -245,8 +245,8 @@ abstract class GenerateShaderRecords extends DefaultTask {
         packageDir.mkdirs()
         new File(packageDir, "WorldPushData.java").setText(
                 generateJava(worldType, worldByteSize, "WorldPushData"), "UTF-8")
-        new File(packageDir, "PushAddrData.java").setText(
-                generateJava(pushAddrType, pushAddrByteSize, "PushAddrData"), "UTF-8")
+        new File(packageDir, "WorldPushConstantsData.java").setText(
+                generateJava(pushConstantsType, pushConstantsByteSize, "WorldPushConstantsData"), "UTF-8")
         new File(packageDir, "MaterialHeaderData.java").setText(
                 generateJava(materialHeaderType, materialHeaderByteSize, "MaterialHeaderData"), "UTF-8")
     }

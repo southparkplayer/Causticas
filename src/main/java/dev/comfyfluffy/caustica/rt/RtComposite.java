@@ -11,7 +11,7 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.client.CausticaJitter;
 import dev.comfyfluffy.caustica.mixin.CommandEncoderAccessor;
-import dev.comfyfluffy.caustica.rt.gen.PushAddrData;
+import dev.comfyfluffy.caustica.rt.gen.WorldPushConstantsData;
 import dev.comfyfluffy.caustica.rt.gen.WorldPushData;
 import dev.comfyfluffy.caustica.rt.gen.WorldPushData.BreakEntry;
 import dev.comfyfluffy.caustica.rt.gen.WorldPushData.Float2;
@@ -92,8 +92,8 @@ public final class RtComposite {
     // owns or calculates a shader byte offset, struct size, array stride, or fixed-array capacity.
     private static final int WORLD_PUSH_SIZE = WorldPushData.BYTE_SIZE;
     // Real inline push constants (fast constant-bank reads), separate from the WorldPush BDA ring above.
-    // tableAddr/entityTableAddr/frameIndex are duplicated so hit shaders skip a global-memory dereference;
-    // PushAddrData is generated from the same Slang module and owns this second ABI as well.
+    // Hot addresses/frameIndex and raygen's debugView avoid unnecessary global-memory dereferences;
+    // WorldPushConstantsData is generated from the same Slang module and owns this second ABI as well.
     private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
     // Frames a retired per-frame TLAS must outlive before it's freed (> frames-in-flight); matches
     // RtTerrain's deferred-free horizon. The frame TLAS is built + traced this frame, then freed once
@@ -510,8 +510,8 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, RtDeviceBringup.worldRaygenShader(),
                     new String[]{"world.rmiss.spv"}, "world.rchit.spv", "world.rahit.spv",
-                    PushAddrData.BYTE_SIZE, true, GUIDE_COUNT, bindlessTextureCapacity, true);
-            // Per-frame push data lives in this BDA ring; the pipeline only pushes its address.
+                    WorldPushConstantsData.BYTE_SIZE, true, GUIDE_COUNT, bindlessTextureCapacity, true);
+            // Per-frame world data lives in this BDA ring; the pipeline pushes its address and hot fields.
             if (pushRing == null) {
                 pushRing = new RtBuffer[PUSH_RING];
                 for (int i = 0; i < PUSH_RING; i++) {
@@ -839,7 +839,6 @@ public final class RtComposite {
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
                             (float) (camZ - terrain.blockZ)),
                     terrain.tableAddress(),
-                    debugView,
                     (int) frameCounter,
                     mvPushMatrix,
                     new Float3(mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ),
@@ -883,16 +882,14 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
 
-            // Push the BDA ring slot's address plus the small hot subset that rchit/rahit read on every
-            // hit (tableAddr/entityTableAddr/frameIndex) as real inline push constants, so those lookups
-            // don't pay for a second global-memory dereference through pcAddr.worldPushAddr first.
-            ByteBuffer pushAddr = stack.malloc(PushAddrData.BYTE_SIZE);
-            new PushAddrData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
+            // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
+            ByteBuffer pushConstants = stack.malloc(WorldPushConstantsData.BYTE_SIZE);
+            new WorldPushConstantsData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                     RtMaterialRegistry.INSTANCE.tableAddress(),
-                    (int) frameCounter).write(pushAddr);
+                    (int) frameCounter, debugView).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.trace")) {
-                active.trace(cmd, renderW, renderH, pushAddr);
+                active.trace(cmd, renderW, renderH, pushConstants);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;

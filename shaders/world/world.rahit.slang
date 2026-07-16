@@ -12,7 +12,7 @@
 // water/translucent branches that write shadowVis run only from shadow SBT records.
 import world_common;
 
-[[vk::push_constant]] PushAddr pcAddr;
+[[vk::push_constant]] WorldPushConstants pc;
 
 [[vk::binding(2, 0)]] Sampler2D blockAlbedoAtlas;
 [[vk::binding(0, 1)]] Sampler2D entityAlbedoTex[];
@@ -43,7 +43,7 @@ static const float ALPHA_DITHER_8X8[64] = {
 float alphaDitherThreshold(uint salt) {
     uint2 p = (DispatchRaysIndex().xy + uint2(salt * 3u, salt * 5u)) & uint2(7u, 7u);
     float base = ALPHA_DITHER_8X8[int(p.y * 8u + p.x)];
-    return frac(base + float((pcAddr.frameIndex + salt) & 255u) * 0.61803398875);
+    return frac(base + float((pc.frameIndex + salt) & 255u) * 0.61803398875);
 }
 
 [shader("anyhit")]
@@ -54,7 +54,7 @@ void main(inout float4 shadowVis, in BuiltInTriangleIntersectionAttributes attr)
 
     uint instanceKind = InstanceID() & (ENTITY_BIT | PARTICLE_BIT);
     if (instanceKind != 0u) {
-        EntityGeom g = ConstPtr<EntityGeom>(pcAddr.entityTableAddr)[InstanceID() & IDX_MASK];
+        EntityGeom g = ConstPtr<EntityGeom>(pc.entityTableAddr)[InstanceID() & IDX_MASK];
         ConstPtr<uint> indices = ConstPtr<uint>(g.idxAddr);
         ConstPtr<float2> uvs = ConstPtr<float2>(g.uvAddr);
         uint i0 = indices[3u * pid + 0u];
@@ -67,7 +67,7 @@ void main(inout float4 shadowVis, in BuiltInTriangleIntersectionAttributes attr)
         bool stochasticAlpha = false;
         MaterialHeader materialHeader;
         if (instanceKind == ENTITY_BIT) {
-            materialHeader = ConstPtr<MaterialHeader>(pcAddr.materialTableAddr)[epr.materialId];
+            materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
             stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;
         }
         if (stochasticAlpha) {
@@ -100,7 +100,7 @@ void main(inout float4 shadowVis, in BuiltInTriangleIntersectionAttributes attr)
         return;
     }
 
-    Section sec = ConstPtr<Section>(pcAddr.tableAddr)[InstanceID()];
+    Section sec = ConstPtr<Section>(pc.tableAddr)[InstanceID()];
     uint bucket = GeometryIndex();
     uint tri = pid + sec.triBase[bucket];
 
@@ -127,7 +127,7 @@ void main(inout float4 shadowVis, in BuiltInTriangleIntersectionAttributes attr)
     // non-linearly. Multiplying into shadowVis.rgb compounds correctly across stacked panes.
     if (bucket == BUCKET_TRANSLUCENT) {
         TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
-        MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pcAddr.materialTableAddr)[pr.materialId];
+        MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
         float3 avgColor = max(materialHeader.average.rgb * pr.tint.rgb,
                 float3(1.0e-3, 1.0e-3, 1.0e-3));
         float3 colorExtinction = max(-log(avgColor), float3(0.0, 0.0, 0.0));
