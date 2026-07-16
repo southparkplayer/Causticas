@@ -33,6 +33,10 @@ import world_common;
 [[vk::binding(6, 0)]] [format("rg16f")]   RWTexture2D<float2> gMotion;     // screen-space motion (render px)
 [[vk::binding(7, 0)]] [format("rgba16f")] RWTexture2D<float4> gSpecAlbedo; // specular albedo (0 — diffuse-only)
 [[vk::binding(8, 0)]] [format("rg16f")]   RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
+[[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean + sample count
+[[vk::binding(10, 0)]] [format("r16f")] RWTexture2D<float> gAnimatedGuide; // temporal responsivity source
+[[vk::binding(11, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthVariance; // RGB Welford M2
+[[vk::binding(12, 0)]] [format("r32ui")] RWTexture2D<uint> groundTruthConverged; // pixels complete this dispatch
 
 // Per-frame push data loaded once from the BDA buffer at the top of main() (same pattern as the GLSL
 // `pc` global). Layout constants generated from this module's SPIR-V — see world_common.WorldPush.
@@ -60,6 +64,7 @@ static float3 gv_motionObjDisp;
 static float3 gv_opticalGuideDir;
 static uint gv_opticalGuideMode; // 0 none, 1 water, 2 glass exit, 3 glass entry (trace exact exit)
 static float gv_opticalExitEta;
+static float gv_animatedGuide;
 // Previous animated-reflector normal; zero selects the current normal for static surfaces.
 static float3 gv_specPreviousNormal;
 // Primary Surface Replacement (PSR) is reserved for exact, static metallic mirrors. The radiance path
@@ -80,6 +85,7 @@ static const uint OPTICAL_SOLID_ICE = 4u;
 static const uint OPTICAL_TRANSLUCENT_SURFACE = 5u;
 static const uint FRAME_FLAG_RR_GUIDES = 1u << 5u;
 static const uint FRAME_FLAG_FG_GUIDES = 1u << 6u;
+static const uint FRAME_FLAG_OFFLINE_GROUND_TRUTH = 1u << 7u;
 
 uint payloadMaterial() { return payload.flags & PAYLOAD_MATERIAL_MASK; }
 uint payloadOpticalClass() {
@@ -104,7 +110,8 @@ static const float INV_PI = 0.31830988618;
 // The analytic sky (gradient + sun/moon discs + stars) is computed in world.rmiss. On a miss, raygen
 // reads payload.albedo and accumulates that sky radiance. The directional NEE light is pushed separately
 // as pc.lightDir / pc.lightRadiance / pc.sunDir.
-static const float EMISSIVE_STRENGTH = 3.0; // HDR radiance of a full (level-15) emitter, modulated by albedo
+static const float EMISSIVE_BASE_RADIANCE = 3.0; // legacy radiance of a full normalized emitter
+static const float EMISSIVE_MAX_MULTIPLIER = 50.0;
 static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
 
@@ -288,7 +295,7 @@ static const float MIN_ROUGH = 0.045;
 // LabPBR smoothness is 8-bit. Red=255 decodes to roughness 0; allow one half-code of tolerance for the
 // sampled UNORM conversion without turning merely glossy surfaces into delta mirrors.
 static const float PSR_MIRROR_ROUGHNESS_MAX = 0.5 / 255.0;
-static const uint PSR_MAX_MIRRORS = 3u;
+static const uint PSR_MAX_CONFIGURED_MIRRORS = 32u;
 
 float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
@@ -313,7 +320,15 @@ float3 fresnelSchlick(float cosT, float3 f0) {
     return f0 + (1.0 - f0) * (m2 * m2 * m);
 }
 
-float rndf(inout uint s);
+struct PathSampler {
+    uint pixelHash;
+    uint sampleIndex;
+    uint bounceHash;
+    uint dimension;
+    uint randomBits[8];
+};
+
+float rndf(inout PathSampler sampler);
 
 static const float EON_C1 = 0.5 - 2.0 / (3.0 * PI);
 static const float EON_C2 = 2.0 / 3.0 - 28.0 / (15.0 * PI);
@@ -387,13 +402,13 @@ float4 sampleEonCltc(float3 wo, float rough, float u1, float u2) {
     return float4(wi, pdf);
 }
 
-float3 sampleEon(float3 n, float3 woWorld, float rough, inout uint seed, out float pdf) {
+float3 sampleEon(float3 n, float3 woWorld, float rough, inout PathSampler sampler, out float pdf) {
     float3 t = normalize(abs(n.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
     float3 b = normalize(cross(n, t));
     t = cross(b, n);
     float3 wo = float3(dot(woWorld, t), dot(woWorld, b), max(dot(woWorld, n), 0.0));
-    float u1 = rndf(seed);
-    float u2 = rndf(seed);
+    float u1 = rndf(sampler);
+    float u2 = rndf(sampler);
     float pu = pow(clamp(rough, 0.0, 1.0), 0.1)
             * (0.162925 + (-0.372058 + (0.538233 - 0.290822 * wo.z) * wo.z) * wo.z);
     pu = clamp(pu, 0.0, 1.0);
@@ -529,13 +544,50 @@ float fresnelDielectric(float cosI, float etaI, float etaT) {
     return 0.5 * (rs * rs + rp * rp);
 }
 
-// PCG hash RNG.
-uint pcg(inout uint s) {
-    s = s * 747796405u + 2891336453u;
-    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-    return (w >> 22u) ^ w;
+// Driver-safe, bounce-scoped Owen-scrambled Sobol sampling. The multidimensional Sobol net is generated
+// once on the CPU and read through a BDA buffer, keeping the SER raygen free of the large direction-number
+// loops which previously produced unstable driver code. Nested uniform scrambling is a permutation, so
+// every pixel/path vertex is decorrelated without destroying the base sequence's temporal stratification.
+static const uint SAMPLE_SEQUENCE_DIMENSIONS = 8u;
+static const uint SAMPLE_SEQUENCE_MASK = 1048575u;
+
+inline uint sampleHash(uint x) {
+    x ^= x >> 16u;
+    x *= 0x21f0aaadu;
+    x ^= x >> 15u;
+    x *= 0xf35a2d97u;
+    x ^= x >> 15u;
+    return x;
 }
-float rndf(inout uint s) { return float(pcg(s)) * (1.0 / 4294967296.0); }
+
+inline uint owenScramble(uint x, uint seed) {
+    x = reversebits(x);
+    x ^= x * 0x3d20adeau;
+    x += seed;
+    x *= (seed >> 16u) | 1u;
+    x ^= x * 0x05526c56u;
+    x ^= x * 0x53a22864u;
+    return reversebits(x);
+}
+
+inline void beginBounce(inout PathSampler sampler, uint bounce) {
+    sampler.bounceHash = sampleHash(sampler.pixelHash ^ ((bounce + 1u) * 0x9e3779b9u));
+    sampler.dimension = 0u;
+    ConstPtr<uint> sequence = ConstPtr<uint>(pc.sampleSequenceAddr);
+    uint sequenceBase = (sampler.sampleIndex & SAMPLE_SEQUENCE_MASK) * SAMPLE_SEQUENCE_DIMENSIONS;
+    [loop]
+    for (uint dimension = 0u; dimension < SAMPLE_SEQUENCE_DIMENSIONS; dimension++) {
+        uint value = sequence[sequenceBase + dimension];
+        uint dimensionSeed = sampleHash(sampler.bounceHash
+                ^ ((dimension + 1u) * 0x02e5be93u));
+        sampler.randomBits[dimension] = owenScramble(value, dimensionSeed);
+    }
+}
+
+inline float rndf(inout PathSampler sampler) {
+    uint value = sampler.randomBits[sampler.dimension++ & (SAMPLE_SEQUENCE_DIMENSIONS - 1u)];
+    return float(value >> 8u) * (1.0 / 16777216.0);
+}
 
 float3 primaryRayDir(float2 ndc) {
     float4 nearH = mul(pc.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
@@ -555,9 +607,9 @@ float primaryRayConeSpread(float2 ndc, float2 size, float3 dir) {
 // Cosine-weighted hemisphere sample about n (Malley's method). For a Lambertian BRDF this is the
 // importance-sampling match: BRDF*cos/pdf = (albedo/PI)*cos / (cos/PI) = albedo, so the continuation
 // throughput is just *= albedo with no PI/cos bookkeeping left over.
-float3 cosineDir(float3 n, inout uint s) {
-    float u1 = rndf(s);
-    float u2 = rndf(s);
+float3 cosineDir(float3 n, inout PathSampler sampler) {
+    float u1 = rndf(sampler);
+    float u2 = rndf(sampler);
     float r = sqrt(u1);
     float phi = 6.2831853 * u2;
     float3 t = normalize(abs(n.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
@@ -572,19 +624,19 @@ float3 cosineDir(float3 n, inout uint s) {
 // visible disc in world.rmiss uses, built from the same celestial tangent frame (right = arc-travel
 // direction, from pc.celestial.xyz). Averaged over frames by DLSS-RR this yields soft penumbrae that
 // widen with occluder distance (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
-float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
+float3 sampleSquare(float3 axis, float halfAngle, inout PathSampler sampler) {
     float3 right = normalize(cross(axis, pc.celestial.xyz));
     float3 up = cross(right, axis);
     float t = tan(halfAngle);
-    float u = (rndf(s) * 2.0 - 1.0) * t;
-    float v = (rndf(s) * 2.0 - 1.0) * t;
+    float u = (rndf(sampler) * 2.0 - 1.0) * t;
+    float v = (rndf(sampler) * 2.0 - 1.0) * t;
     return normalize(axis + u * right + v * up);
 }
 
 // Sample a GGX visible-normal (VNDF, Heitz 2018) about geometric normal n for view ve, returning the
 // sampled microfacet normal (half-vector) in world space. alpha = rough^2. Paired with the separable
 // Smith term, the importance-sampling weight reduces to F * G1(NdotL) (applied by the caller).
-float3 sampleGGXVNDF(float3 n, float3 ve, float rough, inout uint s) {
+float3 sampleGGXVNDF(float3 n, float3 ve, float rough, inout PathSampler sampler) {
     float3 t = normalize(abs(n.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
     float3 b = normalize(cross(n, t));
     t = cross(b, n);
@@ -594,8 +646,8 @@ float3 sampleGGXVNDF(float3 n, float3 ve, float rough, inout uint s) {
     float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
     float3 T1 = lensq > 0.0 ? float3(-Vh.y, Vh.x, 0.0) * rsqrt(lensq) : float3(1.0, 0.0, 0.0);
     float3 T2 = cross(Vh, T1);
-    float u1 = rndf(s);
-    float u2 = rndf(s);
+    float u1 = rndf(sampler);
+    float u2 = rndf(sampler);
     float r = sqrt(u1);
     float phi = 6.2831853 * u2;
     float p1 = r * cos(phi);
@@ -685,14 +737,23 @@ float2 previousReflectionNdc(float3 surfacePos, float3 previousSurfaceNormal,
 // in reverse order. T1(T2(...Tn(P))) is the virtual primary surface seen through n reflections.
 float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNormal,
         float3 primaryDir, float primaryConeSpread) {
-    float3 mirrorPos[PSR_MAX_MIRRORS];
-    float3 mirrorNormal[PSR_MAX_MIRRORS];
-    mirrorPos[0] = surfacePos;
-    mirrorNormal[0] = normalize(surfaceNormal);
+    // Affine transform C(P)=A*P+b. Adding mirror T composes C'=C(T(P)); storing A as columns avoids
+    // retaining every plane, so a live depth of 32 has constant per-ray state.
+    float3 basisX = float3(1.0, 0.0, 0.0);
+    float3 basisY = float3(0.0, 1.0, 0.0);
+    float3 basisZ = float3(0.0, 0.0, 1.0);
+    float3 translation = float3(0.0, 0.0, 0.0);
+    float3 firstNormal = normalize(surfaceNormal);
+    float3 mappedNormal = firstNormal;
+    translation += mappedNormal * (2.0 * dot(firstNormal, surfacePos));
+    basisX -= 2.0 * mappedNormal * firstNormal.x;
+    basisY -= 2.0 * mappedNormal * firstNormal.y;
+    basisZ -= 2.0 * mappedNormal * firstNormal.z;
     uint mirrorCount = 1u;
+    uint maxMirrors = clamp(pc.psrMaxMirrors, 1u, PSR_MAX_CONFIGURED_MIRRORS);
 
     float3 rayOrigin = surfacePos;
-    float3 rayNormal = mirrorNormal[0];
+    float3 rayNormal = firstNormal;
     float3 rayDir = reflect(primaryDir, rayNormal);
     float3 finalHit = surfacePos;
     float3 finalNormal = float3(0.0, 0.0, 0.0);
@@ -701,7 +762,7 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     float3 finalDiffuse = SKY_DIFF_ALBEDO;
     float travelled = length(surfacePos - pc.camOffset);
 
-    for (uint segment = 0u; segment < PSR_MAX_MIRRORS; ++segment) {
+    for (uint segment = 0u; segment < PSR_MAX_CONFIGURED_MIRRORS; ++segment) {
         payload.hitT = -1.0;
         payloadSetTraceState(false,
                 max(travelled * primaryConeSpread, RAY_CONE_MIN_WIDTH),
@@ -724,12 +785,15 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
                 && destinationRoughness <= PSR_MIRROR_ROUGHNESS_MAX
                 && destinationMetal >= 0.999
                 && dot(payload.motionPrev, payload.motionPrev) <= 1.0e-12
-                && mirrorCount < PSR_MAX_MIRRORS;
+                && mirrorCount < maxMirrors;
         if (nestedMirror) {
             rayOrigin = finalHit;
             rayNormal = normalize(payload.normal);
-            mirrorPos[mirrorCount] = rayOrigin;
-            mirrorNormal[mirrorCount] = rayNormal;
+            mappedNormal = basisX * rayNormal.x + basisY * rayNormal.y + basisZ * rayNormal.z;
+            translation += mappedNormal * (2.0 * dot(rayNormal, rayOrigin));
+            basisX -= 2.0 * mappedNormal * rayNormal.x;
+            basisY -= 2.0 * mappedNormal * rayNormal.y;
+            basisZ -= 2.0 * mappedNormal * rayNormal.z;
             ++mirrorCount;
             rayDir = reflect(rayDir, rayNormal);
             continue;
@@ -746,12 +810,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
         break;
     }
 
-    for (int i = int(mirrorCount) - 1; i >= 0; --i) {
-        float3 n = mirrorNormal[i];
-        finalHit -= 2.0 * n * dot(finalHit - mirrorPos[i], n);
-        finalNormal -= 2.0 * n * dot(finalNormal, n);
-        finalMotion -= 2.0 * n * dot(finalMotion, n);
-    }
+    finalHit = basisX * finalHit.x + basisY * finalHit.y + basisZ * finalHit.z + translation;
+    finalNormal = basisX * finalNormal.x + basisY * finalNormal.y + basisZ * finalNormal.z;
+    finalMotion = basisX * finalMotion.x + basisY * finalMotion.y + basisZ * finalMotion.z;
     gv_hitCamRel = finalHit - pc.camOffset;
     gv_motionHitCamRel = gv_hitCamRel;
     gv_motionObjDisp = finalMotion;
@@ -818,67 +879,86 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
 // trace to find its real exit, refracts there, then uses one trace for the visible destination. Thin panes
 // cross their collapsed exit without bending. Ordinary pixels pay no additional work.
 void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNormal,
-                     bool continueThroughExit, float exitEta,
+                     bool continueThroughExit, bool continueThroughWater, float exitEta,
                      float rayBias, float rayConeWidth, float rayConeSpread,
                      out float3 hitCamRel, out float3 motionPrev, out bool transmitted,
                      out float3 normal, out float roughness,
                      out float3 diffuseAlbedo) {
     hitCamRel = surfacePos - pc.camOffset;
     motionPrev = float3(0.0, 0.0, 0.0);
-    transmitted = dot(transmittedDir, transmittedDir) > 0.0;
+    transmitted = false;
     normal = surfaceNormal;
     roughness = 1.0;
     diffuseAlbedo = float3(0.0, 0.0, 0.0);
-    if (!transmitted) return;
+    if (dot(transmittedDir, transmittedDir) <= 0.0) return;
 
     float3 direction = normalize(transmittedDir);
     float3 ro = surfacePos - surfaceNormal * rayBias;
-    for (uint crossing = 0u; crossing < 2u; crossing++) {
+    // Water can cross several adjacent cells before reaching the visible opaque destination. A two-hit walk
+    // incorrectly accepted the next water face as the destination and exported a neutral white silhouette.
+    // Keep glass at its existing one-exit contract, but walk a bounded chain of water interfaces.
+    for (uint crossing = 0u; crossing < 8u; crossing++) {
         payload.hitT = -1.0;
         payloadSetTraceState(false, rayConeWidth, rayConeSpread);
         traceGuideReordered(RAY_FLAG_NONE, ro, RAY_TMIN, direction, 10000.0);
-        if (payload.hitT <= 0.0 || !continueThroughExit || crossing != 0u) break;
+        if (payload.hitT <= 0.0) {
+            hitCamRel = (ro + direction * 1.0e6) - pc.camOffset;
+            motionPrev = float3(0.0, 0.0, 0.0);
+            normal = float3(0.0, 0.0, 0.0);
+            roughness = 1.0;
+            diffuseAlbedo = SKY_DIFF_ALBEDO;
+            transmitted = true;
+            return;
+        }
 
-        if (payloadMaterial() != MATERIAL_GLASS) break;
+        uint interfaceMaterial = payloadMaterial();
+        bool crossWater = continueThroughWater && interfaceMaterial == MATERIAL_WATER;
+        bool crossGlassExit = !continueThroughWater && continueThroughExit
+                && crossing == 0u && interfaceMaterial == MATERIAL_GLASS;
+        if (!crossWater && !crossGlassExit) {
+            if (interfaceMaterial == MATERIAL_OPAQUE) {
+                float3 hitPos = ro + direction * payload.hitT;
+                hitCamRel = hitPos - pc.camOffset;
+                motionPrev = payload.motionPrev;
+                normal = payload.normal;
+                roughness = clamp(payloadRoughness(), 0.0, 1.0);
+                bool pbr = (pc.flags & 2u) != 0u;
+                diffuseAlbedo = pbr
+                        ? payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0))
+                        : payload.albedo;
+                transmitted = true;
+            }
+            return;
+        }
 
         float3 interfacePos = ro + direction * payload.hitT;
         float3 interfaceNormal = payload.normal;
-        // Thin panes provide exitEta=1; solid glass/ice provides its exact medium-to-outside ratio.
-        // A primary ray entering a closed Minecraft cell exits its opposite face, so this bounded path
-        // cannot reach the total-internal-reflection case.
-        direction = refract(direction, interfaceNormal, exitEta);
+        float eta = exitEta;
+        if (crossWater) {
+            bool entering = payloadWaterEntering();
+            eta = entering ? (1.0 / WATER_IOR) : WATER_IOR;
+        }
+        float3 nextDirection = refract(direction, interfaceNormal, eta);
+        // Total internal reflection has no transmitted diffuse destination. Keep the primary water
+        // interface's zero diffuse guide and its reflection-owned specular data.
+        if (dot(nextDirection, nextDirection) <= 0.0) return;
+        direction = normalize(nextDirection);
         ro = interfacePos - interfaceNormal * rayBias;
     }
-
-    if (payload.hitT < 0.0) {
-        hitCamRel = (ro + direction * 1.0e6) - pc.camOffset;
-        motionPrev = float3(0.0, 0.0, 0.0);
-        normal = float3(0.0, 0.0, 0.0);
-        roughness = 1.0;
-        diffuseAlbedo = SKY_DIFF_ALBEDO;
-        return;
-    }
-
-    float3 hitPos = ro + direction * payload.hitT;
-    hitCamRel = hitPos - pc.camOffset;
-    uint material = payloadMaterial();
-    motionPrev = material != MATERIAL_WATER ? payload.motionPrev : float3(0.0, 0.0, 0.0);
-    normal = payload.normal;
-    roughness = material == MATERIAL_WATER ? WATER_GUIDE_ROUGH : clamp(payloadRoughness(), 0.0, 1.0);
-    if (material == MATERIAL_OPAQUE) {
-        bool pbr = (pc.flags & 2u) != 0u;
-        diffuseAlbedo = pbr ? payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0)) : payload.albedo;
-    }
+    // Crossing-budget exhaustion means no trustworthy diffuse destination was found.
 }
 
 // One Monte Carlo path from (ro, rd). Returns accumulated radiance along the path.
 float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
-                 bool captureGuides, bool captureRefractedGuides, bool primaryOnly, inout uint seed) {
+                 bool captureGuides, bool captureRefractedGuides, bool primaryOnly,
+                 inout PathSampler sampler) {
     float3 L = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
     float rayConeWidth = 0.0;
     float rayConeSpread = max(primaryConeSpread, RAY_CONE_MIN_SPREAD);
     int maxBounces = int(pc.maxBounces);
+    int maxMirrorDepth = int(clamp(pc.psrMaxMirrors, 1u, PSR_MAX_CONFIGURED_MIRRORS));
+    int exactMirrorDepth = 0;
     int rrStart = maxBounces <= 3 ? 1 : 2;
     bool pbr = (pc.flags & 2u) != 0u; // GGX BRDF + material guides, else Lambertian fallback
     // Start submerged if the camera is in water so the first segment gets the right medium orientation
@@ -893,7 +973,8 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // diffuse-sampled continuation rays — those are already covered by the sun NEE, so the tiny disc
     // would be a double-counted firefly. Reset true on every specular/water bounce, false on a diffuse one.
     bool showCelestial = true;
-    for (int bounce = 0; bounce <= maxBounces; bounce++) {
+    for (int bounce = 0; bounce <= max(maxBounces, maxMirrorDepth); bounce++) {
+        beginBounce(sampler, uint(bounce));
         payload.hitT = -1.0;
         payloadSetTraceState(showCelestial, rayConeWidth, rayConeSpread);
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
@@ -957,7 +1038,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             if (primaryOnly) {
                 break;
             }
-            if (opacity < 1.0 && rndf(seed) >= opacity) {
+            if (opacity < 1.0 && rndf(sampler) >= opacity) {
                 ro = hitPos - n * GLASS_TRANSMIT_BIAS;
                 continue;
             }
@@ -1024,7 +1105,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             if (primaryOnly || bounce >= maxBounces) {
                 break;
             }
-            if (rndf(seed) < F) {
+            if (rndf(sampler) < F) {
                 rd = reflect(rd, n);
                 ro = hitPos + n * SURF_BIAS;       // reflected ray stays on the incidence side
             } else {
@@ -1037,7 +1118,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             showCelestial = true;                  // specular interface: the continuation ray may see the disc
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
-                if (rndf(seed) > q) {
+                if (rndf(sampler) > q) {
                     break;
                 }
                 throughput /= q;
@@ -1067,7 +1148,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             float3 lightDir = pc.lightDir.xyz;
             float lightHalfAngle = pc.lightDir.w;
             if (lightHalfAngle > 0.0) {
-                lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+                lightDir = sampleSquare(lightDir, lightHalfAngle, sampler);
             }
             // Billboards are effectively two-sided receivers. Bias from the side facing the light; shadow
             // rays exclude particles anyway, but this keeps the origin sane when the light is behind the
@@ -1087,7 +1168,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             }
             throughput *= albedo;
             ro = hitPos + n * SURF_BIAS;
-            rd = cosineDir(n, seed);
+            rd = cosineDir(n, sampler);
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false; // diffuse receiver: direct sun/moon was handled by NEE above
             continue;
@@ -1132,7 +1213,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             if (captureGuides && bounce == 0) { // primary water hit: feed RR a smooth dielectric specular surface
                 gv_normal = n;
                 gv_rough = WATER_GUIDE_ROUGH;
-                gv_albedo = float3(0.0, 0.0, 0.0); // pure specular fallback for TIR
+                gv_albedo = float3(0.0, 0.0, 0.0);
                 gv_specAlb = float3(F, F, F);
                 gv_hitCamRel = hitPos - pc.camOffset; // depth + reflection start at the water surface
                 gv_motionHitCamRel = gv_hitCamRel;
@@ -1142,13 +1223,15 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 if (captureRefractedGuides && dot(transmittedDir, transmittedDir) > 0.0) {
                     gv_opticalGuideDir = transmittedDir;
                     gv_opticalGuideMode = 1u;
+                    gv_opticalExitEta = surfaceWaterEntering ? WATER_IOR : (1.0 / WATER_IOR);
                 }
+                if (waterWaves) gv_animatedGuide = 1.0;
             }
             if (primaryOnly || bounce >= maxBounces) {
                 break;
             }
             waterExt = waterExtinction(surfaceWaterTint);
-            if (rndf(seed) < F) {
+            if (rndf(sampler) < F) {
                 rd = reflect(rd, n);
                 ro = hitPos + n * SURF_BIAS; // reflected ray stays on the incidence side
             } else {
@@ -1163,7 +1246,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             showCelestial = true;
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
-                if (rndf(seed) > q) {
+                if (rndf(sampler) > q) {
                     break;
                 }
                 throughput /= q;
@@ -1207,25 +1290,28 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         // roughness floor and stochastic 90/10 specular/diffuse branch only for authored roughness zero.
         // The reflected sun/moon arrives through the continuation miss, so delta mirrors skip NEE.
         if (exactMirror) {
+            if (exactMirrorDepth >= maxMirrorDepth) break;
             throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0);
             ro = p;
             rd = reflect(rd, n);
+            ++exactMirrorDepth;
             showCelestial = true;
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
-                if (rndf(seed) > q) break;
+                if (rndf(sampler) > q) break;
                 throughput /= q;
             }
             continue;
         }
 
-        // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
-        // Block lights have no NEE, so emission is gathered by hitting emitters during the walk (counted
-        // at every vertex, no double counting). Small emitters are noisy, but temporal accumulation
-        // converges static views.
+        // Emissive material radiance. Closest-hit supplies only the normalized authored/fallback mask;
+        // intensity belongs here, where emitted radiance enters every camera path exactly once. This
+        // covers terrain and entity/held-item materials without a light list, extra ray, or analytic light.
         float emission = payloadEmission();
         if (emission > 0.0) {
-            L += throughput * albedo * emission * EMISSIVE_STRENGTH;
+            float emissiveRadiance = EMISSIVE_BASE_RADIANCE * EMISSIVE_MAX_MULTIPLIER
+                    * clamp(pc.emissiveIntensity, 0.0, 1.0);
+            L += throughput * albedo * emission * emissiveRadiance;
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
@@ -1236,7 +1322,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         float3 lightDir = pc.lightDir.xyz;
         float lightHalfAngle = pc.lightDir.w;
         if (lightHalfAngle > 0.0) {
-            lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+            lightDir = sampleSquare(lightDir, lightHalfAngle, sampler);
         }
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
@@ -1290,8 +1376,8 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         // relative reflectance. With PBR off, use the cosine-weighted Lambertian fallback.
         if (pbr) {
             float ps = clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
-            if (rndf(seed) < ps) {
-                float3 h = sampleGGXVNDF(n, v, rough, seed);
+            if (rndf(sampler) < ps) {
+                float3 h = sampleGGXVNDF(n, v, rough, sampler);
                 float3 l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
                 float ndl2 = dot(n, l);
                 if (ndl2 <= 0.0) {
@@ -1306,7 +1392,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
             } else {
                 float diffusePdf;
-                float3 l = sampleEon(n, v, perceptualRough, seed, diffusePdf);
+                float3 l = sampleEon(n, v, perceptualRough, sampler, diffusePdf);
                 float3 diffuse = evaluateEonDiffuse(l, v, n, perceptualRough, diffAlb)
                         * ggxDiffuseTransmission(n, v, l, rough, F0);
                 diffuse += evaluateGgxMultiscatter(n, v, l, rough, F0);
@@ -1321,14 +1407,14 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             throughput *= albedo; // Lambertian fallback (PI and cos cancel)
             showCelestial = false; // diffuse bounce: hide the disc (covered by NEE)
             ro = p;
-            rd = cosineDir(n, seed);
+            rd = cosineDir(n, sampler);
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
         }
 
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
         if (bounce >= rrStart) {
             float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
-            if (rndf(seed) > q) {
+            if (rndf(sampler) > q) {
                 break;
             }
             throughput /= q;
@@ -1343,24 +1429,18 @@ void main() {
     int2 pix = int2(DispatchRaysIndex().xy);
     float2 size = float2(DispatchRaysDimensions().xy);
     float2 uv = (float2(pix) + 0.5) / size;
-    float2 ndc = uv * 2.0 - 1.0; // unjittered pixel centre — the motion vector reprojects this
-
-    // Offset the primary ray within the pixel by the sub-pixel jitter reported to DLSS-RR, so
-    // successive frames sample different positions and RR can resolve detail above render resolution.
-    // The guide buffers below come from this jittered first hit (they must match the jittered colour);
-    // only the motion vector stays on the unjittered centre, which DLSS expects.
-    float2 jndc = (uv + pc.jitter / size) * 2.0 - 1.0;
-
-    float4 nearH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
-    float4 farH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-
-    float3 origin = nearP + pc.camOffset;
-    float3 dir = normalize(farP - nearP);
-    float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
-
-    uint seed = (uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u) ^ (pc.frameIndex * 2654435761u);
+    float2 ndc = uv * 2.0 - 1.0;
+    bool offlineGroundTruth = (pc.flags & FRAME_FLAG_OFFLINE_GROUND_TRUTH) != 0u;
+    float4 offlineState = offlineGroundTruth ? groundTruthAccum[pix] : float4(0.0);
+    float4 varianceState = offlineGroundTruth ? groundTruthVariance[pix] : float4(0.0);
+    float3 runningM2 = varianceState.rgb;
+    uint completedSamples = offlineGroundTruth ? uint(max(offlineState.a, 0.0) + 0.5) : 0u;
+    if (offlineGroundTruth && varianceState.a > 0.5) {
+        uint ignored;
+        InterlockedAdd(groundTruthConverged[int2(0, 0)], 1u, ignored);
+        outImage[pix] = float4(offlineState.rgb, 1.0);
+        return;
+    }
 
     uint spp = max(pc.spp, 1u);
     bool primaryOnly = pc.debugView != 0u;
@@ -1369,20 +1449,55 @@ void main() {
     bool captureGuides = writeMotionGuides || primaryOnly;
     bool captureRefractedGuides = writeMotionGuides
             || pc.debugView == 2u || pc.debugView == 5u || pc.debugView == 6u || pc.debugView == 7u;
-    uint pathCount = primaryOnly ? 1u : spp;
+    uint remainingSamples = offlineGroundTruth
+            ? max(pc.offlineMaxSamples, 1u) - completedSamples : spp;
+    uint pathCount = primaryOnly ? 1u : min(spp, remainingSamples);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
+    float3 runningMean = offlineState.rgb;
+    uint runningCount = completedSamples;
+    float2 jndc = ndc;
+    float3 dir = float3(0.0, 0.0, 1.0);
+    float rayConeSpread = RAY_CONE_MIN_SPREAD;
     gv_opticalGuideMode = 0u;
     gv_opticalExitEta = 1.0;
+    gv_animatedGuide = 0.0;
     gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
     gv_psrMirror = false;
     for (uint s = 0u; s < pathCount; s++) {
-        seed = pcg(seed); // decorrelate per-sample paths (shared camera ray, no AA jitter yet)
-        // The primary ray is shared by all SPP samples. Preserve guides from sample zero; the radiance path
-        // keeps its own saved water-interface state when the guide probe reuses the payload.
-        frameRadiance += tracePath(origin, dir, rayConeSpread,
-                captureGuides && s == 0u, captureRefractedGuides && s == 0u, primaryOnly, seed);
+        PathSampler sampler;
+        sampler.pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
+        sampler.sampleIndex = offlineGroundTruth ? completedSamples + s : pc.frameIndex * spp + s;
+        sampler.bounceHash = 0u;
+        sampler.dimension = 0u;
+
+        float2 pixelJitter = pc.jitter;
+        if (offlineGroundTruth) {
+            beginBounce(sampler, 0xfffffffeu);
+            pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5);
+        }
+        jndc = (uv + pixelJitter / size) * 2.0 - 1.0;
+        float4 nearH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
+        float4 farH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
+        float3 nearP = nearH.xyz / nearH.w;
+        float3 farP = farH.xyz / farH.w;
+        float3 origin = nearP + pc.camOffset;
+        dir = normalize(farP - nearP);
+        rayConeSpread = primaryRayConeSpread(jndc, size, dir);
+
+        float3 sampleRadiance = tracePath(origin, dir, rayConeSpread,
+                captureGuides && s == 0u, captureRefractedGuides && s == 0u, primaryOnly, sampler);
+        if (offlineGroundTruth) {
+            float3 previousMean = runningMean;
+            runningCount++;
+            runningMean += (sampleRadiance - runningMean) / float(runningCount);
+            runningM2 += (sampleRadiance - previousMean) * (sampleRadiance - runningMean);
+        } else {
+            frameRadiance += sampleRadiance;
+        }
     }
-    frameRadiance /= float(pathCount);
+    if (!offlineGroundTruth) {
+        frameRadiance /= float(pathCount);
+    }
 
     // Optical transmission changes the visible layer, but reflection motion still belongs to the primary
     // glass/water interface. Preserve that interface before replacing ordinary guides with the destination.
@@ -1404,7 +1519,7 @@ void main() {
         float guideBias = glassGuide ? GLASS_TRANSMIT_BIAS : SURF_BIAS;
         float guideConeWidth = max(length(gv_hitCamRel) * rayConeSpread, RAY_CONE_MIN_WIDTH);
         opticalGuideHit(gv_hitCamRel + pc.camOffset, gv_opticalGuideDir, gv_normal,
-                gv_opticalGuideMode == 3u, gv_opticalExitEta,
+                gv_opticalGuideMode == 3u || !glassGuide, !glassGuide, gv_opticalExitEta,
                 guideBias, guideConeWidth, rayConeSpread,
                 destinationHitCamRel, destinationMotionPrev, destinationValid,
                 destinationNormal, destinationRoughness,
@@ -1465,6 +1580,7 @@ void main() {
         gMotion[pix] = motion;
         gSpecAlbedo[pix] = float4(gv_specAlb, 1.0);
         gSpecMotion[pix] = specMotion;
+        gAnimatedGuide[pix] = gv_animatedGuide;
     } else if (writeMotionGuides) {
         gDepth[pix] = gv_depth;
         gMotion[pix] = motion;
@@ -1492,6 +1608,28 @@ void main() {
         return;
     }
 
-    // Single noisy estimate; the denoiser (DLSS-RR) handles temporal convergence.
-    outImage[pix] = float4(frameRadiance, 1.0);
+    if (offlineGroundTruth) {
+        // Welford accumulation avoids the precision loss of an ever-growing FP32 radiance sum. Alpha is
+        // the exact per-pixel sample count; the separate RGBA32F image stores RGB M2 for error estimates.
+        groundTruthAccum[pix] = float4(runningMean, float(runningCount));
+        bool reachedMaximum = runningCount >= max(pc.offlineMaxSamples, 1u);
+        bool statisticallyConverged = false;
+        if (pc.offlineAdaptive != 0u && runningCount >= max(pc.offlineMinSamples, 2u)) {
+            float3 variance = max(runningM2 / float(runningCount - 1u), float3(0.0));
+            float3 standardError = sqrt(variance / float(runningCount));
+            float3 threshold = max(float3(pc.offlineAbsoluteError),
+                    pc.offlineRelativeError * abs(runningMean));
+            statisticallyConverged = all(standardError <= threshold);
+        }
+        if (reachedMaximum || statisticallyConverged) {
+            uint ignored;
+            InterlockedAdd(groundTruthConverged[int2(0, 0)], 1u, ignored);
+        }
+        groundTruthVariance[pix] = float4(runningM2,
+                (reachedMaximum || statisticallyConverged) ? 1.0 : 0.0);
+        outImage[pix] = float4(runningMean, 1.0);
+    } else {
+        // Single noisy estimate; the denoiser (DLSS-RR) handles temporal convergence.
+        outImage[pix] = float4(frameRadiance, 1.0);
+    }
 }

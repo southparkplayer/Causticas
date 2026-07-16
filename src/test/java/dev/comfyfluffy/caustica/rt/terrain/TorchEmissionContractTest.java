@@ -1,9 +1,5 @@
 package dev.comfyfluffy.caustica.rt.terrain;
 
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.RedstoneTorchBlock;
-import net.minecraft.server.Bootstrap;
-import net.minecraft.SharedConstants;
 import org.junit.jupiter.api.Test;
 
 import javax.imageio.ImageIO;
@@ -21,24 +17,16 @@ final class TorchEmissionContractTest {
             "src/main/resources/assets/minecraft/textures/block");
 
     @Test
-    void everyActiveTorchClassUsesTheBoostButOtherEmittersDoNot() {
-        SharedConstants.tryDetectVersion();
-        Bootstrap.bootStrap();
-        assertTrue(RtTerrain.isActiveTorch(Blocks.TORCH.defaultBlockState()));
-        assertTrue(RtTerrain.isActiveTorch(Blocks.WALL_TORCH.defaultBlockState()));
-        assertTrue(RtTerrain.isActiveTorch(Blocks.SOUL_TORCH.defaultBlockState()));
-        assertTrue(RtTerrain.isActiveTorch(Blocks.COPPER_TORCH.defaultBlockState()));
-        assertTrue(RtTerrain.isActiveTorch(Blocks.REDSTONE_TORCH.defaultBlockState()));
-        assertFalse(RtTerrain.isActiveTorch(Blocks.REDSTONE_TORCH.defaultBlockState()
-                .setValue(RedstoneTorchBlock.LIT, false)));
-        assertFalse(RtTerrain.isActiveTorch(Blocks.GLOWSTONE.defaultBlockState()));
-    }
-
-    @Test
-    void shaderAppliesTheTorchScaleAfterAuthoredEmissionDecode() throws Exception {
-        String source = Files.readString(Path.of("shaders/world/world.rchit.slang"));
-        assertTrue(source.contains("max(ConstPtr<WorldPush>(pcAddr.worldPushAddr)[0].torchEmissionScale, 0.0)"));
-        assertTrue(source.contains("emission = mappedEmission * emissionScale;"));
+    void integratorOwnsIntensityAfterSharedMaterialDecode() throws Exception {
+        String closestHit = Files.readString(Path.of("shaders/world/world.rchit.slang"));
+        String raygen = Files.readString(Path.of("shaders/world/world.rgen.slang"));
+        String common = Files.readString(Path.of("shaders/world/world_common.slang"));
+        assertTrue(closestHit.contains("emission = mappedEmission;"));
+        assertFalse(closestHit.contains("emissiveIntensity"));
+        assertTrue(common.contains("[vk::offset(420)] public float    emissiveIntensity"));
+        assertTrue(raygen.contains("clamp(pc.emissiveIntensity, 0.0, 1.0)"));
+        assertTrue(raygen.contains("L += throughput * albedo * emission * emissiveRadiance;"));
+        assertFalse(raygen.contains("sampleTerrainEmitter"));
     }
 
     @Test

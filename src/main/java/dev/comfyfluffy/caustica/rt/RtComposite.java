@@ -10,6 +10,7 @@ import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.client.CausticaJitter;
+import dev.comfyfluffy.caustica.client.OfflineGroundTruth;
 import dev.comfyfluffy.caustica.mixin.CommandEncoderAccessor;
 import dev.comfyfluffy.caustica.rt.gen.PushAddrData;
 import dev.comfyfluffy.caustica.rt.gen.WorldPushData;
@@ -35,13 +36,17 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.util.vma.Vma;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkClearColorValue;
+import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageCopy;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
 
@@ -61,11 +66,14 @@ import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
+import dev.comfyfluffy.caustica.rt.pipeline.RtPathSampleSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineExporter;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), use
@@ -94,9 +102,10 @@ public final class RtComposite {
     // Real inline push constants (fast constant-bank reads), separate from the WorldPush BDA ring above.
     // tableAddr/entityTableAddr/frameIndex are duplicated so hit shaders skip a global-memory dereference;
     // PushAddrData is generated from the same Slang module and owns this second ABI as well.
-    private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
+    private static final int GUIDE_COUNT = 10; // six RR guides, offline mean+RGB variance+counter, animated responsivity
     private static final int FRAME_FLAG_RR_GUIDES = 1 << 5;
     private static final int FRAME_FLAG_FG_GUIDES = 1 << 6;
+    private static final int FRAME_FLAG_OFFLINE_GROUND_TRUTH = 1 << 7;
     private static final double TEMPORAL_TELEPORT_DISTANCE_SQ = 64.0 * 64.0;
     private static final long TEMPORAL_GAP_NANOS = 500_000_000L;
     // Frames a retired per-frame TLAS must outlive before it's freed (> frames-in-flight); matches
@@ -109,15 +118,23 @@ public final class RtComposite {
     }
 
     private static int spp() {
-        return CausticaConfig.Rt.Composite.SPP.value();
+        return OfflineGroundTruth.INSTANCE.active()
+                ? CausticaConfig.Rt.Offline.SAMPLES_PER_BATCH.value()
+                : CausticaConfig.Rt.Composite.SPP.value();
     }
 
     private static int maxBounces() {
-        return CausticaConfig.Rt.Composite.MAX_BOUNCES.value();
+        return OfflineGroundTruth.INSTANCE.active()
+                ? CausticaConfig.Rt.Offline.MAX_BOUNCES.value()
+                : CausticaConfig.Rt.Composite.MAX_BOUNCES.value();
     }
 
     private static boolean waterWaves() {
         return CausticaConfig.Rt.Composite.WATER_WAVES.value();
+    }
+
+    private static int groundTruthSettingsSignature() {
+        return CausticaConfig.offlineRenderSignature();
     }
 
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
@@ -182,6 +199,7 @@ public final class RtComposite {
     // One slot per in-flight frame, cycled per frame so an in-flight slot is never overwritten.
     private static final int PUSH_RING = 6;
     private RtBuffer[] pushRing;
+    private RtPathSampleSequence pathSampleSequence;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -226,6 +244,10 @@ public final class RtComposite {
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
+    private RtImage groundTruthAccum;
+    private RtImage groundTruthVariance;
+    private RtImage groundTruthConverged;
+    private RtImage gAnimatedGuide;
     private RtImage gDepthHistoryA;
     private RtImage gDepthHistoryB;
     private RtImage gDisocclusion;
@@ -247,8 +269,13 @@ public final class RtComposite {
     private int renderSizeRrQuality = Integer.MIN_VALUE;
     private boolean renderSizeFgGuides;
     private boolean renderSizeHdrEnabled;
+    private boolean renderSizeGroundTruth;
     private boolean rrProducedPreviousFrame;
     private int lastDebugView = Integer.MIN_VALUE;
+    private float lastEmissiveIntensity = Float.NaN;
+    private int groundTruthAccumulationFrames;
+    private int groundTruthSettingsSignature = Integer.MIN_VALUE;
+    private float groundTruthWaterWaveTime = Float.NaN;
 
     // Motion-vector reprojection state: the previous frame's camera-relative view-projection and
     // camera position, snapshotted for consumers each frame before the rolling state advances.
@@ -349,6 +376,10 @@ public final class RtComposite {
         lastDebugView = Integer.MIN_VALUE;
         hasCapturedProjection = false;
         previousWaterWaveTimeValid = false;
+        groundTruthAccumulationFrames = 0;
+        groundTruthSettingsSignature = Integer.MIN_VALUE;
+        groundTruthWaterWaveTime = Float.NaN;
+        OfflineGroundTruth.INSTANCE.onRendererReset();
         RtDlssRr.INSTANCE.requestHistoryReset();
         CausticaJitter.INSTANCE.reset();
     }
@@ -356,6 +387,59 @@ public final class RtComposite {
     /** True only after this render call produced fresh final color plus FG motion/depth guides. */
     public boolean hasCurrentFrameForFg() {
         return rtFrameProducedThisFrame && renderSizeFgGuides && !failed && gDepth != null && gMotion != null;
+    }
+
+    /** True at frame tail only when this render call completed a fresh DLSS Ray Reconstruction result. */
+    public boolean producedFreshDlssRrFrame() {
+        return rtFrameProducedThisFrame && rrProducedPreviousFrame && !failed;
+    }
+
+    /** True at frame tail when the native offline trace submitted a fresh progressive batch. */
+    public boolean producedFreshOfflineFrame() {
+        return rtFrameProducedThisFrame && OfflineGroundTruth.INSTANCE.active() && !failed;
+    }
+
+    /** Read the one-word completion reduction from the most recently submitted offline dispatch. */
+    public int queryOfflineConvergedPixels() {
+        RtContext ctx = RtContext.currentOrNull();
+        if (ctx == null || groundTruthConverged == null || !OfflineGroundTruth.INSTANCE.active()) {
+            return 0;
+        }
+        RtBuffer readback = ctx.createBuffer(Integer.BYTES, VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                "offline convergence counter readback");
+        try {
+            ctx.waitIdle("offline convergence query");
+            ctx.submitSync(cmd -> {
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    VkBufferImageCopy.Buffer copy = VkBufferImageCopy.calloc(1, stack);
+                    copy.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0)
+                            .imageSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                                    .mipLevel(0).baseArrayLayer(0).layerCount(1))
+                            .imageOffset(o -> o.set(0, 0, 0)).imageExtent(e -> e.set(1, 1, 1));
+                    VK10.vkCmdCopyImageToBuffer(cmd, groundTruthConverged.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                            readback.handle, copy);
+                }
+            });
+            Vma.vmaInvalidateAllocation(ctx.vma(), readback.allocation, 0, Integer.BYTES);
+            return MemoryUtil.memGetInt(readback.mapped);
+        } finally {
+            readback.destroy();
+        }
+    }
+
+    public int offlinePixelCount() {
+        return Math.max(displayW, 0) * Math.max(displayH, 0);
+    }
+
+    /** Read back the completed raw mean and world-only display image after the prior frame has presented. */
+    public CompletableFuture<RtOfflineExporter.ExportResult> exportOfflineSnapshotAsync() {
+        RtContext ctx = RtContext.currentOrNull();
+        if (ctx == null || groundTruthAccum == null || displayImage == null
+                || !OfflineGroundTruth.INSTANCE.active()) {
+            throw new IllegalStateException("Offline renderer export is not available");
+        }
+        return RtOfflineExporter.exportAsync(ctx, groundTruthAccum, displayImage);
     }
 
     /** Capture the frame's camera for the next composite. Called from GameRendererMixin. */
@@ -404,7 +488,8 @@ public final class RtComposite {
         RtFrameStats.FRAME.beginIfInactive();
         long now = System.nanoTime();
         if (!rtFrameProducedThisFrame
-                || (lastFrameBeginNanos != 0L && now - lastFrameBeginNanos > TEMPORAL_GAP_NANOS)) {
+                || (!OfflineGroundTruth.INSTANCE.active()
+                        && lastFrameBeginNanos != 0L && now - lastFrameBeginNanos > TEMPORAL_GAP_NANOS)) {
             requestTemporalReset();
         }
         lastFrameBeginNanos = now;
@@ -433,7 +518,9 @@ public final class RtComposite {
         // Budgeted terrain streaming (dispatch/drain/build kick) runs here, once per render frame — before
         // the ready gate below, because it is what MAKES terrain ready during the initial fill.
         try {
-            RtTerrain.frame(ctx);
+            if (!OfflineGroundTruth.INSTANCE.active()) {
+                RtTerrain.frame(ctx);
+            }
         } catch (Throwable t) {
             failed = true;
             CausticaMod.LOGGER.error("RT terrain streaming failed; reverting to vanilla path", t);
@@ -519,6 +606,9 @@ public final class RtComposite {
                     pushRing[i] = ctx.createBuffer(WORLD_PUSH_SIZE,
                             VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i);
                 }
+            }
+            if (pathSampleSequence == null) {
+                pathSampleSequence = RtPathSampleSequence.create(ctx);
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -647,6 +737,10 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        worldPipeline.setExtraStorageImage(6, groundTruthAccum.view);
+        worldPipeline.setExtraStorageImage(7, gAnimatedGuide.view);
+        worldPipeline.setExtraStorageImage(8, groundTruthVariance.view);
+        worldPipeline.setExtraStorageImage(9, groundTruthConverged.view);
     }
 
     private void destroyGuideImages() {
@@ -678,6 +772,10 @@ public final class RtComposite {
             gSpecMotion.destroy();
             gSpecMotion = null;
         }
+        if (gAnimatedGuide != null) {
+            gAnimatedGuide.destroy();
+            gAnimatedGuide = null;
+        }
         if (gDepthHistoryA != null) {
             gDepthHistoryA.destroy();
             gDepthHistoryA = null;
@@ -698,21 +796,41 @@ public final class RtComposite {
             rrOutput.destroy();
             rrOutput = null;
         }
+        if (groundTruthAccum != null) {
+            groundTruthAccum.destroy();
+            groundTruthAccum = null;
+        }
+        if (groundTruthVariance != null) {
+            groundTruthVariance.destroy();
+            groundTruthVariance = null;
+        }
+        if (groundTruthConverged != null) {
+            groundTruthConverged.destroy();
+            groundTruthConverged = null;
+        }
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
-        boolean rrOperational = RtDlssRr.INSTANCE.isOperational();
+        boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
+        boolean rrOperational = !offlineGroundTruth && RtDlssRr.INSTANCE.isOperational();
         int rrQuality = rrOperational ? RtDlssRr.quality() : Integer.MIN_VALUE;
-        boolean fgGuidesRequired = RtDlssFg.requested();
+        boolean fgGuidesRequired = !offlineGroundTruth && RtDlssFg.requested();
         boolean hdrEnabled = RtHdr.effective();
         if (output != null && displayImage != null && hdrDisplayImage != null && exposure.ready()
                 && (!renderSizeRrEnabled || rrOutput != null)
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrOperational && renderSizeRrQuality == rrQuality
-                && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled) {
+                && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled
+                && renderSizeGroundTruth == offlineGroundTruth
+                && groundTruthAccum != null && groundTruthVariance != null && groundTruthConverged != null) {
             return;
         }
         ctx.waitIdle("output resize or mode change"); // no in-flight frame may use old images/descriptors
+        if (offlineGroundTruth && !renderSizeGroundTruth) {
+            exposure.beginOfflineSession(ctx);
+        } else if (!offlineGroundTruth && renderSizeGroundTruth) {
+            exposure.endOfflineSession();
+        }
         // Release Streamline's viewport before any tagged input/output image is destroyed or resized.
         // This also promptly frees RR when the setting is switched off instead of retaining its feature
         // allocation until device shutdown.
@@ -744,6 +862,12 @@ public final class RtComposite {
         renderSizeRrQuality = rrQuality;
         renderSizeFgGuides = fgGuidesRequired;
         renderSizeHdrEnabled = hdrEnabled;
+        renderSizeGroundTruth = offlineGroundTruth;
+        if (offlineGroundTruth) {
+            groundTruthAccumulationFrames = 0;
+            groundTruthWaterWaveTime = Float.NaN;
+            OfflineGroundTruth.INSTANCE.onRendererReset();
+        }
 
         // RT traces into an HDR (R16G16B16A16_SFLOAT) target so radiance > 1 survives to the display
         // mapping seam. displayImage stays R8G8B8A8 to match the main target it is copied into
@@ -770,6 +894,18 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(motionGuideW, motionGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion");
         gSpecAlbedo = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo");
         gSpecMotion = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion");
+        groundTruthAccum = ctx.createStorageImage(offlineGroundTruth ? width : 1,
+                offlineGroundTruth ? height : 1, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                offlineGroundTruth ? "offline ground-truth FP32 radiance sum " + width + "x" + height
+                        : "inactive ground-truth accumulation");
+        groundTruthVariance = ctx.createStorageImage(offlineGroundTruth ? width : 1,
+                offlineGroundTruth ? height : 1, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                offlineGroundTruth ? "offline ground-truth RGB M2 " + width + "x" + height
+                        : "inactive ground-truth variance");
+        groundTruthConverged = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_UINT,
+                offlineGroundTruth ? "offline converged-pixel counter" : "inactive offline convergence counter");
+        gAnimatedGuide = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
+                "DLSSD animated-surface responsivity");
         gDepthHistoryA = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
                 "DLSSD depth history A");
         gDepthHistoryB = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
@@ -781,7 +917,8 @@ public final class RtComposite {
         if (rrOperational) {
             dlssdDisocclusionPipeline = RtDlssdDisocclusionPipeline.create(ctx);
             dlssdDisocclusionPipeline.setImages(gDepth.view, gMotion.view,
-                    gDepthHistoryA.view, gDepthHistoryB.view, gDisocclusion.view, gBiasCurrentColor.view);
+                    gDepthHistoryA.view, gDepthHistoryB.view, gDisocclusion.view, gBiasCurrentColor.view,
+                    gAnimatedGuide.view);
         }
         // At native resolution the display mapper can consume the trace image directly; reserve a second
         // full-resolution FP16 image only when RR may write or need a same-frame fallback upscale.
@@ -810,6 +947,15 @@ public final class RtComposite {
         double dx = camX - mvPrevCamX;
         double dy = camY - mvPrevCamY;
         double dz = camZ - mvPrevCamZ;
+        if (OfflineGroundTruth.INSTANCE.active() && mvHasPrev
+                && (dx * dx + dy * dy + dz * dz > 1.0e-12
+                        || !mvPrevProjView.equals(mvCurProjView, 1.0e-6f))) {
+            // Safety net for non-mouse camera changes (commands, recoil, FOV animation): never blend two
+            // distinct views into the offline reference even if an input path bypasses the F7 camera lock.
+            groundTruthAccumulationFrames = 0;
+            groundTruthWaterWaveTime = Float.NaN;
+            OfflineGroundTruth.INSTANCE.onRendererReset();
+        }
         if (mvHasPrev && dx * dx + dy * dy + dz * dz > TEMPORAL_TELEPORT_DISTANCE_SQ) {
             requestTemporalReset();
         }
@@ -845,16 +991,46 @@ public final class RtComposite {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
             // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
             // Jitter is suppressed for the no-RR reference and for the debug guide views (raw inspection).
+            boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
             int debugView = debugView();
-            int worldDebugView = debugView == CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON
+            int worldDebugView = offlineGroundTruth ? 0
+                    : debugView == CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON
                     ? 0 : debugView;
+            float emissiveIntensity = CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.value();
+            boolean emissiveIntensityChanged = !Float.isNaN(lastEmissiveIntensity)
+                    && Float.floatToIntBits(emissiveIntensity) != Float.floatToIntBits(lastEmissiveIntensity);
+            if (emissiveIntensityChanged) {
+                // Lighting changed discontinuously. Do not let RR/FG retain history from the previous
+                // radiance scale, which made live intensity edits appear ineffective or respond slowly.
+                fgReset = true;
+                rrProducedPreviousFrame = false;
+                RtDlssRr.INSTANCE.requestHistoryReset();
+            }
+            lastEmissiveIntensity = emissiveIntensity;
             if (lastDebugView != Integer.MIN_VALUE && debugView != lastDebugView) {
                 fgReset = true;
                 rrProducedPreviousFrame = false;
                 RtDlssRr.INSTANCE.requestHistoryReset();
             }
             lastDebugView = debugView;
-            boolean rrPath = renderSizeRrEnabled && RtDlssRr.INSTANCE.isOperational() && worldDebugView == 0;
+            int settingsSignature = groundTruthSettingsSignature();
+            if (offlineGroundTruth && settingsSignature != groundTruthSettingsSignature) {
+                groundTruthAccumulationFrames = 0;
+                groundTruthWaterWaveTime = Float.NaN;
+                groundTruthSettingsSignature = settingsSignature;
+                OfflineGroundTruth.INSTANCE.onRendererReset();
+            } else if (!offlineGroundTruth) {
+                groundTruthSettingsSignature = Integer.MIN_VALUE;
+            }
+            if (offlineGroundTruth) {
+                clearOfflineConvergence(cmd, stack);
+            }
+            if (offlineGroundTruth && groundTruthAccumulationFrames == 0) {
+                clearOfflineAccumulation(cmd, stack);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+            boolean rrPath = !offlineGroundTruth && renderSizeRrEnabled
+                    && RtDlssRr.INSTANCE.isOperational() && worldDebugView == 0;
             if (rrPath && !rrProducedPreviousFrame) {
                 RtDlssRr.INSTANCE.requestHistoryReset();
             }
@@ -907,6 +1083,9 @@ public final class RtComposite {
             if (renderSizeFgGuides && RtDlssFg.requested()) {
                 flags |= FRAME_FLAG_FG_GUIDES;
             }
+            if (offlineGroundTruth) {
+                flags |= FRAME_FLAG_OFFLINE_GROUND_TRUTH;
+            }
 
             // W1/W2 water parameters: camera-biome tint plus continuous animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
@@ -918,6 +1097,14 @@ public final class RtComposite {
                 wtb = (wc & 0xFF) / 255f;
             }
             float waterWaveTime = (float) ((System.nanoTime() - waterWaveEpochNanos) / 1.0e9);
+            if (offlineGroundTruth) {
+                if (Float.isNaN(groundTruthWaterWaveTime)) {
+                    groundTruthWaterWaveTime = waterWaveTime;
+                }
+                waterWaveTime = groundTruthWaterWaveTime;
+            } else {
+                groundTruthWaterWaveTime = Float.NaN;
+            }
             float previousWaveTime = previousWaterWaveTimeValid ? previousWaterWaveTime : waterWaveTime;
             previousWaterWaveTime = waterWaveTime;
             previousWaterWaveTimeValid = true;
@@ -968,8 +1155,17 @@ public final class RtComposite {
                     waterAnchor,
                     mvCurProjView,
                     breaking.length,
-                    CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.value(),
-                    breaking
+                    emissiveIntensity,
+                    CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS.value(),
+                    breaking,
+                    pathSampleSequence.deviceAddress(),
+                    groundTruthAccumulationFrames,
+                    CausticaConfig.Rt.Offline.ADAPTIVE.value() ? 1 : 0,
+                    Math.min(CausticaConfig.Rt.Offline.MIN_SAMPLES.value(),
+                            CausticaConfig.Rt.Offline.MAX_SAMPLES.value()),
+                    CausticaConfig.Rt.Offline.MAX_SAMPLES.value(),
+                    CausticaConfig.Rt.Offline.RELATIVE_ERROR.value(),
+                    CausticaConfig.Rt.Offline.ABSOLUTE_ERROR.value()
             ).write(push);
             // Upload any entity textures registered this frame into the bindless set before the trace.
             RtFrameStats.FRAME.count("entityTextureSlots", RtEntityTextures.INSTANCE.usedSlots());
@@ -1009,11 +1205,14 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.trace")) {
                 active.trace(cmd, renderW, renderH, pushAddr);
             }
+            if (offlineGroundTruth) {
+                groundTruthAccumulationFrames++;
+            }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath) {
-                boolean resetTemporal = !fgPreviousViewProjectionValid;
+                boolean resetTemporal = !fgPreviousViewProjectionValid || emissiveIntensityChanged;
                 dlssdDisocclusionPipeline.dispatch(cmd, renderW, renderH, resetTemporal, frameCounter);
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
@@ -1051,7 +1250,7 @@ public final class RtComposite {
             // when reconstruction exists and avoids an otherwise redundant copy on the native path.
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
-                exposure.record(ctx, cmd, stack, displayInput);
+                exposure.record(ctx, cmd, stack, displayInput, offlineGroundTruth);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
@@ -1073,6 +1272,26 @@ public final class RtComposite {
             throw new IllegalStateException("vkEndCommandBuffer(rt composite) failed");
         }
         encoder.execute(cmd); // deferred into the frame's submission — correct for per-frame work
+    }
+
+    private void clearOfflineAccumulation(VkCommandBuffer cmd, MemoryStack stack) {
+        VkClearColorValue zero = VkClearColorValue.calloc(stack);
+        zero.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
+        VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+        range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+        VK10.vkCmdClearColorImage(cmd, groundTruthAccum.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
+        VK10.vkCmdClearColorImage(cmd, groundTruthVariance.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
+    }
+
+    private void clearOfflineConvergence(VkCommandBuffer cmd, MemoryStack stack) {
+        VkClearColorValue zero = VkClearColorValue.calloc(stack);
+        zero.uint32(0, 0).uint32(1, 0).uint32(2, 0).uint32(3, 0);
+        VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+        range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+        VK10.vkCmdClearColorImage(cmd, groundTruthConverged.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
+        VulkanCommandEncoder.memoryBarrier(cmd, stack);
     }
 
     /**
@@ -1333,6 +1552,10 @@ public final class RtComposite {
                 }
             }
             pushRing = null;
+        }
+        if (pathSampleSequence != null) {
+            pathSampleSequence.destroy();
+            pathSampleSequence = null;
         }
         if (atlasSampler != 0L) {
             RtContext ctx = RtContext.currentOrNull();

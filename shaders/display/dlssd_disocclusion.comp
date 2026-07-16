@@ -8,6 +8,7 @@ layout(binding = 2, set = 0, r32f) uniform readonly image2D previousDepthHistory
 layout(binding = 3, set = 0, r32f) uniform writeonly image2D currentDepthHistory;
 layout(binding = 4, set = 0, r16f) uniform writeonly image2D disocclusionImage;
 layout(binding = 5, set = 0, r16f) uniform writeonly image2D biasCurrentColorImage;
+layout(binding = 6, set = 0, r16f) uniform readonly image2D animatedGuideImage;
 
 layout(push_constant) uniform Push {
     uint width;
@@ -57,5 +58,6 @@ void main() {
     }
 
     imageStore(disocclusionImage, pixel, vec4(disocclusion));
-    imageStore(biasCurrentColorImage, pixel, vec4(disocclusion));
+    float animated = clamp(imageLoad(animatedGuideImage, pixel).x, 0.0, 1.0);
+    imageStore(biasCurrentColorImage, pixel, vec4(max(disocclusion, animated)));
 }

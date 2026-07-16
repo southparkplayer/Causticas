@@ -5,6 +5,8 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.client.VanillaRenderController;
+import dev.comfyfluffy.caustica.client.UltraScreenshot;
+import dev.comfyfluffy.caustica.client.OfflineGroundTruth;
 import dev.comfyfluffy.caustica.client.WorldRenderScaler;
 import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtUiOverlay;
@@ -57,6 +59,8 @@ public abstract class GameRendererMixin {
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At("TAIL"))
 	private void caustica$endRtFrameStats(DeltaTracker deltaTracker, boolean advanceGameTime, CallbackInfo ci) {
 		RtComposite.INSTANCE.endFrame();
+		UltraScreenshot.INSTANCE.frameRendered(net.minecraft.client.Minecraft.getInstance());
+		OfflineGroundTruth.INSTANCE.frameRendered(net.minecraft.client.Minecraft.getInstance());
 	}
 
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V",

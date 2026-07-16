@@ -47,7 +47,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.BaseTorchBlock;
 import net.minecraft.world.level.block.IceBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.StainedGlassBlock;
@@ -91,19 +90,12 @@ import java.util.concurrent.Future;
  * (no {@code waitIdle} on the hot path).
  */
 public final class RtTerrain {
-    private static final float TORCH_EMISSION_FLAG = 16.0f;
     // CPU tessellation runs on RtWorkerPool. The render thread snapshots RenderSectionRegions, uploads
     // completed meshes, prepares BLASes, and submits the GPU build. Those render-thread pieces run as one
     // "streaming pass" per render frame (driven by RtComposite), bounded by a wall-clock budget so the
     // per-frame cost is flat instead of the old 20 TPS burst; the counts below are per-pass ceilings.
     private static int asyncDispatchPerTick() {
         return CausticaConfig.Rt.Terrain.ASYNC_DISPATCH_PER_TICK.value();
-    }
-
-    static boolean isActiveTorch(BlockState state) {
-        return state != null
-                && state.getLightEmission() > 0
-                && state.getBlock() instanceof BaseTorchBlock;
     }
 
     private static int sectionResultsPerTick() {
@@ -288,6 +280,11 @@ public final class RtTerrain {
      */
     public static void frame(RtContext ctx) {
         INSTANCE.frameStream(ctx);
+    }
+
+    /** Whether a published section table exists and can be held immutable for an offline session. */
+    public static boolean hasPublishedSnapshot() {
+        return INSTANCE.ready && INSTANCE.staticInstances != null && INSTANCE.sectionTable != null;
     }
 
     public static void shutdown(RtContext ctx) {
@@ -2262,11 +2259,10 @@ public final class RtTerrain {
             }
             q.tr = tr; q.tg = tg; q.tb = tb;
 
-            // Emissive: vanilla block light level (0..15) -> 0..1, stashed in the free normal.w slot.
-            // Torch-class emitters carry a separate high flag decoded by world.rchit; their scalar remains
-            // the vanilla-normalized value so both heuristic and authored-map emission can be boosted 10x.
+            // Emissive fallback: vanilla block light level (0..15) -> normalized material emission.
+            // Authored LabPBR emission can replace this per texel in closest-hit; radiance intensity is
+            // applied once in raygen for every emissive material path.
             q.emission = state != null ? state.getLightEmission() / 15f : 0f;
-            q.boostTorchEmission = isActiveTorch(state);
             // Heuristic PBR material (roughness, metalness) for the GGX BRDF / DLSS-RR guides.
             q.rough = RtMaterials.roughness(state);
             q.metal = RtMaterials.metalness(state);
@@ -2442,10 +2438,8 @@ public final class RtTerrain {
                 prim.add(q.nx);
                 prim.add(q.ny);
                 prim.add(q.nz);
-                // normal.w = block-light emission plus orthogonal +2 non-SOLID and +16 boosted-torch flags.
-                // See world.rchit for the matching decode order.
-                float encodedEmission = q.emission + (q.boostTorchEmission ? TORCH_EMISSION_FLAG : 0f);
-                prim.add(q.cutout ? encodedEmission + 2f : encodedEmission);
+                // normal.w = normalized block-light emission plus an orthogonal +2 non-SOLID flag.
+                prim.add(q.cutout ? q.emission + 2f : q.emission);
                 prim.add(q.tr);
                 prim.add(q.tg);
                 prim.add(q.tb);
@@ -2473,7 +2467,6 @@ public final class RtTerrain {
         final long[] uv = new long[4];
         float nx, ny, nz;
         boolean cutout; // non-SOLID render layer (alpha-tested) — also an overlay candidate
-        boolean boostTorchEmission;
         boolean translucent; // TRANSLUCENT geometry bucket; opticalClass owns the material model
         int opticalClass;
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair

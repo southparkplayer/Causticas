@@ -18,6 +18,9 @@ final class RtFirstPersonPose {
     private static final float MODEL_ROOT_Y = -1.501f;
     private static final float CROUCH_RENDER_Y = -0.125f;
     private static final float CROUCH_HEAD_PIVOT = 4.2f / 16.0f;
+    // User-accepted first-person placement. UI/config offsets are adjustments around this origin.
+    private static final float BASE_FORWARD = -0.30f;
+    private static final float BASE_VERTICAL = -0.25f;
 
     private RtFirstPersonPose() {
     }
@@ -71,8 +74,8 @@ final class RtFirstPersonPose {
         double forwardZ = Math.cos(bodyYaw);
         double rightX = Math.cos(bodyYaw);
         double rightZ = Math.sin(bodyYaw);
-        float forward = CausticaConfig.Rt.FirstPerson.FORWARD_OFFSET.value();
-        float vertical = CausticaConfig.Rt.FirstPerson.VERTICAL_OFFSET.value();
+        float forward = BASE_FORWARD + CausticaConfig.Rt.FirstPerson.FORWARD_OFFSET.value();
+        float vertical = BASE_VERTICAL + CausticaConfig.Rt.FirstPerson.VERTICAL_OFFSET.value();
         float lateral = CausticaConfig.Rt.FirstPerson.LATERAL_OFFSET.value();
 
         return new Vec3(

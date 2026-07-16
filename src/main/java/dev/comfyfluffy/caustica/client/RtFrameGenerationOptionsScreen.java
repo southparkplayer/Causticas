@@ -39,12 +39,8 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
         list.addBig(vsyncWidget);
 
         OptionInstance<?>[] controls = RtVideoOptions.frameGenerationOptions();
-        for (int i = 0; i < controls.length; i += 2) {
-            if (i + 1 < controls.length) {
-                list.addSmall(controls[i], controls[i + 1]);
-            } else {
-                list.addBig(controls[i]);
-            }
+        for (var control : controls) {
+            list.addBig(control);
         }
         list.addBig(Button.builder(Component.translatable("caustica.options.rt.fg.advancedDiagnostics"), button ->
                 minecraft.setScreenAndShow(new RtFrameGenerationDiagnosticsScreen(this, options)))

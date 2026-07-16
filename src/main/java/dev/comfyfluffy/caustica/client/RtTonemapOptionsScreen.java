@@ -25,7 +25,7 @@ public final class RtTonemapOptionsScreen extends Screen {
     private static final int HEADER_HEIGHT = 13;
     private static final int BUTTON_HEIGHT = 20;
     private static final int MIN_COLUMN_WIDTH = 150;
-    private static final int MAX_COLUMNS = 6;
+    private static final int MAX_COLUMNS = 4;
 
     private final Screen lastScreen;
     private final Options options;
@@ -47,12 +47,12 @@ public final class RtTonemapOptionsScreen extends Screen {
         int availableWidth = Math.max(MIN_COLUMN_WIDTH, width - SIDE_MARGIN * 2);
         int widthLimitedColumns = Math.max(1,
                 (availableWidth + COLUMN_GAP) / (MIN_COLUMN_WIDTH + COLUMN_GAP));
-        int preferredColumns = Math.clamp(width / 240, 2, MAX_COLUMNS);
+        int preferredColumns = Math.clamp(width / 360, 2, MAX_COLUMNS);
         int columnCount = Math.min(sections.size(), Math.min(widthLimitedColumns, preferredColumns));
         columnCount = Math.max(1, columnCount);
 
         int columnWidth = (availableWidth - COLUMN_GAP * (columnCount - 1)) / columnCount;
-        int controlsPerRow = columnWidth >= 300 ? 2 : 1;
+        int controlsPerRow = columnWidth >= 520 ? 2 : 1;
         int[] columnHeights = new int[columnCount];
 
         for (Section section : sections) {
@@ -157,16 +157,12 @@ public final class RtTonemapOptionsScreen extends Screen {
                         RtVideoOptions.sdrUncharted2Options()),
                 new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrGt"),
                         RtVideoOptions.sdrGtOptions()),
-                new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho"),
-                        RtVideoOptions.sdrPsychoOptions()),
-                new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho23"),
-                        RtVideoOptions.sdrPsychoV23Options()),
                 new Section(Component.translatable("caustica.options.rt.tonemapping.section.psychoShared"),
                         RtVideoOptions.psychoOptions()),
+                new Section(Component.translatable("caustica.options.rt.tonemapping.section.sdrPsycho23"),
+                        RtVideoOptions.sdrPsychoV23Options()),
                 new Section(Component.translatable("caustica.options.rt.tonemapping.section.hdrPsycho"),
-                        RtVideoOptions.hdrPsychoOptions()),
-                new Section(Component.translatable("caustica.options.rt.tonemapping.section.hdrPsycho23"),
-                        RtVideoOptions.hdrPsychoV23Options()));
+                        RtVideoOptions.legacyPsychoOptions()));
     }
 
     private record Section(Component title, RtVideoOptions.TonemapControl[] controls) {

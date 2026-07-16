@@ -26,6 +26,14 @@ public final class CausticaClient implements ClientModInitializer {
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.
 		ClientTickEvents.START_CLIENT_TICK.register(client -> {
+			while (OfflineGroundTruth.KEY.consumeClick()) {
+				client.setScreenAndShow(new OfflineRendererOptionsScreen(null, client.options));
+			}
+			OfflineGroundTruth.INSTANCE.tick(client);
+			while (UltraScreenshot.KEY.consumeClick()) {
+				UltraScreenshot.INSTANCE.toggle(client);
+			}
+			UltraScreenshot.INSTANCE.tick(client);
 			dev.comfyfluffy.caustica.streamline.StreamlineSwapchainCoordinator.INSTANCE.synchronizeRequestedState();
 			if (!VanillaRenderController.rtRuntimeWorkRequested()) {
 				if (rtInitDone) {
@@ -52,7 +60,9 @@ public final class CausticaClient implements ClientModInitializer {
 					// material flags resolve from the first section (PBR on join, no re-extract). No-op
 					// until we're in a world with the block atlas loaded, or once already created.
 					RtComposite.INSTANCE.ensureResourcesReady(ctx);
-					RtTerrain.update(ctx);
+					if (!OfflineGroundTruth.INSTANCE.active()) {
+						RtTerrain.update(ctx);
+					}
 					// Log DLSS-FG availability once when frame generation is enabled (capability query only;
 					// the present-loop integration that consumes it is built separately).
 					if (dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg.enabled()) {

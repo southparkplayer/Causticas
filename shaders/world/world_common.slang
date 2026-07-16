@@ -49,8 +49,16 @@ public struct WorldPush {
     [vk::offset(336)] public float4   waterAnchor;   // xy world-stable wave anchor, z previous wave time
     [vk::offset(352)] public float4x4 curViewProj;   // forward camera-relative view-projection
     [vk::offset(416)] public uint     breakCount;
-    [vk::offset(420)] public float    torchEmissionScale; // hot-reloadable multiplier for torch-class emitters
+    [vk::offset(420)] public float    emissiveIntensity; // normalized 0..1 control; raygen maps to 0..50x radiance
+    [vk::offset(424)] public uint     psrMaxMirrors; // live exact-mirror recursion limit (1..32)
     [vk::offset(432)] public BreakEntry breaking[8]; // generated Java capacity/serialization
+    [vk::offset(560)] public uint64_t sampleSequenceAddr; // interleaved 8D Sobol values, 1048576 samples
+    [vk::offset(568)] public uint     accumulationFrame; // zero-based offline ground-truth batch index
+    [vk::offset(572)] public uint     offlineAdaptive;
+    [vk::offset(576)] public uint     offlineMinSamples;
+    [vk::offset(580)] public uint     offlineMaxSamples;
+    [vk::offset(584)] public float    offlineRelativeError;
+    [vk::offset(588)] public float    offlineAbsoluteError;
 };
 
 // Radiance-ray payload (location 0). Member order and types are a cross-stage ABI.

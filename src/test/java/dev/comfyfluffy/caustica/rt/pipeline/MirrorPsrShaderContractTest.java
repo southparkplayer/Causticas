@@ -14,10 +14,25 @@ final class MirrorPsrShaderContractTest {
         assertTrue(source.contains("perceptualRough <= PSR_MIRROR_ROUGHNESS_MAX && metal >= 0.999"));
         assertTrue(source.contains("if (exactMirror)"));
         assertTrue(source.contains("rd = reflect(rd, n);"));
-        assertTrue(source.contains("PSR_MAX_MIRRORS = 3u"));
+        assertTrue(source.contains("PSR_MAX_CONFIGURED_MIRRORS = 32u"));
         assertTrue(source.contains("recursivePrimarySurfaceReplacement("));
-        assertTrue(source.contains("for (int i = int(mirrorCount) - 1; i >= 0; --i)"));
-        assertTrue(source.contains("finalHit -= 2.0 * n * dot(finalHit - mirrorPos[i], n)"));
+        assertTrue(source.contains("maxMirrors = clamp(pc.psrMaxMirrors, 1u, PSR_MAX_CONFIGURED_MIRRORS)"));
+        assertTrue(source.contains("translation += mappedNormal"));
+        assertTrue(source.contains("max(maxBounces, maxMirrorDepth)"));
+    }
+
+    @Test
+    void mirrorDepthIsAHotReloadedOneToThirtyTwoSetting() throws Exception {
+        String common = Files.readString(Path.of("shaders/world/world_common.slang"));
+        String config = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java"));
+        String options = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java"));
+        // This explicit offset must match the generated WorldPushData serializer. A prior 428-byte
+        // annotation made every runtime setting read the four-byte padding lane and clamp to depth 1.
+        assertTrue(common.contains("[vk::offset(424)] public uint     psrMaxMirrors"));
+        assertTrue(config.contains("\"composite.psr-max-mirrors\", 3, 1, 32"));
+        assertTrue(options.contains("new OptionInstance.IntRange(1, 32)"));
     }
 
     @Test

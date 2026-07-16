@@ -9,6 +9,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.util.vma.Vma;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
@@ -22,6 +23,7 @@ public final class RtExposure {
     private RtExposurePipeline pipeline;
     private boolean logged;
     private long lastFrameNanos;
+    private float offlineFixedScale = Float.NaN;
 
     public RtImage image() {
         return image;
@@ -52,22 +54,47 @@ public final class RtExposure {
         logOnce();
     }
 
-    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor) {
+    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor,
+                       boolean forceFixedExposure) {
         if (image == null) {
             throw new IllegalStateException("RT exposure image not created");
         }
-        if (mode() == Mode.AUTO) {
+        if (!forceFixedExposure && mode() == Mode.AUTO) {
             recordAuto(ctx, cmd, stack, traceColor);
             return;
         }
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
             VkClearColorValue color = VkClearColorValue.calloc(stack);
-            color.float32(0, manualExposureScale());
+            color.float32(0, forceFixedExposure && Float.isFinite(offlineFixedScale)
+                    ? offlineFixedScale : manualExposureScale());
             VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
             range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
             VK10.vkCmdClearColorImage(cmd, image.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
         }
+    }
+
+    /** Capture the exposure that completed the last realtime frame after the caller has idled the queue. */
+    public void beginOfflineSession(RtContext ctx) {
+        float captured = manualExposureScale();
+        if (mode() == Mode.AUTO && state != null && state.mapped != 0L) {
+            Vma.vmaInvalidateAllocation(ctx.vma(), state.allocation, 0, 16);
+            float previous = MemoryUtil.memGetFloat(state.mapped);
+            int initialized = MemoryUtil.memGetInt(state.mapped + 4);
+            if (initialized != 0 && Float.isFinite(previous) && previous > 0.0f) {
+                captured = CausticaConfig.Rt.Exposure.clampScale(previous);
+            }
+        }
+        offlineFixedScale = captured;
+        CausticaMod.LOGGER.info("Offline renderer captured display exposure scale {}", offlineFixedScale);
+    }
+
+    public void endOfflineSession() {
+        offlineFixedScale = Float.NaN;
+    }
+
+    public float offlineFixedScale() {
+        return offlineFixedScale;
     }
 
     public void destroy() {
@@ -124,6 +151,7 @@ public final class RtExposure {
         MemoryUtil.memPutFloat(state.mapped, manualExposureScale());
         MemoryUtil.memPutInt(state.mapped + 4, 0);
         lastFrameNanos = 0L;
+        offlineFixedScale = Float.NaN;
     }
 
     private void logOnce() {

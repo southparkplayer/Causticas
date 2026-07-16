@@ -6,6 +6,7 @@ import com.electronwill.nightconfig.core.file.FileNotFoundAction;
 import com.electronwill.nightconfig.toml.TomlFormat;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.IntUnaryOperator;
@@ -53,6 +54,17 @@ public final class CausticaConfig {
         }
     }
 
+    /** Conservative fingerprint for an offline render: any runtime setting change invalidates the snapshot. */
+    public static int offlineRenderSignature() {
+        ensureRegistered();
+        int hash = 1;
+        for (RuntimeSetting<?> setting : SETTINGS) {
+            hash = 31 * hash + setting.key().hashCode();
+            hash = 31 * hash + Objects.hashCode(setting.get());
+        }
+        return hash;
+    }
+
     /**
      * Forces every settings holder to class-initialize so all settings are registered (and have applied
      * their file values). Call before {@link #save()} to write a complete file, and once at startup so the
@@ -67,7 +79,10 @@ public final class CausticaConfig {
             Rt.DlssRr.ENABLED,
             Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE,
+            Rt.Offline.ADAPTIVE, Rt.Offline.SAMPLES_PER_BATCH, Rt.Offline.MIN_SAMPLES,
+            Rt.Offline.MAX_SAMPLES, Rt.Offline.MAX_BOUNCES, Rt.Offline.RELATIVE_ERROR,
+            Rt.Offline.ABSOLUTE_ERROR, Rt.Offline.SAVE_EXR, Rt.Offline.SAVE_PNG,
+            Rt.Sdr.TONEMAP_MODE, Rt.Hdr.ENABLED, Rt.Hdr.TONEMAP_MODE, Rt.PsychoV23.COMPRESSION,
         };
     }
 
@@ -87,6 +102,15 @@ public final class CausticaConfig {
         if ("dynamic".equals(Rt.Fg.MODE.configuredValue())) {
             Rt.Fg.setMode("fixed");
         }
+        // Pre-release settings used absolute first-person offsets and duplicated PsychoV23 output controls.
+        // The tested pose is now the zero adjustment origin and PsychoV23's shared stages have one owner.
+        FILE.remove("first-person.forward-offset");
+        FILE.remove("first-person.vertical-offset");
+        FILE.remove("first-person.lateral-offset");
+        FILE.remove("sdr.psychov23.compression");
+        FILE.remove("sdr.psychov23.gamut-compression");
+        FILE.remove("hdr.psychov23.compression");
+        FILE.remove("hdr.psychov23.gamut-compression");
         writeComments();
         for (RuntimeSetting<?> setting : SETTINGS) {
             setting.writeToFile(FILE);
@@ -115,8 +139,12 @@ public final class CausticaConfig {
                 " Streamline Reflex Low Latency. DLSS-G forces effective On while generation is active.\n"
                         + " minimum-interval-us applies only while DLSS-G is off; DLSS-G always submits 0 (unlimited).\n"
                         + " PCL markers and sleep still run when Reflex is Off.");
+        FILE.setComment("offline-renderer",
+                " Progressive native-resolution reference rendering. The scene, camera, water time, and display\n"
+                        + " exposure are frozen for a session. Adaptive convergence uses per-pixel luminance\n"
+                        + " standard error; max-samples is also the hard completion and export boundary.");
         FILE.setComment("sdr",
-                " SDR display mapping for the vanilla main target. tonemap-mode defaults to agx to preserve\n"
+                " SDR display mapping for the vanilla main target. tonemap-mode defaults to psychov23.\n"
                         + " Caustica's existing SDR look. Other modes are pbr-neutral, reinhard, aces, lottes,\n"
                         + " frostbite, uncharted2, gt, psychov, and the experimental psychov23. Nested tables hold\n"
                         + " per-tonemapper tuning controls; only the selected mode's controls are pushed to the display shader.");
@@ -619,7 +647,9 @@ public final class CausticaConfig {
             public static final BooleanSetting WATER_WAVES =
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting TORCH_EMISSION_MULTIPLIER = clampedFloat(
-                    "caustica.rt.torchEmissionMultiplier", "composite.torch-emission-multiplier", 50.0f, 0.0f, 100.0f);
+                    "caustica.rt.torchEmissionMultiplier", "composite.torch-emission-multiplier", 1.0f, 0.0f, 1.0f);
+            public static final IntSetting PSR_MAX_MIRRORS = clampedInt(
+                    "caustica.rt.psrMaxMirrors", "composite.psr-max-mirrors", 3, 1, 32);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
                     radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =
@@ -706,11 +736,11 @@ public final class CausticaConfig {
             public static final BooleanSetting DISABLE_VANILLA_MODEL = bool(
                     "caustica.rt.firstPerson.disableVanillaModel", "first-person.disable-vanilla-model", true);
             public static final FloatSetting FORWARD_OFFSET = clampedFloat(
-                    "caustica.rt.firstPerson.forwardOffset", "first-person.forward-offset", -0.20f, -0.30f, 0.30f);
+                    "caustica.rt.firstPerson.forwardAdjustment", "first-person.forward-adjustment", 0.0f, -0.30f, 0.30f);
             public static final FloatSetting VERTICAL_OFFSET = clampedFloat(
-                    "caustica.rt.firstPerson.verticalOffset", "first-person.vertical-offset", 0.0f, -0.30f, 0.30f);
+                    "caustica.rt.firstPerson.verticalAdjustment", "first-person.vertical-adjustment", 0.0f, -0.30f, 0.30f);
             public static final FloatSetting LATERAL_OFFSET = clampedFloat(
-                    "caustica.rt.firstPerson.lateralOffset", "first-person.lateral-offset", 0.0f, -0.20f, 0.20f);
+                    "caustica.rt.firstPerson.lateralAdjustment", "first-person.lateral-adjustment", 0.0f, -0.20f, 0.20f);
 
             private FirstPerson() {
             }
@@ -882,7 +912,7 @@ public final class CausticaConfig {
             public static final int TONEMAP_ID_PSYCHOV23 = 9;
 
             public static final StringSetting TONEMAP_MODE =
-                    string("caustica.rt.sdr.tonemapMode", "sdr.tonemap-mode", TONEMAP_AGX, Sdr::sanitizeTonemapMode);
+                    string("caustica.rt.sdr.tonemapMode", "sdr.tonemap-mode", TONEMAP_PSYCHOV23, Sdr::sanitizeTonemapMode);
             public static final FloatSetting AGX_CONTRAST =
                     clampedFloat("caustica.rt.sdr.agx.contrast", "sdr.agx.contrast", 1.0f, 0.0f, 2.0f);
             public static final FloatSetting AGX_SATURATION =
@@ -934,13 +964,9 @@ public final class CausticaConfig {
             public static final FloatSetting GT_BLACK_LIFT =
                     clampedFloat("caustica.rt.sdr.gt.blackLift", "sdr.gt.black-lift", 0.0f, -0.5f, 0.5f);
             public static final FloatSetting PSYCHO_PEAK =
-                    clampedFloat("caustica.rt.sdr.psychov.peak", "sdr.psychov.peak", 2.0f, 0.5f, 8.0f);
+                    clampedFloat("caustica.rt.sdr.psychov.peak", "sdr.psychov.peak", 1.0f, 0.5f, 8.0f);
             public static final FloatSetting PSYCHOV23_PEAK =
-                    clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak", 1000.0f / 203.0f, 0.5f, 8.0f);
-            public static final FloatSetting PSYCHOV23_COMPRESSION =
-                    clampedFloat("caustica.rt.sdr.psychov23.compression", "sdr.psychov23.compression", 1.0f, 0.0f, 8.0f);
-            public static final FloatSetting PSYCHOV23_GAMUT_COMPRESSION =
-                    clampedFloat("caustica.rt.sdr.psychov23.gamutCompression", "sdr.psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
+                    clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak", 1.0f, 0.5f, 8.0f);
 
             private Sdr() {
             }
@@ -1048,7 +1074,42 @@ public final class CausticaConfig {
                         return TONEMAP_PSYCHOV23;
                     }
                 }
-                return TONEMAP_AGX;
+                return TONEMAP_PSYCHOV23;
+            }
+        }
+
+        public static final class Offline {
+            public static final BooleanSetting ADAPTIVE =
+                    bool("caustica.rt.offlineAdaptive", "offline-renderer.adaptive", true);
+            public static final IntSetting SAMPLES_PER_BATCH =
+                    clampedInt("caustica.rt.offlineSamplesPerBatch", "offline-renderer.samples-per-batch", 4, 1, 8);
+            public static final IntSetting MIN_SAMPLES =
+                    clampedInt("caustica.rt.offlineMinSamples", "offline-renderer.min-samples", 64, 1, 65536);
+            public static final IntSetting MAX_SAMPLES =
+                    clampedInt("caustica.rt.offlineMaxSamples", "offline-renderer.max-samples", 4096, 1, 1048576);
+            public static final IntSetting MAX_BOUNCES =
+                    clampedInt("caustica.rt.offlineMaxBounces", "offline-renderer.max-bounces", 32, 2, 64);
+            public static final FloatSetting RELATIVE_ERROR = clampedFloat(
+                    "caustica.rt.offlineRelativeError", "offline-renderer.relative-error", 0.01f, 0.0001f, 0.25f);
+            public static final FloatSetting ABSOLUTE_ERROR = clampedFloat(
+                    "caustica.rt.offlineAbsoluteError", "offline-renderer.absolute-error", 0.001f, 0.00001f, 1.0f);
+            public static final BooleanSetting SAVE_EXR =
+                    bool("caustica.rt.offlineSaveExr", "offline-renderer.save-exr", true);
+            public static final BooleanSetting SAVE_PNG =
+                    bool("caustica.rt.offlineSavePng", "offline-renderer.save-png", true);
+
+            private Offline() {
+            }
+        }
+
+        /** PsychoV23 stages that are mathematically shared by SDR and HDR output transforms. */
+        public static final class PsychoV23 {
+            public static final FloatSetting COMPRESSION = clampedFloat(
+                    "caustica.rt.psychov23.compression", "psychov23.compression", 1.0f, 0.0f, 8.0f);
+            public static final FloatSetting GAMUT_COMPRESSION = clampedFloat(
+                    "caustica.rt.psychov23.gamutCompression", "psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
+
+            private PsychoV23() {
             }
         }
 
@@ -1070,9 +1131,9 @@ public final class CausticaConfig {
             public static final int TONEMAP_ID_PSYCHOV = 2;
             public static final int TONEMAP_ID_PSYCHOV23 = 3;
 
-            public static final BooleanSetting ENABLED = bool("caustica.rt.hdr", "hdr.enabled", false);
+            public static final BooleanSetting ENABLED = bool("caustica.rt.hdr", "hdr.enabled", true);
             public static final StringSetting TONEMAP_MODE =
-                    string("caustica.rt.hdr.tonemapMode", "hdr.tonemap-mode", TONEMAP_EETF, Hdr::sanitizeTonemapMode);
+                    string("caustica.rt.hdr.tonemapMode", "hdr.tonemap-mode", TONEMAP_PSYCHOV23, Hdr::sanitizeTonemapMode);
             public static final FloatSetting PAPER_WHITE_NITS =
                     clampedFloat("caustica.rt.hdr.paperWhiteNits", "hdr.paper-white-nits", 200.0f, 80.0f, 1000.0f);
             public static final FloatSetting PEAK_NITS =
@@ -1090,7 +1151,7 @@ public final class CausticaConfig {
             public static final FloatSetting PSYCHO_BLEACHING =
                     clampedFloat("caustica.rt.hdr.psychov.bleaching", "hdr.psychov.bleaching", 0.0f, 0.0f, 1.0f);
             public static final FloatSetting PSYCHO_HUE_RESTORE =
-                    clampedFloat("caustica.rt.hdr.psychov.hue-restore", "hdr.psychov.hue-restore", 0.0f, 0.0f, 1.0f);
+                    clampedFloat("caustica.rt.hdr.psychov.hue-restore", "hdr.psychov.hue-restore", 1.0f, 0.0f, 1.0f);
             public static final FloatSetting PSYCHO_ADAPT_CONTRAST =
                     clampedFloat("caustica.rt.hdr.psychov.adapt-contrast", "hdr.psychov.adapt-contrast", 1.0f, 0.0f, 3.0f);
             public static final FloatSetting PSYCHO_CLIP_POINT =
@@ -1100,11 +1161,6 @@ public final class CausticaConfig {
             public static final StringSetting PSYCHO_WHITE_CURVE =
                     string("caustica.rt.hdr.psychov.whiteCurve", "hdr.psychov.white-curve", "naka-rushton",
                             Hdr::sanitizePsychoWhiteCurve);
-            public static final FloatSetting PSYCHOV23_COMPRESSION =
-                    clampedFloat("caustica.rt.hdr.psychov23.compression", "hdr.psychov23.compression", 1.0f, 0.0f, 8.0f);
-            public static final FloatSetting PSYCHOV23_GAMUT_COMPRESSION =
-                    clampedFloat("caustica.rt.hdr.psychov23.gamutCompression", "hdr.psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
-
             // Snapshot of ENABLED as resolved at startup (system property / config file), before any
             // in-session edit from the options screen. The swapchain's pixel format (PQ vs SDR) is fixed
             // at surface-creation time, so flipping ENABLED later cannot change what's actually presented
@@ -1176,7 +1232,7 @@ public final class CausticaConfig {
                         return TONEMAP_EETF;
                     }
                 }
-                return TONEMAP_EETF;
+                return TONEMAP_PSYCHOV23;
             }
 
             private static String sanitizePsychoWhiteCurve(String value) {

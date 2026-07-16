@@ -36,10 +36,6 @@ public abstract class VideoSettingsScreenMixin {
         throw new AssertionError("mixin stub");
     }
 
-    private static final Component CAUSTICA$RT_HEADER = Component.translatable("caustica.options.rt.header");
-    private static final Component CAUSTICA$FIRST_PERSON_HEADER =
-            Component.translatable("caustica.options.rt.firstPerson.header");
-
     @Redirect(
         method = "addOptions",
         at = @At(
@@ -63,20 +59,11 @@ public abstract class VideoSettingsScreenMixin {
 
     @Inject(method = "addOptions", at = @At("HEAD"))
     private void caustica$addRtOptions(CallbackInfo ci) {
-        if (!CausticaConfig.Rt.ENABLED.value()) {
-            return;
-        }
         OptionsList list = ((OptionsSubScreenAccessor) (Object) this).getList();
         if (list == null) {
             return;
         }
-        list.addHeader(CAUSTICA$RT_HEADER);
-        list.addSmall(RtVideoOptions.exposureOptions());
-        list.addBig(RtVideoOptions.tonemappingButton((Screen) (Object) this, list::applyUnsavedChanges));
-        list.addBig(RtVideoOptions.frameGenerationButton((Screen) (Object) this, list::applyUnsavedChanges));
-        list.addSmall(RtVideoOptions.runtimeOptions());
-        list.addHeader(CAUSTICA$FIRST_PERSON_HEADER);
-        list.addSmall(RtVideoOptions.firstPersonOptions());
+        list.addBig(RtVideoOptions.causticaButton((Screen) (Object) this, list::applyUnsavedChanges));
     }
 
     @Inject(method = "removed", at = @At("TAIL"))

@@ -14,8 +14,8 @@ import world_common;
 // Parallel LabPBR _s (specular) and _n (normal) atlases, stitched to mirror the block atlas sprite
 // layout (RtBlockMaterials), sampled at the SAME uv as blockAtlas. Read only when the prim is flagged
 // (pr.mat.z for _s, pr.mat.w for _n).
-[[vk::binding(9, 0)]]  Sampler2D blockSpecAtlas;
-[[vk::binding(10, 0)]] Sampler2D blockNormalAtlas;
+[[vk::binding(13, 0)]] Sampler2D blockSpecAtlas;
+[[vk::binding(14, 0)]] Sampler2D blockNormalAtlas;
 // Bindless entity textures — a runtime-sized array indexed per-prim (tint.w) by the entity hit path.
 // Slot 0 is a fallback. Parallel per-type LabPBR _n / _s at the same slot.
 [[vk::binding(0, 1)]] Sampler2D entityTex[];
@@ -444,25 +444,18 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float rough = pr.mat.x;
     float metal = pr.mat.y;
     float3 f0 = lerp(float3(0.04, 0.04, 0.04), payload.albedo, metal);
-    // normal.w packs block-light emission plus a +2 non-SOLID flag and +16 boosted-torch flag. Decode
-    // non-SOLID first because torch models are cutout, then strip the independent torch flag.
+    // normal.w packs block-light emission plus a +2 non-SOLID flag.
     float ew = pr.normal.w;
     bool nonSolid = ew >= 1.5;
-    float encodedEmission = nonSolid ? ew - 2.0 : ew;
-    bool boostedTorch = encodedEmission >= 15.5;
-    float sourceEmission = boostedTorch ? encodedEmission - 16.0 : encodedEmission;
-    float emissionScale = boostedTorch
-            ? max(ConstPtr<WorldPush>(pcAddr.worldPushAddr)[0].torchEmissionScale, 0.0)
-            : 1.0;
-    float emission = sourceEmission * emissionScale;
+    float emission = nonSolid ? ew - 2.0 : ew;
     // LabPBR _s, gated by mat.z — shared decode. When an _s map is authored we trust ITS emission and
     // REPLACE the block-light heuristic, so emissive texels come from the pack, not the light level. The
-    // torch-only scale is applied after decode, preserving the exact authored mask while increasing radiance.
+    // integrator applies the independent radiance intensity after this material-only mask decode.
     float sss = 0.0;
     if (pr.mat.z > 0.5) {
         float mappedEmission;
         decodeSpec(blockSpecAtlas.SampleLevel(uv, blockLod), payload.albedo, rough, metal, f0, mappedEmission, sss);
-        emission = mappedEmission * emissionScale;
+        emission = mappedEmission;
         if (!nonSolid) sss = 0.0; // SSS only on non-SOLID terrain (leaves/foliage); SOLID blocks opt out
     }
     payload.f0 = f0;

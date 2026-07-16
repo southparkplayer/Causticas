@@ -38,10 +38,14 @@ final class GlassOnlyIntegrationContractTest {
         assertFalse(raygen.contains("MAX_MEDIUM_DEPTH"));
         assertFalse(raygen.contains("pathMedia"));
         assertTrue(raygen.contains("void opticalGuideHit"));
-        assertTrue(raygen.contains("for (uint crossing = 0u; crossing < 2u; crossing++)"));
+        assertTrue(raygen.contains("for (uint crossing = 0u; crossing < 8u; crossing++)"));
+        assertTrue(raygen.contains("continueThroughWater && interfaceMaterial == MATERIAL_WATER"));
+        assertTrue(raygen.contains("surfaceWaterEntering ? WATER_IOR : (1.0 / WATER_IOR)"));
+        assertTrue(raygen.contains("diffuseAlbedo = SKY_DIFF_ALBEDO"));
         assertTrue(raygen.contains("gv_opticalGuideDir = transmittedDir"));
         assertTrue(raygen.contains("gv_opticalExitEta = thinPane ? 1.0 : materialIor / outsideIor"));
-        assertTrue(raygen.contains("refract(direction, interfaceNormal, exitEta)"));
+        assertTrue(raygen.contains("eta = entering ? (1.0 / WATER_IOR) : WATER_IOR"));
+        assertTrue(raygen.contains("Crossing-budget exhaustion means no trustworthy diffuse destination"));
         assertTrue(raygen.contains("gv_hitCamRel = destinationHitCamRel"));
         assertTrue(raygen.contains("gv_normal = destinationNormal"));
         assertTrue(raygen.contains("gv_rough = destinationRoughness"));

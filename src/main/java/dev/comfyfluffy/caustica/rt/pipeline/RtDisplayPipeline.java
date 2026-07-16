@@ -174,10 +174,10 @@ public final class RtDisplayPipeline {
                 push.putFloat(64 + i * Float.BYTES, CausticaConfig.Rt.Sdr.tonemapParam(i));
             }
             push.putInt(96, CausticaConfig.Rt.Composite.DEBUG_VIEW.value());
-            push.putFloat(100, CausticaConfig.Rt.Sdr.PSYCHOV23_COMPRESSION.value());
-            push.putFloat(104, CausticaConfig.Rt.Sdr.PSYCHOV23_GAMUT_COMPRESSION.value());
-            push.putFloat(108, CausticaConfig.Rt.Hdr.PSYCHOV23_COMPRESSION.value());
-            push.putFloat(112, CausticaConfig.Rt.Hdr.PSYCHOV23_GAMUT_COMPRESSION.value());
+            push.putFloat(100, CausticaConfig.Rt.PsychoV23.COMPRESSION.value());
+            push.putFloat(104, CausticaConfig.Rt.PsychoV23.GAMUT_COMPRESSION.value());
+            push.putFloat(108, CausticaConfig.Rt.PsychoV23.COMPRESSION.value());
+            push.putFloat(112, CausticaConfig.Rt.PsychoV23.GAMUT_COMPRESSION.value());
             push.putFloat(116, CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK.value());
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
