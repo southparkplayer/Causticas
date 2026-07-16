@@ -62,6 +62,7 @@ final class CausticaDebugBridge {
             setFloat(command, "minSegmentRatio", CausticaConfig.Rt.Sharc.MIN_SEGMENT_RATIO);
             setBoolean(command, "glossyQuery", CausticaConfig.Rt.Sharc.GLOSSY_QUERY);
             setBoolean(command, "liveSecondaryDirect", CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT);
+            setBoolean(command, "sharcDetailedStats", CausticaConfig.Rt.Sharc.DETAILED_STATS);
             if (Boolean.parseBoolean(command.getProperty("resetCache", "false"))) {
                 RtComposite.INSTANCE.requestSharcReset("debug bridge reset");
             }
@@ -106,6 +107,12 @@ final class CausticaDebugBridge {
         state.setProperty("sharcUpdateGpuNanos", Long.toString(RtComposite.INSTANCE.sharcUpdateGpuNanos()));
         state.setProperty("sharcResolveGpuNanos", Long.toString(RtComposite.INSTANCE.sharcResolveGpuNanos()));
         state.setProperty("sharcQueryGpuNanos", Long.toString(RtComposite.INSTANCE.sharcQueryGpuNanos()));
+        state.setProperty("blasGpuNanos", Long.toString(RtComposite.INSTANCE.blasGpuNanos()));
+        state.setProperty("tlasGpuNanos", Long.toString(RtComposite.INSTANCE.tlasGpuNanos()));
+        state.setProperty("reconstructionGpuNanos", Long.toString(RtComposite.INSTANCE.reconstructionGpuNanos()));
+        state.setProperty("exposureGpuNanos", Long.toString(RtComposite.INSTANCE.exposureGpuNanos()));
+        state.setProperty("displayGpuNanos", Long.toString(RtComposite.INSTANCE.displayGpuNanos()));
+        state.setProperty("copyGpuNanos", Long.toString(RtComposite.INSTANCE.copyGpuNanos()));
         state.setProperty("backend", RtRuntimeStatus.backend());
         state.setProperty("rtRequested", Boolean.toString(RtDeviceBringup.rtRequested()));
         state.setProperty("rtContextReady", Boolean.toString(RtRuntimeStatus.rtContextReady()));
@@ -126,6 +133,7 @@ final class CausticaDebugBridge {
         state.setProperty("glossyQuery", Boolean.toString(CausticaConfig.Rt.Sharc.GLOSSY_QUERY.value()));
         state.setProperty("liveSecondaryDirect", Boolean.toString(
                 CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT.value()));
+        state.setProperty("sharcDetailedStats", Boolean.toString(CausticaConfig.Rt.Sharc.DETAILED_STATS.value()));
         state.setProperty("timestampMillis", Long.toString(System.currentTimeMillis()));
         try {
             Files.createDirectories(DIRECTORY);

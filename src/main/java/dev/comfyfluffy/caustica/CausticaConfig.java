@@ -721,6 +721,8 @@ public final class CausticaConfig {
                     bool("caustica.rt.sharcGlossyQuery", "sharc.glossy-query", false);
             public static final BooleanSetting LIVE_SECONDARY_DIRECT =
                     bool("caustica.rt.sharcLiveSecondaryDirect", "sharc.live-secondary-direct", true);
+            public static final BooleanSetting DETAILED_STATS =
+                    bool("caustica.rt.sharcDetailedStats", "sharc.detailed-stats", false);
 
             private Sharc() {}
         }

@@ -96,7 +96,7 @@ public final class RtComposite {
 
     public boolean sharcActive() {
         return sharcCache != null && sharcUpdatePipeline != null && sharcResolvePipeline != null
-                && sharcQueryPipeline != null;
+                && sharcQueryPipeline != null && sharcDiffuseQueryPipeline != null;
     }
 
     public void requestSharcReset(String reason) {
@@ -123,6 +123,12 @@ public final class RtComposite {
     public long sharcUpdateGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.sharcUpdateNanos(); }
     public long sharcResolveGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.sharcResolveNanos(); }
     public long sharcQueryGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.sharcQueryNanos(); }
+    public long blasGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.blasNanos(); }
+    public long tlasGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.tlasNanos(); }
+    public long reconstructionGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.reconstructionNanos(); }
+    public long exposureGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.exposureNanos(); }
+    public long displayGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.displayNanos(); }
+    public long copyGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.copyNanos(); }
 
     // WorldPushData and its serializer are generated from Slang's reflected Std430DataLayout. Java never
     // owns or calculates a shader byte offset, struct size, array stride, or fixed-array capacity.
@@ -214,6 +220,7 @@ public final class RtComposite {
     private RtPipeline worldPipeline;
     private RtPipeline sharcUpdatePipeline;
     private RtPipeline sharcQueryPipeline;
+    private RtPipeline sharcDiffuseQueryPipeline;
     private RtPipeline sharcDiagnosticUpdatePipeline;
     private RtPipeline sharcDiagnosticQueryPipeline;
     private RtSharcResolvePipeline sharcResolvePipeline;
@@ -713,6 +720,10 @@ public final class RtComposite {
                     new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
                     "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
                     true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
+            sharcDiffuseQueryPipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiffuseQueryRaygenShader(),
+                    new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
+                    "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
+                    true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
             sharcDiagnosticUpdatePipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiagnosticUpdateRaygenShader(),
                     new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
                     "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
@@ -728,6 +739,7 @@ public final class RtComposite {
             if (output != null) {
                 sharcUpdatePipeline.setStorageImage(output.view);
                 sharcQueryPipeline.setStorageImage(output.view);
+                sharcDiffuseQueryPipeline.setStorageImage(output.view);
                 sharcDiagnosticUpdatePipeline.setStorageImage(output.view);
                 sharcDiagnosticQueryPipeline.setStorageImage(output.view);
                 bindGuideImages();
@@ -744,7 +756,7 @@ public final class RtComposite {
     }
 
     private RtPipeline[] worldPipelines() {
-        return new RtPipeline[]{worldPipeline, sharcUpdatePipeline, sharcQueryPipeline,
+        return new RtPipeline[]{worldPipeline, sharcUpdatePipeline, sharcQueryPipeline, sharcDiffuseQueryPipeline,
                 sharcDiagnosticUpdatePipeline, sharcDiagnosticQueryPipeline};
     }
 
@@ -773,12 +785,14 @@ public final class RtComposite {
     private void destroySharcResources() {
         if (sharcUpdatePipeline != null) sharcUpdatePipeline.destroy();
         if (sharcQueryPipeline != null) sharcQueryPipeline.destroy();
+        if (sharcDiffuseQueryPipeline != null) sharcDiffuseQueryPipeline.destroy();
         if (sharcDiagnosticUpdatePipeline != null) sharcDiagnosticUpdatePipeline.destroy();
         if (sharcDiagnosticQueryPipeline != null) sharcDiagnosticQueryPipeline.destroy();
         if (sharcResolvePipeline != null) sharcResolvePipeline.destroy();
         if (sharcCache != null) sharcCache.destroy();
         sharcUpdatePipeline = null;
         sharcQueryPipeline = null;
+        sharcDiffuseQueryPipeline = null;
         sharcDiagnosticUpdatePipeline = null;
         sharcDiagnosticQueryPipeline = null;
         sharcResolvePipeline = null;
@@ -1352,12 +1366,15 @@ public final class RtComposite {
             // Build the entity BLAS this frame, then the TLAS that references them (+ the already-built
             // terrain BLAS), then the trace — each separated by a barrier. The frame TLAS is retired
             // KEEP_FRAMES later (entity meshes/BLAS are retired by RtEntities on the same horizon).
+            if (traceGpuProfiler != null) traceGpuProfiler.beginFrame(cmd,
+                    sharcCache != null && !offlineGroundTruth, RtFrameStats.enabled());
             if ((!offlineGroundTruth || buildOfflineSnapshot) && !fe.blas().isEmpty()) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blasRecord")) {
                     RtAccel.recordBlasBuilds(ctx, cmd, fe.blas());
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // entity BLAS writes visible to the TLAS build
             }
+            if (traceGpuProfiler != null) traceGpuProfiler.blasEnd(cmd);
             RtAccel.PreparedTlas frameTlas = offlineGroundTruth ? offlineTlas : null;
             if (frameTlas == null) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
@@ -1377,6 +1394,7 @@ public final class RtComposite {
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
             }
+            if (traceGpuProfiler != null) traceGpuProfiler.tlasEnd(cmd);
             if (buildOfflineSnapshot) {
                 offlineTlas = frameTlas;
             }
@@ -1385,7 +1403,6 @@ public final class RtComposite {
             // hit (tableAddr/entityTableAddr/frameIndex) as real inline push constants, so those lookups
             // don't pay for a second global-memory dereference through pcAddr.worldPushAddr first.
             if (sharcCache != null && !offlineGroundTruth) {
-                if (traceGpuProfiler != null) traceGpuProfiler.begin(cmd, true);
                 float sceneScale = CausticaConfig.Rt.Sharc.SCENE_SCALE.value();
                 if (level != sharcWorldIdentity) {
                     if (sharcWorldIdentity != null) sharcCache.requestReset("world or dimension changed");
@@ -1411,10 +1428,12 @@ public final class RtComposite {
                 ByteBuffer sharcPush = stack.malloc(SharcPushAddrData.BYTE_SIZE);
                 new SharcPushAddrData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                         (int) frameCounter, sharcFrame.address()).write(sharcPush);
-                boolean sharcDiagnostics = RtFrameStats.enabled()
+                boolean sharcDiagnostics = CausticaConfig.Rt.Sharc.DETAILED_STATS.value()
                         || (worldDebugView >= 9 && worldDebugView <= 16);
                 RtPipeline updatePipeline = sharcDiagnostics ? sharcDiagnosticUpdatePipeline : sharcUpdatePipeline;
-                RtPipeline queryPipeline = sharcDiagnostics ? sharcDiagnosticQueryPipeline : sharcQueryPipeline;
+                RtPipeline queryPipeline = sharcDiagnostics ? sharcDiagnosticQueryPipeline
+                        : CausticaConfig.Rt.Sharc.GLOSSY_QUERY.value()
+                        ? sharcQueryPipeline : sharcDiffuseQueryPipeline;
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "SHaRC sparse update");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.sharcUpdate")) {
                     int updateTileSize = CausticaConfig.Rt.Sharc.UPDATE_TILE_SIZE.value();
@@ -1437,7 +1456,6 @@ public final class RtComposite {
                 ByteBuffer pushAddr = stack.malloc(PushAddrData.BYTE_SIZE);
                 new PushAddrData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                         (int) frameCounter).write(pushAddr);
-                if (traceGpuProfiler != null) traceGpuProfiler.begin(cmd, false);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world trace");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.trace")) {
                     active.trace(cmd, renderW, renderH, pushAddr);
@@ -1478,6 +1496,7 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
+            if (traceGpuProfiler != null) traceGpuProfiler.reconstructionEnd(cmd);
             rrProducedPreviousFrame = rrDone;
             if (rrOutput != null) {
                 displayInput = rrOutput;
@@ -1496,13 +1515,18 @@ public final class RtComposite {
                     exposure.record(ctx, cmd, stack, displayInput, offlineGroundTruth);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
+                if (traceGpuProfiler != null) traceGpuProfiler.exposureEnd(cmd);
 
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                     displayPipeline.dispatch(cmd, displayW, displayH, RtHdr.effective());
                 }
+                if (traceGpuProfiler != null) traceGpuProfiler.displayEnd(cmd);
                 offlineLastPresentNanos = offlineGroundTruth ? System.nanoTime() : 0L;
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            } else if (traceGpuProfiler != null) {
+                traceGpuProfiler.exposureEnd(cmd);
+                traceGpuProfiler.displayEnd(cmd);
             }
             hdrWrittenThisFrame = RtHdr.effective();
 
@@ -1512,6 +1536,7 @@ public final class RtComposite {
                         dstImage, VK10.VK_IMAGE_LAYOUT_GENERAL, copyRegion(stack, displayW, displayH));
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            if (traceGpuProfiler != null) traceGpuProfiler.copyEnd(cmd);
         }
         if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
             throw new IllegalStateException("vkEndCommandBuffer(rt composite) failed");

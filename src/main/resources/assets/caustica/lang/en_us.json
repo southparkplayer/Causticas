@@ -300,6 +300,8 @@
 	"caustica.options.rt.sharcGlossyQuery.tooltip": "Allow glossy cache queries only when NVIDIA's effective ray-cone formula exceeds the voxel resolution. Off is the conservative default.",
 	"caustica.options.rt.sharcLiveSecondaryDirect": "Live Secondary Direct Light",
 	"caustica.options.rt.sharcLiveSecondaryDirect.tooltip": "Evaluate view-dependent direct specular and SSS before a cache hit. On is most exact; off enables true early termination and uses cached diffuse/emissive transport at secondary vertices.",
+	"caustica.options.rt.sharcDetailedStats": "SHaRC Detailed Counters",
+	"caustica.options.rt.sharcDetailedStats.tooltip": "Enable expensive per-path atomic counters and diagnostic SHaRC shaders. Leave off for unbiased performance profiling.",
 	"caustica.options.rt.sharcReset": "Reset SHaRC Cache",
 	"caustica.options.rt.sharcAntiFirefly": "SHaRC Anti-Firefly Filter",
 	"caustica.options.rt.sharcAntiFirefly.tooltip": "Use NVIDIA's confidence-based high-sample-weight adjustment. This does not clamp final radiance or replace estimator validation.",

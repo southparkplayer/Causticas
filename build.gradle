@@ -251,6 +251,7 @@ abstract class CompileShaders extends DefaultTask {
 			def variantDefines = ["-DCAUSTICA_SHARC=1"]
 			def queryDefines = variantDefines + ["-DCAUSTICA_SHARC_QUERY=1", "-DCAUSTICA_SHARC_UPDATE=0",
 					"-DCAUSTICA_SHARC_DIAGNOSTICS=0"]
+			def diffuseQueryDefines = queryDefines + ["-DCAUSTICA_SHARC_GLOSSY=0"]
 			def updateDefines = variantDefines + ["-DCAUSTICA_SHARC_QUERY=0", "-DCAUSTICA_SHARC_UPDATE=1",
 					"-DCAUSTICA_SHARC_DIAGNOSTICS=0",
 					"-warnings-disable", "41000"]
@@ -265,6 +266,10 @@ abstract class CompileShaders extends DefaultTask {
 					queryDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderEXT"])
 			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_nv.rgen.spv"),
 					queryDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderNV"])
+			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_diffuse.rgen.spv"),
+					diffuseQueryDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderEXT"])
+			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_diffuse_nv.rgen.spv"),
+					diffuseQueryDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderNV"])
 			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_update.rgen.spv"),
 					updateDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderEXT"])
 			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_update_nv.rgen.spv"),
@@ -295,6 +300,13 @@ abstract class CompileShaders extends DefaultTask {
 				def raygen = new File(scratchDir, name)
 				if (!raygen.isFile() || raygen.length() > 180_000L) {
 					throw new GradleException("SHaRC query raygen complexity budget exceeded: ${name} is "
+							+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 180000)")
+				}
+			}
+			["world_sharc_diffuse.rgen.spv", "world_sharc_diffuse_nv.rgen.spv"].each { name ->
+				def raygen = new File(scratchDir, name)
+				if (!raygen.isFile() || raygen.length() > 180_000L) {
+					throw new GradleException("SHaRC diffuse-query raygen complexity budget exceeded: ${name} is "
 							+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 180000)")
 				}
 			}
@@ -678,6 +690,8 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 				required.addAll([
 				"caustica/rt/world_sharc.rgen.spv",
 				"caustica/rt/world_sharc_nv.rgen.spv",
+				"caustica/rt/world_sharc_diffuse.rgen.spv",
+				"caustica/rt/world_sharc_diffuse_nv.rgen.spv",
 				"caustica/rt/world_sharc_update.rgen.spv",
 				"caustica/rt/world_sharc_update_nv.rgen.spv",
 				"caustica/rt/world_sharc_diagnostic.rgen.spv",

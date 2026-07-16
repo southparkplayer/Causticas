@@ -16,6 +16,7 @@ param(
     [double]$MinSegmentRatio,
     [bool]$GlossyQuery,
     [bool]$LiveSecondaryDirect,
+    [bool]$SharcDetailedStats,
     [bool]$Fullscreen,
     [int]$Seconds = 20
 )
@@ -66,6 +67,7 @@ if ($PSBoundParameters.ContainsKey('UpdateMaxBounces')) { $lines += "updateMaxBo
 if ($PSBoundParameters.ContainsKey('MinSegmentRatio')) { $lines += "minSegmentRatio=$($MinSegmentRatio.ToString([Globalization.CultureInfo]::InvariantCulture))" }
 if ($PSBoundParameters.ContainsKey('GlossyQuery')) { $lines += "glossyQuery=$($GlossyQuery.ToString().ToLowerInvariant())" }
 if ($PSBoundParameters.ContainsKey('LiveSecondaryDirect')) { $lines += "liveSecondaryDirect=$($LiveSecondaryDirect.ToString().ToLowerInvariant())" }
+if ($PSBoundParameters.ContainsKey('SharcDetailedStats')) { $lines += "sharcDetailedStats=$($SharcDetailedStats.ToString().ToLowerInvariant())" }
 if ($PSBoundParameters.ContainsKey('Fullscreen')) { $lines += "fullscreen=$($Fullscreen.ToString().ToLowerInvariant())" }
 if ($Action -eq 'reset') { $lines += 'resetCache=true' }
 if ($Action -eq 'shutdown') { $lines += 'shutdown=true' }

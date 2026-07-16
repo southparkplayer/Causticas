@@ -149,6 +149,11 @@ public final class RtDeviceBringup {
         return serBackend == SerBackend.NV ? "world_sharc_nv.rgen.spv" : "world_sharc.rgen.spv";
     }
 
+    public static String sharcDiffuseQueryRaygenShader() {
+        return serBackend == SerBackend.NV ? "world_sharc_diffuse_nv.rgen.spv"
+                : "world_sharc_diffuse.rgen.spv";
+    }
+
     public static String sharcUpdateRaygenShader() {
         return serBackend == SerBackend.NV ? "world_sharc_update_nv.rgen.spv" : "world_sharc_update.rgen.spv";
     }

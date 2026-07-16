@@ -94,7 +94,9 @@ public final class RtFrameStats {
                     "sharcQueryGpuNanos", "sharcInsertions", "sharcCollisions", "sharcStaleEvictions",
                     "sharcAllocatedBytes", "sharcResetCount", "sharcAverageTerminatedBounceX1000",
                     "sharcNumericRisks", "sharcResolvedSaturations", "sharcMaxCachedLumaBits",
-                    "sharcShortSegmentRejects", "sharcGlossyRejects", "sharcDynamicRejects"},
+                    "sharcShortSegmentRejects", "sharcGlossyRejects", "sharcDynamicRejects",
+                    "blasGpuNanos", "tlasGpuNanos", "reconstructionGpuNanos",
+                    "exposureGpuNanos", "displayGpuNanos", "copyGpuNanos"},
             true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();

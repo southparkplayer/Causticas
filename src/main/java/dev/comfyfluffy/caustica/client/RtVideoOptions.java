@@ -432,6 +432,7 @@ public final class RtVideoOptions {
             bool("caustica.options.rt.sharcGlossyQuery", CausticaConfig.Rt.Sharc.GLOSSY_QUERY),
             bool("caustica.options.rt.sharcLiveSecondaryDirect", CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT),
             bool("caustica.options.rt.sharcAntiFirefly", CausticaConfig.Rt.Sharc.ANTI_FIREFLY),
+            bool("caustica.options.rt.sharcDetailedStats", CausticaConfig.Rt.Sharc.DETAILED_STATS),
             debugView(), bool("caustica.options.frameStats", CausticaConfig.Rt.FrameStats.ENABLED),
         };
     }

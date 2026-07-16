@@ -30,6 +30,9 @@
 #ifndef CAUSTICA_SHARC_DIAGNOSTICS
 #define CAUSTICA_SHARC_DIAGNOSTICS 1
 #endif
+#ifndef CAUSTICA_SHARC_GLOSSY
+#define CAUSTICA_SHARC_GLOSSY 1
+#endif
 
 import world_common;
 
@@ -136,10 +139,14 @@ bool causticaTrySharcQuery(int bounce, float3 hitPos, float3 albedo, float3 mate
     bool dynamicSurface = (payload.flags & PAYLOAD_SHARC_DYNAMIC) != 0u;
     float queryVoxelSize = causticaSharcVoxelSize(hitPos);
     float minSegment = queryVoxelSize * max(sharcFrame.minSegmentRatio, 0.0);
+#if CAUSTICA_SHARC_GLOSSY
     float glossyDenominator = max(1.0 - previousGlossyAlpha * previousGlossyAlpha, 1.0e-6);
     float glossyCone = 2.0 * payload.hitT * sqrt(0.5 * previousGlossyAlpha
             * previousGlossyAlpha / glossyDenominator);
     bool glossyEligible = (sharcFrame.queryFlags & 1u) != 0u && glossyCone >= minSegment;
+#else
+    bool glossyEligible = false;
+#endif
     bool segmentEligible = payload.hitT >= minSegment;
     bool lobeEligible = previousLobeDiffuse || glossyEligible;
     bool queryEligible = bounce > 0 && pathEligible && !dynamicSurface && segmentEligible && lobeEligible;

@@ -43,8 +43,9 @@ The earlier fast preset was rejected after visible fireflies. It enabled glossy 
 diagnosis, but they are not accepted defaults or evidence of correct performance.
 
 The corrected production path compiles diagnostics into separate ray-generation pipelines. The ordinary
-query shader is 159,296 bytes instead of 179,492 bytes; selecting SHaRC debug views or Frame Statistics
-switches to the diagnostic pipelines, while normal rendering carries no diagnostic branches or atomics.
+query shader is 159,296 bytes instead of 179,492 bytes; selecting SHaRC debug views or **SHaRC Detailed
+Counters** switches to the diagnostic pipelines, while normal rendering and general GPU stage timing
+carry no per-path diagnostic branches or atomics.
 
 On exact runtime artifact
 `10E56CFFB16B2D9EB87C9AF9B44349E2AD506BFC78D37B6BF50BE5FB83BBF332`, the saved 4K cave camera
@@ -68,6 +69,20 @@ contained 345), and its mean-image absolute difference from baseline was 0.00594
 p99.99. This rejects the observed firefly failure for this cave sequence; it is not a scene-independent
 visual-equivalence or soak claim.
 
+### Post-integration query specialization
+
+Artifact `7932640D17D22CB9552BBD95A9CCFA6E3AF5C812F740B701A6D3A5B4943D9ED9` adds a
+158,200-byte diffuse-only query raygen selected when glossy querying is disabled, while preserving the
+159,296-byte general raygen for the exposed glossy-query knob. In an interleaved 4K cave A/B, the
+general shader measured 95 FPS / 7.636 ms median query and the specialized shader measured 98 FPS /
+7.387 ms; an earlier specialized run also measured 98 FPS / 7.429 ms. The specialization removes only
+dead glossy-cone evaluation: with `queryFlags & 1 == 0`, the prior `glossyEligible` expression was false,
+so query eligibility and radiance are unchanged.
+
+This artifact also adds opt-in full-pipeline GPU timestamps and the bridge-driven capture harness. With
+Frame Statistics off, the extra BLAS/TLAS/reconstruction/exposure/display/copy timestamp writes are not
+recorded. SHaRC Detailed Counters remains a separate, explicitly expensive diagnostic switch.
+
 ## Menu and diagnostics
 
 In **Caustica Settings**, set **SHaRC Indirect Cache** to `Ready`/`Active` and select Low,
@@ -85,9 +100,11 @@ The existing **Debug View** control includes:
 - SHaRC Query Eligibility: dynamic, short-segment, lobe, and eligible classification.
 - SHaRC Numeric Risk: accumulator/resolve risk visualization.
 
-Enable **Frame Statistics** to write asynchronous GPU timestamp results and SHaRC counters to
-`rt-frame-stats/frame.csv`. Timestamp columns are counters ending in `GpuNanos`; the ordinary
-`frame.*Ms` columns are CPU command-recording envelopes.
+Enable **Frame Statistics** to write asynchronous full-pipeline GPU timestamp results and general
+counters to `rt-frame-stats/frame.csv`. Timestamp columns are counters ending in `GpuNanos`; the
+ordinary `frame.*Ms` columns are CPU command-recording envelopes. Enable **SHaRC Detailed Counters**
+only for short diagnostic captures: it selects the instrumented SHaRC shaders whose per-path global
+atomics are intentionally excluded from production performance measurements.
 
 For repeatable testing without UI automation, `tools/caustica-debug-bridge.ps1` can set SHaRC,
 Frame Statistics, debug view, and scene scale; sample live FPS; report active state; and request a clean

@@ -26,7 +26,8 @@ final class SharcIntegrationContractTest {
         String raygen = read("shaders/world/world.rgen.slang");
         assertTrue(composite.indexOf("updatePipeline.trace") < composite.indexOf("sharcResolvePipeline.dispatch"));
         assertTrue(composite.indexOf("sharcResolvePipeline.dispatch") < composite.indexOf("queryPipeline.trace"));
-        assertTrue(composite.contains("sharcDiagnostics ? sharcDiagnosticQueryPipeline : sharcQueryPipeline"));
+        assertTrue(composite.contains("? sharcQueryPipeline : sharcDiffuseQueryPipeline"));
+        assertTrue(raygen.contains("#if CAUSTICA_SHARC_GLOSSY"));
         assertTrue(composite.contains("(renderW + updateTileSize - 1) / updateTileSize"));
         assertTrue(raygen.contains("tile * tileSize"));
         assertTrue(raygen.contains("pc.maxBounces = min(pc.maxBounces, sharcFrame.updateMaxBounces)"));

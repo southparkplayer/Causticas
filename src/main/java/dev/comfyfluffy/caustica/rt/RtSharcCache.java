@@ -113,8 +113,8 @@ public final class RtSharcCache {
         if (previousCamera == null || pendingClear) previousCamera = camera;
         int flags = dev.comfyfluffy.caustica.CausticaConfig.Rt.Sharc.ANTI_FIREFLY.value() ? 1 : 0;
         // Per-path statistics use contended global atomics. Keep them out of the production hot path
-        // unless the user explicitly enabled frame-stat capture.
-        if (RtFrameStats.enabled()) flags |= 2;
+        // unless the user explicitly enabled SHaRC detailed counters.
+        if (dev.comfyfluffy.caustica.CausticaConfig.Rt.Sharc.DETAILED_STATS.value()) flags |= 2;
         ByteBuffer dst = MemoryUtil.memByteBuffer(frames[slot].mapped, SharcFrameData.BYTE_SIZE);
         new SharcFrameData(hashEntries.deviceAddress, accumulation.deviceAddress, resolved.deviceAddress,
                 statsBuffer.deviceAddress, camera, capacity, previousCamera, (int) frameIndex,
