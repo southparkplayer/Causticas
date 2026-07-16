@@ -548,11 +548,11 @@ public final class CausticaConfig {
             // External keys retain their historical "per-tick" names for config compatibility; terrain
             // streaming is render-pass driven and these Java names reflect the actual scheduling unit.
             public static final IntSetting ASYNC_DISPATCH_PER_PASS =
-                    intAtLeast("caustica.rt.asyncDispatchPerTick", "terrain.async-dispatch-per-tick", 64, 0);
+                    intAtLeast("caustica.rt.asyncDispatchPerTick", "terrain.async-dispatch-per-tick", 32, 0);
             public static final IntSetting COMPLETION_RESULTS_PER_PASS =
-                    intAtLeast("caustica.rt.sectionResultsPerTick", "terrain.section-results-per-tick", 64, 0);
+                    intAtLeast("caustica.rt.sectionResultsPerTick", "terrain.section-results-per-tick", 32, 0);
             public static final IntSetting MAX_INFLIGHT_SECTIONS =
-                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 128, 0);
+                    intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 64, 0);
             public static final IntSetting SECTION_TABLE_INITIAL_CAPACITY =
                     intAtLeast("caustica.rt.sectionTableInitialCapacity", "terrain.section-table-initial-capacity", 512, 1);
             public static final IntSetting REBASE_DISTANCE_BLOCKS =
