@@ -49,6 +49,8 @@ static float3 gv_normal;
 static float3 gv_albedo;
 static float3 gv_specAlb; // specular albedo fed to DLSS-RR for specular demodulation (0 = pure diffuse).
 static float gv_rough;
+static float gv_emission;
+static uint gv_emissionSource;
 // Linear VIEW-SPACE depth guide inputs; sky resolves to a large far value (no negative sentinel).
 static float gv_depth;
 static float3 gv_hitCamRel;       // primary-surface hit position relative to the current camera
@@ -58,14 +60,10 @@ static bool gv_motionUseRefracted; // true when the MV tracks the refracted hit 
 // terrain/sky, an entity's per-vertex/object motion for a dynamic hit).
 static float3 gv_motionObjDisp;
 
-static const uint PAYLOAD_MATERIAL_MASK = 3u;
-
-static const uint MATERIAL_OPAQUE = 0u;
-static const uint MATERIAL_WATER = 1u;
-static const uint MATERIAL_PARTICLE = 2u;
-static const uint MATERIAL_GLASS = 3u;
-
 uint payloadMaterial() { return payload.flags & PAYLOAD_MATERIAL_MASK; }
+uint payloadEmissionSource() {
+    return (payload.flags >> PAYLOAD_EMISSION_SOURCE_SHIFT) & PAYLOAD_EMISSION_SOURCE_MASK;
+}
 // Set by world.rchit only on a MATERIAL_WATER hit (see PAYLOAD_WATER_ENTERING) — whether the ray was
 // travelling into the water volume (vs. out of it) at this hit's face.
 bool payloadWaterEntering() { return (payload.flags & PAYLOAD_WATER_ENTERING) != 0u; }
@@ -73,6 +71,8 @@ float payloadRoughness() { return unpackHalf2(payload.roughMetal).x; }
 float payloadMetalness() { return unpackHalf2(payload.roughMetal).y; }
 float payloadEmission() { return unpackHalf2(payload.emissionSss).x; }
 float payloadSss() { return unpackHalf2(payload.emissionSss).y; }
+float payloadIor() { return unpackHalf2(payload.iorTransmission).x; }
+float payloadTransmission() { return unpackHalf2(payload.iorTransmission).y; }
 void payloadSetTraceState(bool showCelestial, float rayConeWidth, float rayConeSpread) {
     payload.flags = showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u;
     payload.rayCone = packHalf2(float2(rayConeWidth, rayConeSpread));
@@ -90,13 +90,10 @@ static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already c
 
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 static const float WATER_IOR = 1.333;
-static const float WATER_GUIDE_ROUGH = 0.02;
 static const float3 SKY_SPEC_ALBEDO = float3(0.5, 0.5, 0.5); // RR guide default for sky pixels.
 static const float3 SKY_DIFF_ALBEDO = float3(0.5, 0.5, 0.5);
 
 // Stained glass / ice (material 3): a thin colored dielectric. IOR ~1.5 (soda-lime glass).
-static const float GLASS_IOR = 1.52;
-static const float GLASS_GUIDE_ROUGH = 0.04;
 // Transmitted-ray origin offset when crossing a glass face. Must be SMALLER than the terrain-side
 // TRANSLUCENT_INSET (RtTerrain, 2e-4 blocks): glass is recessed into its block by that inset, so a face
 // touching a slab/stair leaves a tiny gap before the neighbour's surface. A large bias (SURF_BIAS) would
@@ -491,6 +488,7 @@ float2 specularReflectionMotion(float3 surfacePos, float3 primaryDir, float2 cur
 // `refracted` is false on total internal reflection (no refracted hit exists); a sky miss returns a far
 // point along the refracted direction, which the self-delta MV handles uniformly.
 void refractedGuideHit(float3 surfacePos, float3 incidentDir, float3 surfaceNormal, bool inWaterAtSurface,
+                       float materialIor,
                        float rayConeWidth, float rayConeSpread,
                        out float3 hitCamRel, out float3 motionPrev, out bool refracted, out float3 diffuseAlbedo,
                        out float3 specAlbedo) {
@@ -500,8 +498,8 @@ void refractedGuideHit(float3 surfacePos, float3 incidentDir, float3 surfaceNorm
     diffuseAlbedo = float3(0.0, 0.0, 0.0);
     specAlbedo = float3(0.0, 0.0, 0.0);
 
-    float etaI = inWaterAtSurface ? WATER_IOR : 1.0;
-    float etaT = inWaterAtSurface ? 1.0 : WATER_IOR;
+    float etaI = inWaterAtSurface ? materialIor : 1.0;
+    float etaT = inWaterAtSurface ? 1.0 : materialIor;
     float3 refractedDir = refract(incidentDir, surfaceNormal, etaI / etaT);
     if (dot(refractedDir, refractedDir) <= 0.0) {
         return; // total internal reflection: no refracted guide hit exists
@@ -579,6 +577,8 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
                 gv_albedo = SKY_DIFF_ALBEDO;
                 gv_specAlb = SKY_SPEC_ALBEDO;
                 gv_rough = 1.0;
+                gv_emission = 0.0;
+                gv_emissionSource = EMISSION_SOURCE_NONE;
                 gv_hitCamRel = rd * 1.0e6; // sky at infinity: only rotation parallax (-> large far depth)
                 gv_motionHitCamRel = gv_hitCamRel;
                 gv_motionUseRefracted = false;
@@ -599,6 +599,10 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
         float3 hitPos = ro + rd * payload.hitT;
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
+        if (bounce == 0) {
+            gv_emission = payloadEmission();
+            gv_emissionSource = payloadEmissionSource();
+        }
 
         // Stained glass / ice (material 3): a thin colored dielectric. Stochastically reflect (Fresnel
         // glint) or transmit; on transmission the throughput is multiplied by the pane's tint, so light
@@ -607,11 +611,13 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
         // refraction bend) — the instance stays double-sided and the normal already faces the incoming ray.
         if (material == MATERIAL_GLASS) {
             float3 glassTint = payload.albedo;
+            float materialIor = max(payloadIor(), 1.0e-3);
+            float transmission = clamp(payloadTransmission(), 0.0, 1.0);
             float cosI = clamp(dot(-rd, n), 0.0, 1.0);
-            float F = fresnelDielectric(cosI, 1.0, GLASS_IOR);
+            float F = fresnelDielectric(cosI, 1.0, materialIor);
             if (bounce == 0) { // primary glass hit: feed RR a smooth dielectric specular surface
                 gv_normal = n;
-                gv_rough = GLASS_GUIDE_ROUGH;
+                gv_rough = clamp(payloadRoughness(), MIN_ROUGH, 1.0);
                 gv_specAlb = float3(F, F, F);
                 gv_albedo = glassTint;            // demodulate by the transmission tint
                 gv_hitCamRel = hitPos - pc.camOffset;
@@ -623,7 +629,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
                 rd = reflect(rd, n);
                 ro = hitPos + n * SURF_BIAS;       // reflected ray stays on the incidence side
             } else {
-                throughput *= glassTint;           // colored transmission
+                throughput *= glassTint * transmission; // colored, optionally partial transmission
                 ro = hitPos - n * GLASS_TRANSMIT_BIAS; // cross to the far side without overshooting a close neighbour
             }
             showCelestial = true;                  // specular interface: the continuation ray may see the disc
@@ -686,6 +692,11 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
         // transmission, the new medium is read from this hit's face orientation (payloadWaterEntering),
         // not toggled — see PAYLOAD_WATER_ENTERING. The bounce cap bounds stacked refractions.
         if (material == MATERIAL_WATER) {
+            float materialIor = max(payloadIor(), 1.0e-3);
+            float transmission = clamp(payloadTransmission(), 0.0, 1.0);
+            // The primary-water guide traces another radiance ray through the global payload. Preserve
+            // this interface's orientation before that nested trace overwrites payload.flags.
+            bool materialEntering = payloadWaterEntering();
             // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
             // reflections, wobbling refraction. This water body's biome tint (carried in payload.albedo
             // for water hits) sets the absorption applied to the next submerged segment.
@@ -698,31 +709,32 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread, inout uint seed)
             float cosI = clamp(dot(-rd, n), 0.0, 1.0);
             if (bounce == 0) { // primary water hit: feed RR a smooth dielectric specular surface
                 gv_normal = n;
-                gv_rough = WATER_GUIDE_ROUGH;
+                gv_rough = clamp(payloadRoughness(), MIN_ROUGH, 1.0);
                 gv_hitCamRel = hitPos - pc.camOffset; // depth + reflection start at the water surface
                 // Diffuse AND specular albedo + MV track the refracted hit (floor/shore seen through the
                 // surface) so refracted content stops ghosting; depth stays on the water surface. Water's
                 // own Fresnel reflectance is ignored here — a clear interface, not a demodulation target.
                 float3 refractedAlbedo;
                 float3 refractedSpecAlbedo;
-                refractedGuideHit(hitPos, rd, n, inWater, rayConeWidth, rayConeSpread,
+                refractedGuideHit(hitPos, rd, n, inWater, materialIor, rayConeWidth, rayConeSpread,
                         gv_motionHitCamRel, gv_motionObjDisp,
                         gv_motionUseRefracted, refractedAlbedo, refractedSpecAlbedo);
                 gv_albedo = refractedAlbedo;
                 gv_specAlb = refractedSpecAlbedo;
             }
-            float etaI = inWater ? WATER_IOR : 1.0;
-            float etaT = inWater ? 1.0 : WATER_IOR;
+            float etaI = inWater ? materialIor : 1.0;
+            float etaT = inWater ? 1.0 : materialIor;
             float F = fresnelDielectric(cosI, etaI, etaT);
             if (rndf(seed) < F) {
                 rd = reflect(rd, n);
                 ro = hitPos + n * SURF_BIAS; // reflected ray stays on the incidence side
             } else {
                 rd = refract(rd, n, etaI / etaT); // F < 1 here, so this is never total internal reflection
+                throughput *= transmission;
                 ro = hitPos - n * SURF_BIAS;       // transmitted ray crosses to the far side
                 // Derived from this hit's face orientation, not toggled — self-corrects instead of a
                 // stray/missing face corrupting the medium for the rest of the path (see PAYLOAD_WATER_ENTERING).
-                inWater = payloadWaterEntering();
+                inWater = materialEntering;
             }
             // Specular interface (mirror reflect / clear refract): the continuation ray should see the
             // sun/moon disc directly — no NEE happened here to double-count it.
@@ -954,6 +966,16 @@ void main() {
             dbg = gv_specAlb;                       // specular albedo
         } else if (pc.debugView == 7u) {
             dbg = float3(clamp(0.5 + specMotion * 0.05, 0.0, 1.0), 0.5); // reflection motion
+        } else if (pc.debugView == 8u) {
+            dbg = float3(gv_emission, gv_emission, gv_emission); // resolved emission mask/strength
+        } else if (pc.debugView == 9u) {
+            float3 sourceColor = gv_emissionSource == EMISSION_SOURCE_OVERRIDE ? float3(1.0, 0.2, 1.0)
+                    : gv_emissionSource == EMISSION_SOURCE_LAB_PBR ? float3(0.15, 0.8, 1.0)
+                    : gv_emissionSource == EMISSION_SOURCE_HEURISTIC ? float3(1.0, 0.45, 0.05)
+                    : gv_emissionSource == EMISSION_SOURCE_UNIFORM ? float3(1.0, 1.0, 1.0)
+                    : float3(0.0, 0.0, 0.0);
+            dbg = sourceColor * (gv_emissionSource == EMISSION_SOURCE_NONE
+                    ? 0.0 : max(0.2, clamp(gv_emission, 0.0, 1.0)));
         } else {
             dbg = float3(clamp(0.5 + motion * 0.05, 0.0, 1.0), 0.5); // motion: red=+x, green=+y
         }

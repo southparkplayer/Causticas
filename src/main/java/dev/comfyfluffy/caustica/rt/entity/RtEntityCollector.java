@@ -23,6 +23,7 @@ import net.minecraft.client.renderer.block.ModelBlockRenderer;
 import net.minecraft.client.renderer.block.MovingBlockRenderState;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
@@ -47,9 +48,8 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Quaternionf;
 
-import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
-import dev.comfyfluffy.caustica.rt.material.RtEntityMaterials;
-import dev.comfyfluffy.caustica.rt.material.RtParallelAtlas;
+import dev.comfyfluffy.caustica.rt.material.RtMaterials;
+import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -123,37 +123,34 @@ public final class RtEntityCollector implements SubmitNodeCollector {
             RtFrameStats.FRAME.count("entityModelSubmissions", 1);
         }
         long materialStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
+        boolean stochasticAlpha = isTranslucent(renderType);
         // Resolve this submission's texture to a bindless slot; the capture stamps it on every prim.
         // Block-entity models (chests/signs/beds) texture from an atlas SPRITE: use that atlas + remap
         // the ModelPart 0..1 UVs into the sprite's region. Mobs use a full texture (sprite == null).
         try {
-            capture.currentBlockAtlas = false; // model bodies use per-type bindless _s/_n, not the block atlas
+            capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(stochasticAlpha);
             if (sprite != null) {
                 capture.setUvRemap(sprite.getU0(), sprite.getV0(), sprite.getU1(), sprite.getV1());
                 if (TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
                     // A block entity drawing from the block atlas (rare) → reuse the terrain _s/_n atlases.
                     capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(sprite.atlasLocation());
-                    setBlockMaterial(sprite);
+                    setSpriteMaterial(sprite, stochasticAlpha);
                 } else {
-                    // Block-entity sprite atlas (chest/sign/bed/shulker/banner/…): bind its parallel _s/_n into
-                    // the bindless slot and flag per-sprite presence → world.rchit's bindless material path.
-                    capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForBlockEntityAtlas(sprite.atlasLocation());
-                    int flags = RtEntityMaterials.INSTANCE.ensure(sprite);
-                    capture.currentHasS = (flags & RtParallelAtlas.HAS_S) != 0;
-                    capture.currentHasN = (flags & RtParallelAtlas.HAS_N) != 0;
+                    // Dedicated block-entity atlas: albedo remains atlas-bound, while the immutable
+                    // canonical texels were pack-compiled. Appending the first-seen sprite header only
+                    // records this atlas's UV rectangle; it never mutates an existing material ID.
+                    capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(sprite.atlasLocation());
+                    capture.currentMaterialId = RtEntityTextures.entityPbr()
+                            ? RtMaterialRegistry.INSTANCE.resolveEntitySprite(sprite, stochasticAlpha)
+                            : RtMaterialRegistry.INSTANCE.entityFallbackId(stochasticAlpha);
                 }
             } else {
-                // Mobs use a per-type texture — pick up its LabPBR _n/_s presence for the prim flags.
-                int slot = RtEntityTextures.INSTANCE.slotFor(renderType);
-                capture.currentTexSlot = slot;
-                capture.currentHasS = RtEntityTextures.INSTANCE.slotHasSpec(slot);
-                capture.currentHasN = RtEntityTextures.INSTANCE.slotHasNormal(slot);
+                // Mobs use full per-type textures. Their authored _s/_n maps were decoded into canonical
+                // pages during resource-pack load, so capture stores only the stable material ID.
+                capture.currentTexSlot = RtEntityTextures.INSTANCE.slotFor(renderType);
+                capture.currentMaterialId = RtEntityTextures.INSTANCE.materialIdFor(renderType, stochasticAlpha);
                 capture.clearUvRemap();
             }
-            // Alpha-blended model layers (slime / sulfur-cube shells, ghosts, spectral overlays, …) get
-            // stochastic transparency in world.rahit so the inner content shows through; opaque/cutout mob
-            // surfaces keep the binary cutout. Block-entity sprite submissions (chests/signs) are opaque.
-            capture.currentTranslucent = sprite == null && isTranslucent(renderType);
         } finally {
             RtFrameStats.FRAME.endStage("entity.capture.submit.material", materialStart);
         }
@@ -275,29 +272,33 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         capture.currentTexSlot = sprite != null
                 ? RtEntityTextures.INSTANCE.slotForAtlas(sprite.atlasLocation())
                 : 0;
-        setBlockMaterial(sprite); // block-atlas sprites (block items/falling/contained blocks) → terrain _s/_n
-        capture.currentTranslucent = false; // block/item geometry is opaque (the inner content we want solid)
+        // Baked item quads retain the block model's material layer. Mirror terrain's classification so
+        // dropped and held translucent block items (glass, ice, etc.) use the thin-dielectric variant
+        // instead of the opaque DEFAULT variant. No BlockState reaches submitItem, so the layer is the
+        // authoritative semantic available here; glass-model roughness/IOR are profile-independent.
+        boolean transmissive = q.materialInfo().layer() == ChunkSectionLayer.TRANSLUCENT;
+        setSpriteMaterial(sprite, transmissive ? RtMaterials.Profile.GLASS : RtMaterials.Profile.DEFAULT,
+                transmissive, false);
         capture.currentOrder = 0; // baked-quad paths never stack decal layers
         capture.addBakedQuad(pose, q, tintColor(q.materialInfo().tintIndex(), tintLayers));
     }
 
-    /**
-     * Flag the capture's LabPBR _s/_n source for the next quad. Block-like entities (block items, falling
-     * blocks, contained block displays) sample the block atlas, so their material maps live in the terrain
-     * parallel atlases (blockSpecAtlas/blockNormalAtlas) at the SAME UV — reuse {@link RtBlockMaterials}'s
-     * per-sprite presence and let world.rchit sample those (mat code 2). Non-block-atlas sprites (the item
-     * atlas, mob/BE sprite atlases) have no block-atlas material → flags stay off (current behaviour).
-     */
-    private void setBlockMaterial(TextureAtlasSprite sprite) {
+    /** Resolve block-atlas geometry through the same immutable material snapshot as terrain. */
+    private void setSpriteMaterial(TextureAtlasSprite sprite, boolean stochasticAlpha) {
+        setSpriteMaterial(sprite, RtMaterials.Profile.DEFAULT, false, stochasticAlpha);
+    }
+
+    private void setSpriteMaterial(TextureAtlasSprite sprite, RtMaterials.Profile profile,
+                                   boolean transmissive, boolean stochasticAlpha) {
         if (sprite != null && TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
-            int flags = RtBlockMaterials.INSTANCE.ensure(sprite);
-            capture.currentBlockAtlas = true;
-            capture.currentHasS = (flags & RtBlockMaterials.HAS_S) != 0;
-            capture.currentHasN = (flags & RtBlockMaterials.HAS_N) != 0;
+            int materialId = RtMaterialRegistry.INSTANCE.requireSnapshot()
+                    .resolve(sprite, profile, transmissive, false);
+            capture.currentMaterialId = stochasticAlpha
+                    ? RtMaterialRegistry.INSTANCE.withStochasticAlpha(materialId) : materialId;
+        } else if (sprite != null && RtEntityTextures.entityPbr()) {
+            capture.currentMaterialId = RtMaterialRegistry.INSTANCE.resolveEntitySprite(sprite, stochasticAlpha);
         } else {
-            capture.currentBlockAtlas = false;
-            capture.currentHasS = false;
-            capture.currentHasN = false;
+            capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(stochasticAlpha);
         }
     }
 
@@ -413,11 +414,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         @Override
         public void acceptRenderable(TextRenderable renderable) {
             RenderType renderType = renderable.renderType(displayMode);
+            boolean stochasticAlpha = isTranslucent(renderType);
             capture.currentTexSlot = RtEntityTextures.INSTANCE.slotFor(renderType);
-            capture.currentHasS = false;
-            capture.currentHasN = false;
-            capture.currentBlockAtlas = false;
-            capture.currentTranslucent = isTranslucent(renderType); // AA glyph edges → stochastic alpha
+            capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(stochasticAlpha);
             capture.currentOrder = 0;
             capture.clearUvRemap(); // glyph U/V are already atlas-space
             renderable.render(pose, textVertexConsumer, lightCoords, false);
@@ -521,8 +520,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
             @Override
             public void put(float x, float y, float z, BakedQuad quad, QuadInstance instance) {
                 capture.currentTexSlot = slot;
-                setBlockMaterial(quad.materialInfo().sprite()); // block-atlas sprite → terrain _s/_n (mat code 2)
-                capture.currentTranslucent = false; // falling blocks are opaque
+                setSpriteMaterial(quad.materialInfo().sprite(), false);
                 capture.currentOrder = 0; // baked-quad paths never stack decal layers
                 capture.addBakedQuad(pose, quad, -1); // white tint (falling blocks rarely biome-tinted)
             }

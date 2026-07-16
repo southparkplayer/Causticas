@@ -1,7 +1,6 @@
 package dev.comfyfluffy.caustica.rt.entity;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import dev.comfyfluffy.caustica.rt.material.RtMaterials;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
@@ -16,7 +15,7 @@ import org.joml.Vector3fc;
  * {@code model.renderToBuffer(pose, this, …)}.
  *
  * <p>Accumulators use the same layout as terrain's {@code SectionMesh} (positions, indices, atlas UV,
- * per-prim {@code {normal.xyz, emission}, {tint.rgb, texSlot}, {rough, metal, 0, 0}}) so entities
+ * per-prim {@code {normal.xyz, reserved}, {tint.rgb, albedoSlot}, {materialId, flags, aux0, aux1}}) so entities
  * share the terrain upload + BLAS path verbatim.
  */
 public final class RtEntityCapture implements VertexConsumer {
@@ -28,27 +27,15 @@ public final class RtEntityCapture implements VertexConsumer {
     final FloatArrayList verts = new FloatArrayList(DEFAULT_VERTEX_CAPACITY * 3);   // 3 floats/vertex (capture-space position)
     final IntArrayList idx = new IntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY)); // 3 indices/triangle
     final FloatArrayList uvList = new FloatArrayList(DEFAULT_VERTEX_CAPACITY * 2);  // 2 floats/vertex (entity-texture UV)
-    final FloatArrayList prim = new FloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY)); // 12 floats/triangle: normal.xyz+0, tint.rgb+texSlot, mat.{rough,metal,0,0}
+    final FloatArrayList prim = new FloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY)); // 12 floats/triangle
 
     // Bindless texture slot for the geometry currently being submitted (set by the collector per
     // submitModel, so body + feature layers get their own texture). Stored per-prim in tint.w;
-    // the hit shader samples entityTex[texSlot].
+    // the hit shader samples entityAlbedoTex[texSlot].
     int currentTexSlot;
-    // Whether the current submission's bindless slot has a LabPBR _s / _n map (→ prim mat.z/mat.w).
-    // Set by the collector per submission; mobs (per-type textures) may have them, atlas-sourced quads don't.
-    boolean currentHasS;
-    boolean currentHasN;
-    // Block-atlas geometry (dropped/held block items, falling blocks, contained block displays) samples the
-    // BLOCK atlas, so its LabPBR _s/_n live in the terrain parallel atlases (blockSpecAtlas/blockNormalAtlas)
-    // — NOT the per-type bindless arrays. When set, currentHasS/currentHasN refer to those: emitQuad encodes
-    // mat.z/mat.w as 2 (block atlas) instead of 1 (bindless entity), so world.rchit samples the right atlas.
-    boolean currentBlockAtlas;
-    // Whether the current submission is an alpha-blended (translucent) render type — slime / sulfur-cube
-    // shells, ghosts, … Stored per-prim in the otherwise-unused entity emission lane (normal.w); world.rahit
-    // reads it and does stochastic transparency for those surfaces instead of a binary cutout, so the inner
-    // content (slime core, the sulfur cube's contained block) shows through the shell. Set by the collector
-    // per submission (model bodies only — block/item/particle paths force it false).
-    boolean currentTranslucent;
+    // Canonical MaterialHeader ID for this submission. Entity, block-entity and block-atlas geometry all
+    // use the same table; albedo remains a separate bindless slot in tint.w.
+    int currentMaterialId;
     // Decal-stacking rank for the current submission (0 = no offset). Set by the collector from
     // SubmitNodeCollector#order(int) — see emitQuad's coincident-layer push.
     int currentOrder;
@@ -80,10 +67,7 @@ public final class RtEntityCapture implements VertexConsumer {
         ensureVertexCapacity(expectedVertices);
         n = 0;
         currentTexSlot = 0;
-        currentHasS = false;
-        currentHasN = false;
-        currentBlockAtlas = false;
-        currentTranslucent = false;
+        currentMaterialId = 0;
         currentOrder = 0;
         uvRemap = false;
     }
@@ -132,10 +116,7 @@ public final class RtEntityCapture implements VertexConsumer {
     /** Copy the per-submission material/UV state into a second capture used by the parity harness. */
     void copySubmissionStateTo(RtEntityCapture target) {
         target.currentTexSlot = currentTexSlot;
-        target.currentHasS = currentHasS;
-        target.currentHasN = currentHasN;
-        target.currentBlockAtlas = currentBlockAtlas;
-        target.currentTranslucent = currentTranslucent;
+        target.currentMaterialId = currentMaterialId;
         target.currentOrder = currentOrder;
         target.uvRemap = uvRemap;
         target.uvU0 = uvU0;
@@ -320,20 +301,15 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add(nx);
             prim.add(ny);
             prim.add(nz);
-            // normal.w: entities don't carry block-light emission, so this lane flags an alpha-blended
-            // (translucent) surface → world.rahit does stochastic transparency instead of a binary cutout.
-            prim.add(currentTranslucent ? 1f : 0f);
+            prim.add(0f); // normal.w reserved; alpha semantics live in MaterialHeader.features
             prim.add(tr);
             prim.add(tg);
             prim.add(tb);
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
-            prim.add(RtMaterials.ENTITY_ROUGH); // entities default to a matte dielectric
-            prim.add(0f);                       // metalness
-            // mat.z / mat.w: LabPBR _s / _n presence + source. 0 = none, 1 = per-type bindless entity atlas,
-            // 2 = block atlas (block-like entities; sampled from the terrain _s/_n atlases).
-            float matSource = currentBlockAtlas ? 2f : 1f;
-            prim.add(currentHasS ? matSource : 0f); // mat.z
-            prim.add(currentHasN ? matSource : 0f); // mat.w
+            prim.add(Float.intBitsToFloat(currentMaterialId));
+            prim.add(0f); // flags
+            prim.add(0f); // aux0
+            prim.add(0f); // aux1
         }
     }
 

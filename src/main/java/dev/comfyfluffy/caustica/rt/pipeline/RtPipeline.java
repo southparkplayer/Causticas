@@ -61,8 +61,12 @@ import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkGetRayTracingShaderGroupH
  */
 public final class RtPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    /** Bindless entity-texture channels per slot — binding 0 = albedo, 1 = LabPBR _n, 2 = _s. */
-    public static final int BINDLESS_BINDINGS = 3;
+    /** Set 1: entity albedo plus three independently indexed canonical material-page arrays. */
+    private static final int BINDLESS_BINDINGS = 4;
+    private static final int ENTITY_ALBEDO_BINDING = 0;
+    private static final int MATERIAL_SURFACE0_BINDING = 1;
+    private static final int MATERIAL_NORMAL_AO_BINDING = 2;
+    private static final int MATERIAL_SURFACE1_BINDING = 3;
     // A ring of descriptor sets: setTlas writes the next slot (long-unused) rather than mutating the
     // slot in-flight frames are still reading, so the TLAS can be swapped without a device drain.
     // The TLAS is rebuilt + rebound every frame (dynamic content), so a slot is reused every RING
@@ -84,21 +88,17 @@ public final class RtPipeline {
     private final int pushConstantSize;
     private final int pushConstantStages;
     private final int firstExtraBinding;
-    // Optional second descriptor set (set 1) holding a bindless runtime sampler2D[] the closest-hit
-    // indexes per-prim. Single (not ringed) + update-after-bind: the RenderType→slot registry is
-    // append-only, so existing slots never change and new slots are written before the frame that uses
-    // them. 0 when the pipeline was created without bindless textures.
+    // Optional second descriptor set (set 1) holding entity albedo and canonical material-page arrays.
+    // Only entity albedo is update-after-bind: its RenderType→slot registry is append-only. Material
+    // pages are populated once at the resource-epoch boundary. 0 when created without bindless textures.
     private final long bindlessLayout;
     private final long bindlessPool;
     private final long bindlessSet;
-    // Descriptor bindings of the LabPBR _s / _n atlas combined-image-samplers, or -1 if absent.
-    private final int specAtlasBinding;
-    private final int normalAtlasBinding;
     private final int skyAtlasBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
-                       long bindlessLayout, long bindlessPool, long bindlessSet, int specAtlasBinding, int normalAtlasBinding, int skyAtlasBinding) {
+                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -116,8 +116,6 @@ public final class RtPipeline {
         this.bindlessLayout = bindlessLayout;
         this.bindlessPool = bindlessPool;
         this.bindlessSet = bindlessSet;
-        this.specAtlasBinding = specAtlasBinding;
-        this.normalAtlasBinding = normalAtlasBinding;
         this.skyAtlasBinding = skyAtlasBinding;
     }
 
@@ -128,29 +126,24 @@ public final class RtPipeline {
      * adds that many raygen-visible storage images at bindings 3.. (the DLSS-RR guide buffers);
      * write them with {@link #setExtraStorageImage}.
      */
-    public static RtPipeline create(RtContext ctx, String rgen, String[] rmiss, String rchit, String rahit, int pushConstantSize, boolean withAtlasSampler, int extraStorageImages, int bindlessTextures, boolean blockMaterialAtlases, boolean skyAtlas) {
+    public static RtPipeline create(RtContext ctx, String rgen, String[] rmiss, String rchit, String rahit, int pushConstantSize, boolean withBlockAlbedoAtlas, int extraStorageImages, int bindlessTextures, boolean skyAtlas) {
         VkDevice vk = ctx.vk();
         boolean hasAhit = rahit != null;
         String label = "world RT pipeline";
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            int firstExtraBinding = withAtlasSampler ? 3 : 2;
-            // The LabPBR _s/_n atlases (combined image samplers) follow the guide images, starting at
-            // firstExtraBinding + extraStorageImages. Sampled only by the closest-hit (material readout).
+            int firstExtraBinding = withBlockAlbedoAtlas ? 3 : 2;
             int materialBase = firstExtraBinding + extraStorageImages;
-            int specBinding = blockMaterialAtlases ? materialBase : -1;
-            int normalBinding = blockMaterialAtlases ? materialBase + 1 : -1;
-            int materialSamplers = blockMaterialAtlases ? 2 : 0;
             // Sky rewrite: the vanilla celestials atlas (sun + moon phases), sampled by world.rmiss to
-            // draw the sun/moon discs. One combined image sampler after the material atlases.
-            int skyBinding = skyAtlas ? materialBase + materialSamplers : -1;
+            // draw the sun/moon discs. Canonical material pages live in the bindless set, not set 0.
+            int skyBinding = skyAtlas ? materialBase : -1;
             int skySamplers = skyAtlas ? 1 : 0;
-            int bindingCount = firstExtraBinding + extraStorageImages + materialSamplers + skySamplers;
+            int bindingCount = firstExtraBinding + extraStorageImages + skySamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
-            if (withAtlasSampler) {
+            if (withBlockAlbedoAtlas) {
                 int atlasStages = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | (hasAhit ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR : 0);
                 binds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(atlasStages);
@@ -158,12 +151,6 @@ public final class RtPipeline {
             for (int e = 0; e < extraStorageImages; e++) {
                 binds.get(firstExtraBinding + e).binding(firstExtraBinding + e).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
-            }
-            if (blockMaterialAtlases) {
-                binds.get(specBinding).binding(specBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
-                binds.get(normalBinding).binding(normalBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
             }
             if (skyAtlas) {
                 binds.get(skyBinding).binding(skyBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -175,7 +162,7 @@ public final class RtPipeline {
             long dsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
-            int combinedSamplers = (withAtlasSampler ? 1 : 0) + materialSamplers + skySamplers; // block atlas + _s/_n + celestials
+            int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -202,21 +189,22 @@ public final class RtPipeline {
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, sets[i], label + " descriptor set " + i);
             }
 
-            // Optional bindless set (set 1) — a partially-bound, update-after-bind combined-image-sampler
-            // array the closest-hit samples per-prim for entity textures.
+            // Optional bindless set (set 1): entity albedo plus canonical material page arrays.
             long bindlessLayout = 0L, bindlessPool = 0L, bindlessSet = 0L;
             if (bindlessTextures > 0) {
-                // BINDLESS_BINDINGS parallel arrays per slot — binding 0 = albedo, 1 = LabPBR _n,
-                // 2 = LabPBR _s. The closest-hit samples all three at the same slot (tint.w) for entities.
+                // Entity albedo and canonical material pages have independent index spaces. All arrays
+                // use the configured capacity here; material pages occupy compact indices from zero.
                 int nb = BINDLESS_BINDINGS;
                 VkDescriptorSetLayoutBinding.Buffer bl = VkDescriptorSetLayoutBinding.calloc(nb, stack);
-                // Sampled by the closest-hit (shading) and, for entity cutout, the any-hit (alpha test).
-                int bindlessStages = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | (hasAhit ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR : 0);
                 java.nio.IntBuffer bindFlags = stack.mallocInt(nb);
                 for (int b = 0; b < nb; b++) {
+                    int stages = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+                    if (b == ENTITY_ALBEDO_BINDING && hasAhit) stages |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
                     bl.get(b).binding(b).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                            .descriptorCount(bindlessTextures).stageFlags(bindlessStages);
-                    bindFlags.put(b, VK12.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK12.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
+                            .descriptorCount(bindlessTextures).stageFlags(stages);
+                    int flags = VK12.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+                    if (b == ENTITY_ALBEDO_BINDING) flags |= VK12.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+                    bindFlags.put(b, flags);
                 }
                 VkDescriptorSetLayoutBindingFlagsCreateInfo bf = VkDescriptorSetLayoutBindingFlagsCreateInfo.calloc(stack).sType$Default()
                         .pBindingFlags(bindFlags);
@@ -338,7 +326,7 @@ public final class RtPipeline {
                 MemoryUtil.memCopy(MemoryUtil.memAddress(handles) + (long) g * handleSize, sbt.mapped + g * stride, handleSize);
             }
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
-                    bindlessLayout, bindlessPool, bindlessSet, specBinding, normalBinding, skyBinding);
+                    bindlessLayout, bindlessPool, bindlessSet, skyBinding);
         }
     }
 
@@ -398,8 +386,8 @@ public final class RtPipeline {
         }
     }
 
-    /** Bind the block atlas (combined image sampler) into every ring slot — only valid if created withAtlasSampler. */
-    public void setAtlasSampler(long imageView, long sampler) {
+    /** Bind the block albedo atlas into every ring slot. */
+    public void setBlockAlbedoAtlas(long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
             info.get(0).sampler(sampler).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
@@ -412,18 +400,6 @@ public final class RtPipeline {
         }
     }
 
-    /** Bind the LabPBR {@code _s} atlas (combined image sampler) into every ring slot — only valid if
-     *  created with {@code blockMaterialAtlases}. The view handle is stable across DynamicTexture
-     *  re-uploads, so this is called once, then the atlas pixels are refreshed via the texture's upload. */
-    public void setBlockSpecAtlas(long imageView, long sampler) {
-        writeAtlasBinding(specAtlasBinding, imageView, sampler);
-    }
-
-    /** Bind the LabPBR {@code _n} (normal) atlas — see {@link #setBlockSpecAtlas}. */
-    public void setBlockNormalAtlas(long imageView, long sampler) {
-        writeAtlasBinding(normalAtlasBinding, imageView, sampler);
-    }
-
     /** Bind the vanilla celestials atlas (sun + moon phases), sampled by world.rmiss for the discs. */
     public void setSkyAtlas(long imageView, long sampler) {
         writeAtlasBinding(skyAtlasBinding, imageView, sampler);
@@ -431,10 +407,6 @@ public final class RtPipeline {
 
     public boolean hasSkyAtlas() {
         return skyAtlasBinding >= 0;
-    }
-
-    public boolean hasBlockMaterialAtlases() {
-        return specAtlasBinding >= 0;
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {
@@ -453,10 +425,20 @@ public final class RtPipeline {
         }
     }
 
-    /** Write an entity texture into bindless {@code binding} (0 = albedo, 1 = LabPBR _n, 2 = _s), slot
-     *  {@code slot} (set 1). Update-after-bind + append-only, so this is safe to call mid-frame for a
-     *  newly-registered slot before it's sampled. */
-    public void setBindlessTexture(int binding, int slot, long imageView, long sampler) {
+    /** Append or initialize one entity-albedo slot. Existing slots never change while frames are in flight. */
+    public void setEntityAlbedoTexture(int slot, long imageView, long sampler) {
+        setBindlessTexture(ENTITY_ALBEDO_BINDING, slot, imageView, sampler);
+    }
+
+    /** Bind one compact canonical page bundle at a resource-epoch boundary. */
+    public void setMaterialPage(int page, long surface0View, long normalAoView, long surface1View,
+                                long sampler) {
+        setBindlessTexture(MATERIAL_SURFACE0_BINDING, page, surface0View, sampler);
+        setBindlessTexture(MATERIAL_NORMAL_AO_BINDING, page, normalAoView, sampler);
+        setBindlessTexture(MATERIAL_SURFACE1_BINDING, page, surface1View, sampler);
+    }
+
+    private void setBindlessTexture(int binding, int slot, long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
             info.get(0).sampler(sampler).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
