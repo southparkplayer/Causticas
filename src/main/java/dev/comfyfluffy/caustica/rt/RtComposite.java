@@ -222,6 +222,7 @@ public final class RtComposite {
     }
 
     private RtPipeline worldPipeline;
+    private RtPipeline offlinePipeline;
     private RtPipeline sharcUpdatePipeline;
     private RtPipeline sharcQueryPipeline;
     private RtPipeline sharcDiffuseQueryPipeline;
@@ -620,8 +621,10 @@ public final class RtComposite {
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
             exposure.ensureResources(ctx);
             refreshPipelineShapeIfNeeded(ctx);
-            RtPipeline active = ensureWorld(ctx);
-            syncSharcResources(ctx, !OfflineGroundTruth.INSTANCE.active());
+            boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
+            RtPipeline active = offlineGroundTruth ? ensureOfflineWorld(ctx) : ensureWorld(ctx);
+            syncSharcResources(ctx, !offlineGroundTruth);
+            syncSharcDiagnosticPipelines(ctx, !offlineGroundTruth);
             syncTraceGpuProfiler(ctx);
             refreshMaterialBindingsIfNeeded(ctx);
             updateMotion();
@@ -678,9 +681,6 @@ public final class RtComposite {
                             VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i);
                 }
             }
-            if (pathSampleSequence == null) {
-                pathSampleSequence = RtPathSampleSequence.create(ctx);
-            }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
@@ -691,6 +691,34 @@ public final class RtComposite {
         // The TLAS is rebuilt and bound per frame in recordFrame since dynamic entity content animates
         // the instance set every frame.
         return worldPipeline;
+    }
+
+    /** Create the converged renderer only on entry to offline mode; live rendering owns no Sobol buffer. */
+    private RtPipeline ensureOfflineWorld(RtContext ctx) {
+        ensureWorld(ctx); // establishes shared push buffers, texture registry, and bindless capacity
+        if (offlinePipeline == null) {
+            offlinePipeline = RtPipeline.create(ctx, RtDeviceBringup.offlineWorldRaygenShader(),
+                    new String[]{"world.rmiss.spv", "world_guide.rmiss.spv"}, "world.rchit.spv", "world.rahit.spv",
+                    PushAddrData.BYTE_SIZE, true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
+            pathSampleSequence = RtPathSampleSequence.create(ctx);
+            if (output != null) {
+                offlinePipeline.setStorageImage(output.view);
+                bindGuideImages();
+            }
+            bindPipelineTextures(ctx, offlinePipeline);
+        }
+        return offlinePipeline;
+    }
+
+    private void destroyOfflineResources() {
+        if (offlinePipeline != null) {
+            offlinePipeline.destroy();
+            offlinePipeline = null;
+        }
+        if (pathSampleSequence != null) {
+            pathSampleSequence.destroy();
+            pathSampleSequence = null;
+        }
     }
 
     private boolean sharcRequested() {
@@ -728,14 +756,6 @@ public final class RtComposite {
                     new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
                     "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
                     true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
-            sharcDiagnosticUpdatePipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiagnosticUpdateRaygenShader(),
-                    new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
-                    "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
-                    true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
-            sharcDiagnosticQueryPipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiagnosticQueryRaygenShader(),
-                    new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
-                    "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
-                    true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
             sharcResolvePipeline = RtSharcResolvePipeline.create(ctx);
             sharcCache = RtSharcCache.create(ctx, exponent);
             sharcCache.requestReset(sharcCreationResetReason);
@@ -744,11 +764,11 @@ public final class RtComposite {
                 sharcUpdatePipeline.setStorageImage(output.view);
                 sharcQueryPipeline.setStorageImage(output.view);
                 sharcDiffuseQueryPipeline.setStorageImage(output.view);
-                sharcDiagnosticUpdatePipeline.setStorageImage(output.view);
-                sharcDiagnosticQueryPipeline.setStorageImage(output.view);
                 bindGuideImages();
             }
-            bindWorldTextures(ctx);
+            bindPipelineTextures(ctx, sharcUpdatePipeline);
+            bindPipelineTextures(ctx, sharcQueryPipeline);
+            bindPipelineTextures(ctx, sharcDiffuseQueryPipeline);
             CausticaMod.LOGGER.info("SHaRC enabled: {} entries, {} MiB, {}", sharcCache.capacity(),
                     sharcCache.bytes() / (1024 * 1024), RtSharcSupport.status());
         } catch (Throwable t) {
@@ -759,7 +779,45 @@ public final class RtComposite {
         }
     }
 
+    /** Diagnostic SHaRC shaders are large and never enter the normal render path; instantiate on demand. */
+    private void syncSharcDiagnosticPipelines(RtContext ctx, boolean allowed) {
+        int view = debugView();
+        boolean want = allowed && sharcCache != null
+                && (CausticaConfig.Rt.Sharc.DETAILED_STATS.value() || (view >= 9 && view <= 16));
+        if (!want) {
+            if (sharcDiagnosticUpdatePipeline != null || sharcDiagnosticQueryPipeline != null) {
+                ctx.waitIdle("disable SHaRC diagnostics");
+                if (sharcDiagnosticUpdatePipeline != null) sharcDiagnosticUpdatePipeline.destroy();
+                if (sharcDiagnosticQueryPipeline != null) sharcDiagnosticQueryPipeline.destroy();
+                sharcDiagnosticUpdatePipeline = null;
+                sharcDiagnosticQueryPipeline = null;
+            }
+            return;
+        }
+        if (sharcDiagnosticUpdatePipeline != null && sharcDiagnosticQueryPipeline != null) return;
+        sharcDiagnosticUpdatePipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiagnosticUpdateRaygenShader(),
+                new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
+                "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
+                true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
+        sharcDiagnosticQueryPipeline = RtPipeline.create(ctx, RtDeviceBringup.sharcDiagnosticQueryRaygenShader(),
+                new String[]{"world_sharc.rmiss.spv", "world_sharc_guide.rmiss.spv"},
+                "world_sharc.rchit.spv", "world_sharc.rahit.spv", SharcPushAddrData.BYTE_SIZE,
+                true, GUIDE_COUNT, bindlessTextureCapacity, true, true);
+        if (output != null) {
+            sharcDiagnosticUpdatePipeline.setStorageImage(output.view);
+            sharcDiagnosticQueryPipeline.setStorageImage(output.view);
+            bindGuideImages();
+        }
+        bindPipelineTextures(ctx, sharcDiagnosticUpdatePipeline);
+        bindPipelineTextures(ctx, sharcDiagnosticQueryPipeline);
+    }
+
     private RtPipeline[] worldPipelines() {
+        return new RtPipeline[]{worldPipeline, offlinePipeline, sharcUpdatePipeline, sharcQueryPipeline, sharcDiffuseQueryPipeline,
+                sharcDiagnosticUpdatePipeline, sharcDiagnosticQueryPipeline};
+    }
+
+    private RtPipeline[] onlinePipelines() {
         return new RtPipeline[]{worldPipeline, sharcUpdatePipeline, sharcQueryPipeline, sharcDiffuseQueryPipeline,
                 sharcDiagnosticUpdatePipeline, sharcDiagnosticQueryPipeline};
     }
@@ -816,6 +874,7 @@ public final class RtComposite {
         ctx.waitIdle("bindless texture capacity growth");
         worldPipeline.destroy();
         worldPipeline = null;
+        destroyOfflineResources();
         destroySharcResources();
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
@@ -869,6 +928,25 @@ public final class RtComposite {
         RtTerrain.markAllDirty();
     }
 
+    /** Bind the existing stable texture registry into one newly-created specialized pipeline. */
+    private void bindPipelineTextures(RtContext ctx, RtPipeline pipeline) {
+        long sampler = atlasSampler(ctx);
+        long atlasView = blockAtlasView();
+        pipeline.setAtlasSampler(atlasView, sampler);
+        pipeline.setBindlessTexture(0, 0, atlasView, sampler);
+        if (pipeline.hasBlockMaterialAtlases()) {
+            long specView = RtBlockMaterials.INSTANCE.viewS();
+            long normalView = RtBlockMaterials.INSTANCE.viewN();
+            pipeline.setBlockSpecAtlas(specView != 0L ? specView : atlasView, sampler);
+            pipeline.setBlockNormalAtlas(normalView != 0L ? normalView : atlasView, sampler);
+        }
+        if (pipeline.hasSkyAtlas()) {
+            long celestialView = celestialsAtlasView();
+            pipeline.setSkyAtlas(celestialView != 0L ? celestialView : atlasView, sampler);
+        }
+        RtEntityTextures.INSTANCE.bindAll(sampler, pipeline);
+    }
+
     private void refreshMaterialBindingsIfNeeded(RtContext ctx) {
         if (worldPipeline == null || reloadRebindRequested) {
             return;
@@ -915,6 +993,7 @@ public final class RtComposite {
             ctx.waitIdle("resource reload");
             worldPipeline.destroy();
             worldPipeline = null;
+            destroyOfflineResources();
             destroySharcResources();
             bindlessTextureCapacity = 0;
         }
@@ -922,20 +1001,22 @@ public final class RtComposite {
 
     /** Bind the guide buffers into the world pipeline's extra storage-image slots. */
     private void bindGuideImages() {
-        if (worldPipeline == null || gNormal == null) {
-            return;
+        if (gNormal != null) {
+            for (RtPipeline pipeline : onlinePipelines()) if (pipeline != null) {
+                pipeline.setExtraStorageImage(0, gNormal.view);
+                pipeline.setExtraStorageImage(1, gAlbedo.view);
+                pipeline.setExtraStorageImage(2, gDepth.view);
+                pipeline.setExtraStorageImage(3, gMotion.view);
+                pipeline.setExtraStorageImage(4, gSpecAlbedo.view);
+                pipeline.setExtraStorageImage(5, gSpecMotion.view);
+                pipeline.setExtraStorageImage(7, gAnimatedGuide.view);
+            }
         }
-        for (RtPipeline pipeline : worldPipelines()) if (pipeline != null) {
-            pipeline.setExtraStorageImage(0, gNormal.view);
-            pipeline.setExtraStorageImage(1, gAlbedo.view);
-            pipeline.setExtraStorageImage(2, gDepth.view);
-            pipeline.setExtraStorageImage(3, gMotion.view);
-            pipeline.setExtraStorageImage(4, gSpecAlbedo.view);
-            pipeline.setExtraStorageImage(5, gSpecMotion.view);
-            pipeline.setExtraStorageImage(6, groundTruthAccum.view);
-            pipeline.setExtraStorageImage(7, gAnimatedGuide.view);
-            pipeline.setExtraStorageImage(8, offlinePilotA.view);
-            pipeline.setExtraStorageImage(9, offlinePilotB.view);
+        if (offlinePipeline != null && groundTruthAccum != null
+                && offlinePilotA != null && offlinePilotB != null) {
+            offlinePipeline.setExtraStorageImage(6, groundTruthAccum.view);
+            offlinePipeline.setExtraStorageImage(8, offlinePilotA.view);
+            offlinePipeline.setExtraStorageImage(9, offlinePilotB.view);
         }
     }
 
@@ -1023,7 +1104,8 @@ public final class RtComposite {
                 && renderSizeRrEnabled == rrOperational && renderSizeRrQuality == rrQuality
                 && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled
                 && renderSizeGroundTruth == offlineGroundTruth
-                && groundTruthAccum != null && offlinePilotA != null && offlinePilotB != null) {
+                && (!offlineGroundTruth
+                    || (groundTruthAccum != null && offlinePilotA != null && offlinePilotB != null))) {
             return;
         }
         ctx.waitIdle("output resize or mode change"); // no in-flight frame may use old images/descriptors
@@ -1031,6 +1113,7 @@ public final class RtComposite {
             exposure.beginOfflineSession(ctx);
         } else if (!offlineGroundTruth && renderSizeGroundTruth) {
             exposure.endOfflineSession();
+            destroyOfflineResources();
         }
         // Release Streamline's viewport before any tagged input/output image is destroyed or resized.
         // This also promptly frees RR when the setting is switched off instead of retaining its feature
@@ -1095,16 +1178,16 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(motionGuideW, motionGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion");
         gSpecAlbedo = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo");
         gSpecMotion = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion");
-        groundTruthAccum = ctx.createStorageImage(offlineGroundTruth ? width : 1,
-                offlineGroundTruth ? height : 1, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
-                offlineGroundTruth ? "offline ground-truth FP32 radiance sum " + width + "x" + height
-                        : "inactive ground-truth accumulation");
-        int pilotW = offlineGroundTruth ? (width + 7) / 8 : 1;
-        int pilotH = offlineGroundTruth ? (height + 7) / 8 : 1;
-        offlinePilotA = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
-                offlineGroundTruth ? "offline adaptive pilot A " + pilotW + "x" + pilotH : "inactive offline pilot A");
-        offlinePilotB = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
-                offlineGroundTruth ? "offline adaptive pilot B " + pilotW + "x" + pilotH : "inactive offline pilot B");
+        if (offlineGroundTruth) {
+            groundTruthAccum = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                    "offline ground-truth FP32 radiance mean " + width + "x" + height);
+            int pilotW = (width + 7) / 8;
+            int pilotH = (height + 7) / 8;
+            offlinePilotA = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                    "offline adaptive pilot A " + pilotW + "x" + pilotH);
+            offlinePilotB = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                    "offline adaptive pilot B " + pilotW + "x" + pilotH);
+        }
         gAnimatedGuide = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
                 "DLSSD animated-surface responsivity");
         gDepthHistoryA = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
@@ -1354,7 +1437,7 @@ public final class RtComposite {
                     emissiveIntensity,
                     CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS.value(),
                     breaking,
-                    pathSampleSequence.deviceAddress()
+                    offlineGroundTruth && pathSampleSequence != null ? pathSampleSequence.deviceAddress() : 0L
             ).write(push);
             // Upload any entity textures registered this frame into the bindless set before the trace.
             boolean buildOfflineSnapshot = offlineGroundTruth && offlineTlas == null;
@@ -1815,6 +1898,7 @@ public final class RtComposite {
             worldPipeline.destroy();
             worldPipeline = null;
         }
+        destroyOfflineResources();
         destroySharcResources();
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
@@ -1825,10 +1909,6 @@ public final class RtComposite {
                 }
             }
             pushRing = null;
-        }
-        if (pathSampleSequence != null) {
-            pathSampleSequence.destroy();
-            pathSampleSequence = null;
         }
         if (traceGpuProfiler != null) {
             traceGpuProfiler.destroy();

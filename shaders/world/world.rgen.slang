@@ -36,6 +36,12 @@
 #ifndef CAUSTICA_SHARC_LIVE_SECONDARY_DIRECT
 #define CAUSTICA_SHARC_LIVE_SECONDARY_DIRECT 0
 #endif
+#ifndef CAUSTICA_OFFLINE
+#define CAUSTICA_OFFLINE 0
+#endif
+#ifndef CAUSTICA_SER
+#define CAUSTICA_SER 0
+#endif
 
 import world_common;
 
@@ -56,16 +62,19 @@ static SharcRWPtr<uint> sharcStats;
 [[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> outImage;
 // Guide buffers — first-hit (primary-visibility) attributes consumed by the denoiser/DLSS-RR. Written
 // every frame regardless of accumulation. gNormal.w carries roughness; gDepth carries HW reversed-Z depth.
+#if !CAUSTICA_OFFLINE
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> gNormal;     // xyz world normal, w roughness
 [[vk::binding(4, 0)]] [format("rgba16f")] RWTexture2D<float4> gAlbedo;     // rgb diffuse albedo
 [[vk::binding(5, 0)]] [format("r32f")]    RWTexture2D<float>  gDepth;      // HW reversed-Z depth
 [[vk::binding(6, 0)]] [format("rg16f")]   RWTexture2D<float2> gMotion;     // screen-space motion (render px)
 [[vk::binding(7, 0)]] [format("rgba16f")] RWTexture2D<float4> gSpecAlbedo; // specular albedo (0 — diffuse-only)
 [[vk::binding(8, 0)]] [format("rg16f")]   RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
-[[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean + sample count
 [[vk::binding(10, 0)]] [format("r16f")] RWTexture2D<float> gAnimatedGuide; // temporal responsivity source
+#else
+[[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean + sample count
 [[vk::binding(11, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotRead;
 [[vk::binding(12, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotWrite;
+#endif
 
 // Per-frame push data loaded once from the BDA buffer at the top of main() (same pattern as the GLSL
 // `pc` global). Layout constants generated from this module's SPIR-V — see world_common.WorldPush.
@@ -493,11 +502,15 @@ float3 fresnelSchlick(float cosT, float3 f0) {
 }
 
 struct PathSampler {
+#if CAUSTICA_OFFLINE
     uint pixelHash;
     uint sampleIndex;
     uint bounceHash;
     uint dimension;
     uint randomBits[8];
+#else
+    uint state;
+#endif
 };
 
 float rndf(inout PathSampler sampler);
@@ -716,13 +729,6 @@ float fresnelDielectric(float cosI, float etaI, float etaT) {
     return 0.5 * (rs * rs + rp * rp);
 }
 
-// Driver-safe, bounce-scoped Owen-scrambled Sobol sampling. The multidimensional Sobol net is generated
-// once on the CPU and read through a BDA buffer, keeping the SER raygen free of the large direction-number
-// loops which previously produced unstable driver code. Nested uniform scrambling is a permutation, so
-// every pixel/path vertex is decorrelated without destroying the base sequence's temporal stratification.
-static const uint SAMPLE_SEQUENCE_DIMENSIONS = 8u;
-static const uint SAMPLE_SEQUENCE_MASK = 1048575u;
-
 inline uint sampleHash(uint x) {
     x ^= x >> 16u;
     x *= 0x21f0aaadu;
@@ -731,6 +737,12 @@ inline uint sampleHash(uint x) {
     x ^= x >> 15u;
     return x;
 }
+
+#if CAUSTICA_OFFLINE
+// Driver-safe, bounce-scoped Owen-scrambled Sobol sampling belongs exclusively to the converged offline
+// renderer. The live shader uses the compact PCG state below and never fetches this sequence buffer.
+static const uint SAMPLE_SEQUENCE_DIMENSIONS = 8u;
+static const uint SAMPLE_SEQUENCE_MASK = 1048575u;
 
 inline uint owenScramble(uint x, uint seed) {
     x = reversebits(x);
@@ -760,6 +772,25 @@ inline float rndf(inout PathSampler sampler) {
     uint value = sampler.randomBits[sampler.dimension++ & (SAMPLE_SEQUENCE_DIMENSIONS - 1u)];
     return float(value >> 8u) * (1.0 / 16777216.0);
 }
+#else
+// A one-register PCG sampler keeps the live shader independent of the offline Sobol table while retaining
+// strong per-draw output permutation. The xorshift alternative was runtime-neutral and is intentionally
+// not kept as another sampler variant.
+inline uint liveRandom(inout uint state) {
+    uint value = state;
+    state = value * 747796405u + 2891336453u;
+    uint word = ((value >> ((value >> 28u) + 4u)) ^ value) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+inline void beginBounce(inout PathSampler sampler, uint bounce) {
+    // PCG advances on demand; it has no bounce-scoped table to populate.
+}
+
+inline float rndf(inout PathSampler sampler) {
+    return float(liveRandom(sampler.state) >> 8u) * (1.0 / 16777216.0);
+}
+#endif
 
 float3 primaryRayDir(float2 ndc) {
     float4 nearH = mul(pc.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
@@ -854,22 +885,27 @@ RayDesc makeRay(float3 origin, float tmin, float3 dir, float tmax) {
     return r;
 }
 
-// SER radiance trace: trace into a hit object, reorder threads by hit coherence, THEN invoke the
-// hit/miss shader — this is where the divergent Section/Prim shading work (world.rchit/world.rahit)
-// actually happens, so reordering before it is what pays for the reorder's own cost.
-void traceRadianceReordered(uint cullMask, float3 ro, float tmin, float3 rd, float tmax) {
+// Live and offline binaries share hit-object tracing but specialize invocation reordering independently.
+// Reorder is disabled in the latency-sensitive live shaders after a fixed-scene A/B showed that foliage
+// any-hit traffic makes its scheduling overhead larger than its coherence benefit. Offline remains free to
+// compile this same source with reordering for separate convergence and throughput validation.
+void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax) {
     HitObject hObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_NONE, cullMask,
             SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_RADIANCE, makeRay(ro, tmin, rd, tmax), payload);
+#if CAUSTICA_SER
     ReorderThread(hObj);
+#endif
     HitObject::Invoke(topLevelAS, hObj, payload);
 }
 
 // Guide probes need closest-hit material/motion data but consume no sky radiance. A dedicated miss record
 // avoids running the nested atmosphere march when a reflection/refraction guide escapes the scene.
-void traceGuideReordered(uint rayFlags, float3 ro, float tmin, float3 rd, float tmax) {
+void traceGuide(uint rayFlags, float3 ro, float tmin, float3 rd, float tmax) {
     HitObject hObj = HitObject::TraceRay(topLevelAS, rayFlags, CULL_SECONDARY,
             SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_GUIDE, makeRay(ro, tmin, rd, tmax), payload);
+#if CAUSTICA_SER
     ReorderThread(hObj);
+#endif
     HitObject::Invoke(topLevelAS, hObj, payload);
 }
 
@@ -939,7 +975,7 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
         payloadSetTraceState(false,
                 max(travelled * primaryConeSpread, RAY_CONE_MIN_WIDTH),
                 max(primaryConeSpread, RAY_CONE_MIN_SPREAD));
-        traceGuideReordered(RAY_FLAG_NONE, rayOrigin + rayNormal * SURF_BIAS,
+        traceGuide(RAY_FLAG_NONE, rayOrigin + rayNormal * SURF_BIAS,
                 RAY_TMIN, rayDir, 10000.0);
         if (payload.hitT <= 0.0) {
             finalHit = rayOrigin + rayDir * 1.0e6;
@@ -1029,7 +1065,7 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
     payloadSetTraceState(false,
             max(length(surfacePos - pc.camOffset) * primaryConeSpread, RAY_CONE_MIN_WIDTH),
             max(primaryConeSpread, RAY_CONE_MIN_SPREAD));
-    traceGuideReordered(RAY_FLAG_NONE, surfacePos + n * SURF_BIAS, RAY_TMIN, specDir, 10000.0);
+    traceGuide(RAY_FLAG_NONE, surfacePos + n * SURF_BIAS, RAY_TMIN, specDir, 10000.0);
 
     float3 reflectedHit;
     float3 reflectedMotionPrev;
@@ -1072,7 +1108,7 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
     for (uint crossing = 0u; crossing < 8u; crossing++) {
         payload.hitT = -1.0;
         payloadSetTraceState(false, rayConeWidth, rayConeSpread);
-        traceGuideReordered(RAY_FLAG_NONE, ro, RAY_TMIN, direction, 10000.0);
+        traceGuide(RAY_FLAG_NONE, ro, RAY_TMIN, direction, 10000.0);
         if (payload.hitT <= 0.0) {
             hitCamRel = (ro + direction * 1.0e6) - pc.camOffset;
             motionPrev = float3(0.0, 0.0, 0.0);
@@ -1166,9 +1202,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #if CAUSTICA_SHARC_UPDATE
         // Sparse cache updates are transport samples, not camera visibility: exclude particles and the
         // first-person-only primary mask from their first segment as well.
-        traceRadianceReordered(CULL_SECONDARY, ro, 0.0, rd, 10000.0);
+        traceRadiance(CULL_SECONDARY, ro, 0.0, rd, 10000.0);
 #else
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0);
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0);
 #endif
 
         if (payload.hitT < 0.0) {
@@ -1813,10 +1849,9 @@ void main() {
     float3 origin = nearP + pc.camOffset;
     float3 direction = normalize(farP - nearP);
     PathSampler sampler;
-    sampler.pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
-    sampler.sampleIndex = sharcFrame.frameIndex;
-    sampler.bounceHash = 0u;
-    sampler.dimension = 0u;
+    sampler.state = sampleHash((uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u)
+            ^ (sharcFrame.frameIndex * 2654435761u)) | 1u;
+    liveRandom(sampler.state);
     pc.maxBounces = min(pc.maxBounces, sharcFrame.updateMaxBounces);
     tracePath(origin, direction, primaryRayConeSpread(ndc, size, direction),
             false, false, false, sampler);
@@ -1826,59 +1861,24 @@ void main() {
     float2 size = float2(DispatchRaysDimensions().xy);
     float2 uv = (float2(pix) + 0.5) / size;
     float2 ndc = uv * 2.0 - 1.0;
-    bool offlineGroundTruth = (pc.flags & FRAME_FLAG_OFFLINE_GROUND_TRUTH) != 0u;
+#if CAUSTICA_OFFLINE
     bool offlineCalibrating = (pc.flags & FRAME_FLAG_OFFLINE_CALIBRATING) != 0u;
-    float4 offlineState = offlineGroundTruth ? groundTruthAccum[pix] : float4(0.0);
-    uint completedSamples = offlineGroundTruth ? uint(max(offlineState.a, 0.0) + 0.5) : 0u;
-
+    float4 offlineState = groundTruthAccum[pix];
+    uint completedSamples = uint(max(offlineState.a, 0.0) + 0.5);
     uint spp = max(pc.spp, 1u);
-#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
-    bool sharcDebugView = pc.debugView >= 9u && pc.debugView <= 16u;
-    bool primaryOnly = pc.debugView != 0u && !sharcDebugView;
-#else
-    bool primaryOnly = pc.debugView != 0u;
-#endif
-    bool writeRrGuides = (pc.flags & FRAME_FLAG_RR_GUIDES) != 0u;
-    bool writeMotionGuides = writeRrGuides || (pc.flags & FRAME_FLAG_FG_GUIDES) != 0u;
-    bool captureGuides = writeMotionGuides || primaryOnly;
-    bool captureRefractedGuides = writeMotionGuides
-            || pc.debugView == 2u || pc.debugView == 5u || pc.debugView == 6u || pc.debugView == 7u;
     int2 pilotTile = pix >> 3;
-    float4 pilotState = offlineGroundTruth ? offlinePilotRead[pilotTile] : float4(0.0);
-#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
-    uint pathCount = (primaryOnly || sharcDebugView) ? 1u : spp;
-#else
-    uint pathCount = primaryOnly ? 1u : spp;
-#endif
-    if (offlineGroundTruth && !offlineCalibrating && pilotState.a >= 4.0) {
+    float4 pilotState = offlinePilotRead[pilotTile];
+    uint pathCount = spp;
+    if (!offlineCalibrating && pilotState.a >= 4.0) {
         float relativeNoise = sqrt(max(pilotState.r, max(pilotState.g, pilotState.b)));
         float predictedError = relativeNoise / sqrt(float(completedSamples + 1u));
         pathCount = min(spp, max(1u, uint(predictedError * 100.0 + 0.999)));
     }
-    float3 frameRadiance = float3(0.0, 0.0, 0.0);
     float3 runningMean = offlineState.rgb;
     uint runningCount = completedSamples;
-    float2 jndc = ndc;
-    float3 dir = float3(0.0, 0.0, 1.0);
-    float rayConeSpread = RAY_CONE_MIN_SPREAD;
-    gv_opticalGuideMode = 0u;
-    gv_opticalExitEta = 1.0;
-    gv_animatedGuide = 0.0;
-    gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
-    gv_psrMirror = false;
-#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
-    gv_sharcDebug = float3(0.02);
-    gv_sharcHashDebug = float3(0.0);
-    gv_sharcTerminationDepth = 0.0;
-    gv_sharcCachedRadianceDebug = float3(0.0);
-    gv_sharcVoxelSizeDebug = float3(0.0);
-    gv_sharcEligibilityDebug = float3(0.02);
-    gv_sharcNumericDebug = float3(0.0, 0.2, 0.0);
-#endif
-    uint pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
-    bool pilotLeader = offlineGroundTruth && !offlineCalibrating
-            && (pix.x & 7) == 0 && (pix.y & 7) == 0;
+    bool pilotLeader = !offlineCalibrating && (pix.x & 7) == 0 && (pix.y & 7) == 0;
     uint totalPathCount = pathCount + (pilotLeader ? 2u : 0u);
+    uint pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
     float3 pilotA = float3(0.0);
     float3 pilotB = float3(0.0);
     for (uint s = 0u; s < totalPathCount; s++) {
@@ -1897,17 +1897,83 @@ void main() {
             sampler.sampleIndex = pc.frameIndex * 2u + pilotLane;
         } else {
             sampler.pixelHash = pixelHash;
-            sampler.sampleIndex = offlineGroundTruth ? completedSamples + s : pc.frameIndex * spp + s;
+            sampler.sampleIndex = completedSamples + s;
         }
         sampler.bounceHash = 0u;
         sampler.dimension = 0u;
-
-        float2 pixelJitter = pc.jitter;
-        if (offlineGroundTruth) {
-            beginBounce(sampler, 0xfffffffeu);
-            pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5);
+        beginBounce(sampler, 0xfffffffeu);
+        float2 pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5);
+        float2 sampleNdc = (sampleUv + pixelJitter / size) * 2.0 - 1.0;
+        float4 nearH = mul(pc.invViewProj, float4(sampleNdc.x, sampleNdc.y, 1.0, 1.0));
+        float4 farH = mul(pc.invViewProj, float4(sampleNdc.x, sampleNdc.y, 0.0, 1.0));
+        float3 nearP = nearH.xyz / nearH.w;
+        float3 farP = farH.xyz / farH.w;
+        float3 origin = nearP + pc.camOffset;
+        float3 direction = normalize(farP - nearP);
+        float3 sampleRadiance = tracePath(origin, direction,
+                primaryRayConeSpread(sampleNdc, size, direction), false, false, false, sampler);
+        if (pilotSample) {
+            if (pilotLane == 0u) pilotA = sampleRadiance;
+            else pilotB = sampleRadiance;
+        } else {
+            runningCount++;
+            runningMean += (sampleRadiance - runningMean) / float(runningCount);
         }
-        jndc = (sampleUv + pixelJitter / size) * 2.0 - 1.0;
+    }
+    groundTruthAccum[pix] = float4(runningMean, float(runningCount));
+    if (pilotLeader) {
+        float3 scale = max(abs(pilotA) + abs(pilotB), float3(0.02));
+        float3 relativeDelta = (pilotA - pilotB) / scale;
+        float3 pairVariance = 0.5 * relativeDelta * relativeDelta;
+        float pilotCount = pilotState.a + 1.0;
+        float3 pilotMean = pilotState.rgb + (pairVariance - pilotState.rgb) / pilotCount;
+        offlinePilotWrite[pilotTile] = float4(pilotMean, pilotCount);
+    }
+    outImage[pix] = float4(runningMean, 1.0);
+    return;
+#else
+    uint spp = max(pc.spp, 1u);
+#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
+    bool sharcDebugView = pc.debugView >= 9u && pc.debugView <= 16u;
+    bool primaryOnly = pc.debugView != 0u && !sharcDebugView;
+#else
+    bool primaryOnly = pc.debugView != 0u;
+#endif
+    bool writeRrGuides = (pc.flags & FRAME_FLAG_RR_GUIDES) != 0u;
+    bool writeMotionGuides = writeRrGuides || (pc.flags & FRAME_FLAG_FG_GUIDES) != 0u;
+    bool captureGuides = writeMotionGuides || primaryOnly;
+    bool captureRefractedGuides = writeMotionGuides
+            || pc.debugView == 2u || pc.debugView == 5u || pc.debugView == 6u || pc.debugView == 7u;
+#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
+    uint pathCount = (primaryOnly || sharcDebugView) ? 1u : spp;
+#else
+    uint pathCount = primaryOnly ? 1u : spp;
+#endif
+    float3 frameRadiance = float3(0.0, 0.0, 0.0);
+    float2 jndc = ndc;
+    float3 dir = float3(0.0, 0.0, 1.0);
+    float rayConeSpread = RAY_CONE_MIN_SPREAD;
+    gv_opticalGuideMode = 0u;
+    gv_opticalExitEta = 1.0;
+    gv_animatedGuide = 0.0;
+    gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
+    gv_psrMirror = false;
+#if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
+    gv_sharcDebug = float3(0.02);
+    gv_sharcHashDebug = float3(0.0);
+    gv_sharcTerminationDepth = 0.0;
+    gv_sharcCachedRadianceDebug = float3(0.0);
+    gv_sharcVoxelSizeDebug = float3(0.0);
+    gv_sharcEligibilityDebug = float3(0.02);
+    gv_sharcNumericDebug = float3(0.0, 0.2, 0.0);
+#endif
+    uint seed = sampleHash((uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u)
+            ^ (pc.frameIndex * 2654435761u)) | 1u;
+    for (uint s = 0u; s < pathCount; s++) {
+        PathSampler sampler;
+        seed = liveRandom(seed);
+        sampler.state = seed;
+        jndc = (uv + pc.jitter / size) * 2.0 - 1.0;
         float4 nearH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
         float4 farH = mul(pc.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
         float3 nearP = nearH.xyz / nearH.w;
@@ -1917,21 +1983,12 @@ void main() {
         rayConeSpread = primaryRayConeSpread(jndc, size, dir);
 
         float3 sampleRadiance = tracePath(origin, dir, rayConeSpread,
-                !pilotSample && captureGuides && s == 0u,
-                !pilotSample && captureRefractedGuides && s == 0u, primaryOnly, sampler);
-        if (pilotSample) {
-            if (pilotLane == 0u) pilotA = sampleRadiance;
-            else pilotB = sampleRadiance;
-        } else if (offlineGroundTruth) {
-            runningCount++;
-            runningMean += (sampleRadiance - runningMean) / float(runningCount);
-        } else {
-            frameRadiance += sampleRadiance;
-        }
+                captureGuides && s == 0u,
+                captureRefractedGuides && s == 0u, primaryOnly, sampler);
+        seed = sampler.state;
+        frameRadiance += sampleRadiance;
     }
-    if (!offlineGroundTruth) {
-        frameRadiance /= float(pathCount);
-    }
+    frameRadiance /= float(pathCount);
 
     // Optical transmission changes the visible layer, but reflection motion still belongs to the primary
     // glass/water interface. Preserve that interface before replacing ordinary guides with the destination.
@@ -2063,21 +2120,8 @@ void main() {
         return;
     }
 
-    if (offlineGroundTruth) {
-        // Alpha stores an exact integer count through 16,777,216 samples, far beyond a practical session.
-        groundTruthAccum[pix] = float4(runningMean, float(runningCount));
-        if (pilotLeader) {
-            float3 scale = max(abs(pilotA) + abs(pilotB), float3(0.02));
-            float3 relativeDelta = (pilotA - pilotB) / scale;
-            float3 pairVariance = 0.5 * relativeDelta * relativeDelta;
-            float pilotCount = pilotState.a + 1.0;
-            float3 pilotMean = pilotState.rgb + (pairVariance - pilotState.rgb) / pilotCount;
-            offlinePilotWrite[pilotTile] = float4(pilotMean, pilotCount);
-        }
-        outImage[pix] = float4(runningMean, 1.0);
-    } else {
-        // Single noisy estimate; the denoiser (DLSS-RR) handles temporal convergence.
-        outImage[pix] = float4(frameRadiance, 1.0);
-    }
+    // Single noisy estimate; the denoiser (DLSS-RR) handles temporal convergence.
+    outImage[pix] = float4(frameRadiance, 1.0);
+#endif // CAUSTICA_OFFLINE
 #endif
 }

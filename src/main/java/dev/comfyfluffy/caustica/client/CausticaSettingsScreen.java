@@ -218,7 +218,7 @@ public class CausticaSettingsScreen extends Screen {
     }
 
     private void addSharc() {
-        addHeader("NVIDIA SHaRC", "Sparse radiance cache controls; disabled is the visual-parity baseline");
+        addHeader("NVIDIA SHaRC", "Conservative visual-parity preset with the sparse radiance cache enabled");
         List<AbstractWidget> controls = new ArrayList<>();
         controls.add(toggle(Component.translatable("caustica.options.rt.sharc"), CausticaConfig.Rt.Sharc.ENABLED)
                 .tooltip(Component.translatable("caustica.options.rt.sharc.tooltip")));
@@ -441,12 +441,12 @@ public class CausticaSettingsScreen extends Screen {
     private Component sharcStatusText() {
         String state = !RtSharcSupport.available() ? RtSharcSupport.status()
                 : RtComposite.INSTANCE.sharcActive() ? "Active"
-                : CausticaConfig.Rt.Sharc.ENABLED.configuredValue() ? "Ready" : "Off - baseline parity";
+                : CausticaConfig.Rt.Sharc.ENABLED.configuredValue() ? "Ready - parity preset" : "Off";
         return Component.literal("NVIDIA SHaRC 1.6.5.0  |  " + state);
     }
 
     private void restoreSharcParityDefaults() {
-        CausticaConfig.Rt.Sharc.ENABLED.set(false);
+        CausticaConfig.Rt.Sharc.ENABLED.set(true);
         CausticaConfig.Rt.Sharc.CACHE_EXPONENT.set(CausticaConfig.Rt.Sharc.CACHE_EXPONENT.defaultValue());
         CausticaConfig.Rt.Sharc.SCENE_SCALE.set(CausticaConfig.Rt.Sharc.SCENE_SCALE.defaultValue());
         CausticaConfig.Rt.Sharc.RADIANCE_SCALE.set(CausticaConfig.Rt.Sharc.RADIANCE_SCALE.defaultValue());
@@ -459,6 +459,8 @@ public class CausticaSettingsScreen extends Screen {
         CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT.set(CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT.defaultValue());
         CausticaConfig.Rt.Sharc.ANTI_FIREFLY.set(CausticaConfig.Rt.Sharc.ANTI_FIREFLY.defaultValue());
         CausticaConfig.Rt.Sharc.DETAILED_STATS.set(false);
+        CausticaConfig.Rt.Composite.DEBUG_VIEW.set(0);
+        CausticaConfig.Rt.FrameStats.ENABLED.set(false);
         RtComposite.INSTANCE.requestSharcReset("visual-parity defaults restored");
         rebuild();
     }

@@ -72,6 +72,7 @@ public final class RtEntityTextures {
     // file). Seeded with the block atlas = slot 0 (also the fallback). Items use a separate item atlas.
     private final Map<Identifier, Integer> atlasSlotCache = new HashMap<>();
     private final List<Pending> pending = new ArrayList<>(); // slots resolved this frame, awaiting upload
+    private final List<Pending> bound = new ArrayList<>(); // complete registry for newly-created pipelines
     // Atlas slots whose parallel LabPBR _s/_n (RtEntityMaterials, for block entities) have been bound into
     // bindless bindings 1/2 — bind once per atlas slot. Cleared on reset (the bindless set is recreated).
     private final java.util.Set<Integer> atlasMaterialBound = new java.util.HashSet<>();
@@ -137,12 +138,12 @@ public final class RtEntityTextures {
         }
         long nView = loadMaterialView(loc, "_n");
         if (nView != 0L) {
-            pending.add(new Pending(1, slot, nView));
+            queueDescriptor(1, slot, nView);
             slotHasN[slot] = true;
         }
         long sView = loadMaterialView(loc, "_s");
         if (sView != 0L) {
-            pending.add(new Pending(2, slot, sView));
+            queueDescriptor(2, slot, sView);
             slotHasS[slot] = true;
         }
     }
@@ -192,10 +193,10 @@ public final class RtEntityTextures {
                 long nView = pa.viewN();
                 long sView = pa.viewS();
                 if (nView != 0L) {
-                    pending.add(new Pending(1, slot, nView));
+                    queueDescriptor(1, slot, nView);
                 }
                 if (sView != 0L) {
-                    pending.add(new Pending(2, slot, sView));
+                    queueDescriptor(2, slot, sView);
                 }
             }
         }
@@ -221,8 +222,14 @@ public final class RtEntityTextures {
         }
         int slot = nextSlot++;
         viewSlotCache.put(view, slot);
-        pending.add(new Pending(0, slot, view)); // binding 0 = albedo
+        queueDescriptor(0, slot, view); // binding 0 = albedo
         return slot;
+    }
+
+    private void queueDescriptor(int binding, int slot, long view) {
+        Pending descriptor = new Pending(binding, slot, view);
+        pending.add(descriptor);
+        bound.add(descriptor);
     }
 
     /** Write any newly-registered entity textures into the pipeline's bindless set (before the trace). */
@@ -236,6 +243,13 @@ public final class RtEntityTextures {
             }
         }
         pending.clear();
+    }
+
+    /** Populate a new mode/diagnostic pipeline without invalidating stable entity texture slots. */
+    public void bindAll(long sampler, RtPipeline pipeline) {
+        for (Pending descriptor : bound) {
+            pipeline.setBindlessTexture(descriptor.binding(), descriptor.slot(), descriptor.view(), sampler);
+        }
     }
 
     public int usedSlots() {
@@ -261,6 +275,7 @@ public final class RtEntityTextures {
         atlasMaterialBound.clear();
         RtEntityMaterials.INSTANCE.reset(); // block-entity parallel _s/_n atlases are slot-bound → rebuild in lockstep
         pending.clear();
+        bound.clear();
         nextSlot = 1;
         for (DynamicTexture dt : materialCache.values()) {
             if (dt != null) {

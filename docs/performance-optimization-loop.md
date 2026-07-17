@@ -82,6 +82,16 @@ runtime A/B proof build. The final artifact
 `BCF094D60C8DAF7CBE104820924373799B450B9475C2891253BF08B698E520BC`, which only cleans up the
 profiler assignment, passed a foreground smoke capture at 107.67 FPS / 6.524 ms query.
 
+The foliage-heavy village scene exposed a separate scheduling regression. With OMM disabled and all
+hit-object tracing unchanged, an interleaved live invocation-reorder A/B measured 101.0 FPS / 6.9176 ms
+mean query with `ReorderThread`, versus 111.5 FPS / 6.1003 ms without it. Reconstruction remained
+1.7001 ms versus 1.6991 ms. Live baseline, SHaRC query, and sparse-update raygens now compile with
+`CAUSTICA_SER=0`; the independent offline binary compiles with `CAUSTICA_SER=1`. This preserves the
+shared material/transport implementation while removing the measured live scheduling loss.
+Final artifact `BDC3B5EC51CF24B6DF6C45894D6831BD2D50FA1248BAAA62EC6E9C50C4B021FA` restored the PCG
+live sampler and measured 110.4375 mean / 111 median FPS with a 5.9409 ms mean query pass. The running
+debug bridge reported the exact artifact hash, and Minecraft was closed immediately after capture.
+
 Each accepted optimization gets its own commit containing source, tests, and the corresponding updated
 runtime evidence. Diagnostic instrumentation stays separately switchable and may be removed without
 changing the render path.

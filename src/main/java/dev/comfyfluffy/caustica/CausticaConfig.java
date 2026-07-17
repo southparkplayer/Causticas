@@ -698,7 +698,7 @@ public final class CausticaConfig {
         }
 
         public static final class Sharc {
-            public static final BooleanSetting ENABLED = bool("caustica.rt.sharc", "sharc.enabled", false);
+            public static final BooleanSetting ENABLED = bool("caustica.rt.sharc", "sharc.enabled", true);
             public static final IntSetting CACHE_EXPONENT =
                     clampedInt("caustica.rt.sharcCacheExponent", "sharc.cache-exponent", 20, 16, 22);
             public static final FloatSetting SCENE_SCALE =

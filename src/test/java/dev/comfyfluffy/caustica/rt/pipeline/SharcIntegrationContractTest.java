@@ -29,7 +29,9 @@ final class SharcIntegrationContractTest {
         assertTrue(composite.contains("? sharcQueryPipeline : sharcDiffuseQueryPipeline"));
         assertTrue(raygen.contains("#if CAUSTICA_SHARC_GLOSSY"));
         assertTrue(raygen.contains("#if CAUSTICA_SHARC_LIVE_SECONDARY_DIRECT"));
-        assertTrue(read("build.gradle").contains("\"-DCAUSTICA_SHARC_LIVE_SECONDARY_DIRECT=1\", \"-O2\", \"-fp-mode\", \"precise\""));
+        String build = read("build.gradle");
+        assertTrue(build.contains("\"-DCAUSTICA_SHARC_LIVE_SECONDARY_DIRECT=1\""));
+        assertTrue(build.contains("\"-O2\", \"-fp-mode\", \"precise\""));
         assertTrue(composite.contains("!CausticaConfig.Rt.Sharc.LIVE_SECONDARY_DIRECT.value()"));
         assertTrue(composite.contains("(renderW + updateTileSize - 1) / updateTileSize"));
         assertTrue(raygen.contains("tile * tileSize"));
@@ -90,7 +92,7 @@ final class SharcIntegrationContractTest {
     void biasedCacheIsDisabledForOfflineAndHasRealGpuTimestamps() throws Exception {
         String composite = read("src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java");
         String profiler = read("src/main/java/dev/comfyfluffy/caustica/rt/RtTraceGpuProfiler.java");
-        assertTrue(composite.contains("syncSharcResources(ctx, !OfflineGroundTruth.INSTANCE.active())"));
+        assertTrue(composite.contains("syncSharcResources(ctx, !offlineGroundTruth)"));
         assertTrue(profiler.contains("vkCmdWriteTimestamp"));
         assertTrue(read("src/main/java/dev/comfyfluffy/caustica/rt/RtFrameStats.java")
                 .contains("\"disocclusionGpuNanos\", \"dlssRrGpuNanos\""));
@@ -122,10 +124,10 @@ final class SharcIntegrationContractTest {
         assertTrue(lang.contains("SHaRC Query Eligibility"));
         assertTrue(screen.contains("extends Screen"));
         assertTrue(screen.contains("restoreParityDefaults"));
-        assertTrue(screen.contains("CausticaConfig.Rt.Sharc.ENABLED.set(false)"));
+        assertTrue(screen.contains("CausticaConfig.Rt.Sharc.ENABLED.set(true)"));
         assertTrue(widgets.contains("public static final int PANEL = 0x00000000"));
         assertTrue(widgets.contains("public static final int PANEL_2 = 0x24000000"));
-        assertTrue(config.contains("\"sharc.enabled\", false"));
+        assertTrue(config.contains("\"sharc.enabled\", true"));
         assertTrue(config.contains("\"sharc.cache-exponent\", 20, 16, 22"));
         assertTrue(config.contains("\"sharc.update-tile-size\", 8, 2, 64"));
         assertTrue(config.contains("\"sharc.update-max-bounces\", 2, 1, 8"));

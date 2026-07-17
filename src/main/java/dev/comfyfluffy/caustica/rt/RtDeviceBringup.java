@@ -145,6 +145,10 @@ public final class RtDeviceBringup {
         return serBackend.worldRaygenShader;
     }
 
+    public static String offlineWorldRaygenShader() {
+        return serBackend == SerBackend.NV ? "world_offline_nv.rgen.spv" : "world_offline.rgen.spv";
+    }
+
     public static String sharcQueryRaygenShader() {
         return serBackend == SerBackend.NV ? "world_sharc_nv.rgen.spv" : "world_sharc.rgen.spv";
     }
@@ -403,7 +407,7 @@ public final class RtDeviceBringup {
         rtRequested = true;
         serBackend = selectedSerBackend;
         CausticaMod.LOGGER.info(
-                "Ray tracing: enabling {} + {}{} + features [bufferDeviceAddress, accelerationStructure, rayTracingPipeline, rayQuery, rayTracingInvocationReorder({})"
+                "Ray tracing: enabling {} + {}{} + features [bufferDeviceAddress, accelerationStructure, rayTracingPipeline, rayQuery, rayTracingInvocationReorderCapability({}), liveReorder=off, offlineReorder=on"
                         + (wideLinesEnabled ? ", wideLines(max=" + maxLineWidth + ")" : "")
                         + (sharcInt64AtomicsEnabled ? ", shaderBufferInt64Atomics(SHaRC)" : "")
                         + (ommEnabled ? ", opacityMicromap" : "") + "] + overlayMsaa=" + overlayMsaaSamples + "x on [{}]",

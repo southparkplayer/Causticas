@@ -304,8 +304,8 @@
 	"caustica.options.rt.sharcDetailedStats.tooltip": "Enable expensive per-path atomic counters and diagnostic SHaRC shaders. Leave off for unbiased performance profiling.",
 	"caustica.options.rt.sharcReset": "Reset SHaRC Cache",
 	"caustica.options.rt.sharcRestoreParity": "Restore Parity Defaults",
-	"caustica.options.rt.sharcRestoreParity.tooltip": "Restore every SHaRC tuning value, disable diagnostics, clear the cache, and turn SHaRC off so the baseline path tracer owns secondary transport.",
-	"caustica.options.rt.sharcParityNotice": "Guaranteed parity default: SHaRC Off. Enabled mode is a performance cache, not an identical estimator.",
+	"caustica.options.rt.sharcRestoreParity.tooltip": "Restore the conservative SHaRC-on preset, disable diagnostics, and clear the cache. Live secondary direct lighting and the anti-firefly filter remain enabled.",
+	"caustica.options.rt.sharcParityNotice": "Default: SHaRC On with conservative visual-parity tuning. Use debug views and the baseline toggle for validation.",
 	"caustica.options.rt.sharcAntiFirefly": "SHaRC Anti-Firefly Filter",
 	"caustica.options.rt.sharcAntiFirefly.tooltip": "Use NVIDIA's confidence-based high-sample-weight adjustment. This does not clamp final radiance or replace estimator validation.",
 	"key.caustica.offline_ground_truth": "Start Offline Renderer"

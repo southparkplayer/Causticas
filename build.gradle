@@ -231,12 +231,22 @@ abstract class CompileShaders extends DefaultTask {
 			def base = outBase(src)
 			def spv = new File(scratchDir, "${base}.spv")
 			if (src.name.endsWith(".slang")) {
-				// Build both SER encodings from one source; RtDeviceBringup selects the supported variant.
+				// Build both hit-object encodings from one source; RtDeviceBringup selects the supported backend.
+				// Live rendering omits invocation reordering. Offline is an independent throughput specialization.
 				compileOneSlang(src, spv, base == "world.rgen"
-						? ["-capability", "spvShaderInvocationReorderEXT"] : [])
+						? ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-O2", "-fp-mode", "precise",
+						   "-capability", "spvShaderInvocationReorderEXT"] : [])
 				if (base == "world.rgen") {
 					compileOneSlang(src, new File(scratchDir, "world_nv.rgen.spv"),
-							["-capability", "spvShaderInvocationReorderNV"])
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderNV"])
+					// Offline uses the same transport/material source but a separate entrypoint binary and sampler.
+					compileOneSlang(src, new File(scratchDir, "world_offline.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=1", "-DCAUSTICA_SER=1", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderEXT"])
+					compileOneSlang(src, new File(scratchDir, "world_offline_nv.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=1", "-DCAUSTICA_SER=1", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderNV"])
 				}
 			} else {
 				compileOne(src, spv, [])
@@ -248,11 +258,12 @@ abstract class CompileShaders extends DefaultTask {
 			def sharcInclude = ["-I", new File(srcDir.get().asFile, "world").absolutePath,
 					"-I", new File(srcDir.get().asFile, "sharc").absolutePath,
 					"-I", new File(sharcRoot, "include").absolutePath]
-			def variantDefines = ["-DCAUSTICA_SHARC=1"]
+			def variantDefines = ["-DCAUSTICA_SHARC=1", "-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0",
+					"-O2", "-fp-mode", "precise"]
 			def queryDefines = variantDefines + ["-DCAUSTICA_SHARC_QUERY=1", "-DCAUSTICA_SHARC_UPDATE=0",
 					"-DCAUSTICA_SHARC_DIAGNOSTICS=0"]
 			def diffuseQueryDefines = queryDefines + ["-DCAUSTICA_SHARC_GLOSSY=0",
-					"-DCAUSTICA_SHARC_LIVE_SECONDARY_DIRECT=1", "-O2", "-fp-mode", "precise"]
+					"-DCAUSTICA_SHARC_LIVE_SECONDARY_DIRECT=1"]
 			def updateDefines = variantDefines + ["-DCAUSTICA_SHARC_QUERY=0", "-DCAUSTICA_SHARC_UPDATE=1",
 					"-DCAUSTICA_SHARC_DIAGNOSTICS=0",
 					"-warnings-disable", "41000"]
@@ -312,9 +323,8 @@ abstract class CompileShaders extends DefaultTask {
 				}
 			}
 		}
-		// Slang 2026.13 compiles the reviewed streamline-core raygen to 114,068 bytes. Keep a tightly
-		// bounded allowance for optical-pixel-only glass guides, animated-water reflection reprojection,
-		// exact-mirror PSR, the shared low-discrepancy sampler, and the bounded offline convergence path.
+		// The live raygen must stay independent of offline convergence and its Sobol sequence. Both mode
+		// binaries are compiled from one reviewed transport/material source and held to the same ceiling.
 		// Never permit the multi-hundred-KB
 		// expansion that halved all-scene performance in the rejected hybrid integration.
 		["world.rgen.spv", "world_nv.rgen.spv"].each { name ->
@@ -328,16 +338,43 @@ abstract class CompileShaders extends DefaultTask {
 				commandLine spirvDis.get(), "--raw-id", raygen.absolutePath, "-o", disassembly.absolutePath
 			}
 			def assembly = disassembly.getText("UTF-8")
+			if ((assembly =~ /OpReorderThreadWithHitObject(?:EXT|NV)/).find()) {
+				throw new GradleException("Live world raygen unexpectedly contains invocation reorder: ${name}")
+			}
 			["sampleHash", "owenScramble", "beginBounce", "rndf"].each { functionName ->
 				def nameMatch = (assembly =~ /OpName\s+(%\d+)\s+"${functionName}"/)
 				if (nameMatch.find()) {
 					def functionId = java.util.regex.Pattern.quote(nameMatch.group(1))
 					if ((assembly =~ /OpFunctionCall[^\r\n]*${functionId}(?:\s|$)/).find()) {
-						throw new GradleException("SER raygen sampler must be fully inlined: ${name} calls ${functionName}")
+						throw new GradleException("Live raygen sampler must be fully inlined: ${name} calls ${functionName}")
 					}
 				}
 			}
 		}
+		["world_offline.rgen.spv", "world_offline_nv.rgen.spv"].each { name ->
+			def raygen = new File(scratchDir, name)
+			if (!raygen.isFile() || raygen.length() > 142_000L) {
+				throw new GradleException("Offline world raygen complexity budget exceeded: ${name} is "
+						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 142000)")
+			}
+			def disassembly = new File(temporaryDir, "${name}.spvasm")
+			execOps.exec {
+				commandLine spirvDis.get(), "--raw-id", raygen.absolutePath, "-o", disassembly.absolutePath
+			}
+			if (!(disassembly.getText("UTF-8") =~ /OpReorderThreadWithHitObject(?:EXT|NV)/).find()) {
+				throw new GradleException("Offline world raygen is missing its independent invocation reorder: ${name}")
+			}
+		}
+		scratchDir.listFiles().findAll { it.name.startsWith("world_sharc") && it.name.endsWith(".rgen.spv") }
+				.each { raygen ->
+					def disassembly = new File(temporaryDir, "${raygen.name}.spvasm")
+					execOps.exec {
+						commandLine spirvDis.get(), "--raw-id", raygen.absolutePath, "-o", disassembly.absolutePath
+					}
+					if ((disassembly.getText("UTF-8") =~ /OpReorderThreadWithHitObject(?:EXT|NV)/).find()) {
+						throw new GradleException("Live SHaRC raygen unexpectedly contains invocation reorder: ${raygen.name}")
+					}
+				}
 		outDirFile.mkdirs()
 		outDirFile.listFiles().findAll { it.isFile() && it.name.endsWith(".spv") }.each { it.delete() }
 		scratchDir.listFiles().findAll { it.isFile() }.each { src ->
@@ -672,6 +709,8 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 		def sourceJar = tasks.named("sourcesJar", Jar).get().archiveFile.get().asFile
 		def required = [
 			"fabric.mod.json",
+			"caustica/rt/world_offline.rgen.spv",
+			"caustica/rt/world_offline_nv.rgen.spv",
 			"caustica/streamline.properties",
 			"caustica/sharc.properties",
 			"caustica/natives/windows-x64/streamlinebridge.dll",

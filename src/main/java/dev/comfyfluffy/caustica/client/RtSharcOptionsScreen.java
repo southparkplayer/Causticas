@@ -165,7 +165,7 @@ public final class RtSharcOptionsScreen extends Screen {
     }
 
     private void restoreParityDefaults() {
-        CausticaConfig.Rt.Sharc.ENABLED.set(false);
+        CausticaConfig.Rt.Sharc.ENABLED.set(true);
         CausticaConfig.Rt.Sharc.CACHE_EXPONENT.set(CausticaConfig.Rt.Sharc.CACHE_EXPONENT.defaultValue());
         CausticaConfig.Rt.Sharc.SCENE_SCALE.set(CausticaConfig.Rt.Sharc.SCENE_SCALE.defaultValue());
         CausticaConfig.Rt.Sharc.RADIANCE_SCALE.set(CausticaConfig.Rt.Sharc.RADIANCE_SCALE.defaultValue());
@@ -193,7 +193,7 @@ public final class RtSharcOptionsScreen extends Screen {
     private Component statusText() {
         String status = !RtSharcSupport.available() ? RtSharcSupport.status()
                 : RtComposite.INSTANCE.sharcActive() ? "Active"
-                : CausticaConfig.Rt.Sharc.ENABLED.value() ? "Ready" : "Off — baseline parity";
+                : CausticaConfig.Rt.Sharc.ENABLED.value() ? "Ready - parity preset" : "Off";
         return Component.literal("NVIDIA SHaRC 1.6.5.0  •  " + status);
     }
 
