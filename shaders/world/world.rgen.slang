@@ -1486,6 +1486,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             // guide trace overwrites it with the secondary hit/miss payload.
             float3 surfaceWaterTint = payload.albedo;
             bool surfaceWaterEntering = payloadWaterEntering();
+            // Animated waves are a shading perturbation only. Keep the actual triangle normal for
+            // sided ray-origin bias so sloped water continuations cannot start across the interface.
+            float3 surfaceWaterGeometricNormal = n;
             // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
             // reflections, wobbling refraction. This water body's biome tint (carried in payload.albedo
             // for water hits) sets the absorption applied to the next submerged segment.
@@ -1532,10 +1535,10 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             waterExt = waterExtinction(surfaceWaterTint);
             if (rndf(sampler) < F) {
                 rd = reflect(rd, n);
-                ro = hitPos + n * SURF_BIAS; // reflected ray stays on the incidence side
+                ro = hitPos + surfaceWaterGeometricNormal * SURF_BIAS;
             } else {
                 rd = transmittedDir; // F < 1 here, so this is never total internal reflection
-                ro = hitPos - n * SURF_BIAS;       // transmitted ray crosses to the far side
+                ro = hitPos - surfaceWaterGeometricNormal * SURF_BIAS;
                 // Derived from this hit's face orientation, not toggled — self-corrects instead of a
                 // stray/missing face corrupting the medium for the rest of the path (see PAYLOAD_WATER_ENTERING).
                 inWater = surfaceWaterEntering;
