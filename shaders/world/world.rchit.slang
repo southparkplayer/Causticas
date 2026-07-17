@@ -475,8 +475,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float rough = pr.mat.x;
     float metal = pr.mat.y;
     float3 f0 = lerp(float3(0.04, 0.04, 0.04), payload.albedo, metal);
-    // normal.w packs block-light emission plus a +2 non-SOLID flag.
+    // normal.w packs block-light emission plus +2 non-SOLID and +4 torch-family flags.
     float ew = pr.normal.w;
+    bool torchEmitter = ew >= 4.0;
+    if (torchEmitter) ew -= 4.0;
     bool nonSolid = ew >= 1.5;
     float emission = nonSolid ? ew - 2.0 : ew;
     // LabPBR _s, gated by mat.z — shared decode. When an _s map is authored we trust ITS emission and
@@ -491,6 +493,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     }
     payload.f0 = f0;
     payloadSetPacked(payload, material, rough, metal, emission, sss);
+    if (torchEmitter) {
+        payload.flags |= PAYLOAD_TORCH_EMITTER;
+    }
     if (material == MATERIAL_WATER && entering) {
         payload.flags |= PAYLOAD_WATER_ENTERING;
     }

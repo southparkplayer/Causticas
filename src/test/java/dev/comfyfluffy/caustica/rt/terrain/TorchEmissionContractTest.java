@@ -17,14 +17,21 @@ final class TorchEmissionContractTest {
             "src/main/resources/assets/minecraft/textures/block");
 
     @Test
-    void integratorOwnsIntensityAfterSharedMaterialDecode() throws Exception {
+    void integratorBoostsOnlyTorchFamilyAfterSharedMaterialDecode() throws Exception {
         String closestHit = Files.readString(Path.of("shaders/world/world.rchit.slang"));
         String raygen = Files.readString(Path.of("shaders/world/world.rgen.slang"));
         String common = Files.readString(Path.of("shaders/world/world_common.slang"));
+        String mesher = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/terrain/RtTerrainMesher.java"));
         assertTrue(closestHit.contains("emission = mappedEmission;"));
-        assertFalse(closestHit.contains("emissiveIntensity"));
-        assertTrue(common.contains("[vk::offset(420)] public float    emissiveIntensity"));
-        assertTrue(raygen.contains("clamp(pc.emissiveIntensity, 0.0, 1.0)"));
+        assertFalse(closestHit.contains("torchIntensity"));
+        assertTrue(closestHit.contains("payload.flags |= PAYLOAD_TORCH_EMITTER;"));
+        assertTrue(common.contains("[vk::offset(420)] public float    torchIntensity"));
+        assertTrue(common.contains("PAYLOAD_TORCH_EMITTER = 1u << 9u"));
+        assertTrue(raygen.contains("if (payloadTorchEmitter())"));
+        assertTrue(raygen.contains("emissiveRadiance *= EMISSIVE_MAX_MULTIPLIER"));
+        assertTrue(mesher.contains("state.getBlock() instanceof BaseTorchBlock"));
+        assertTrue(mesher.contains("(q.torch ? 4f : 0f)"));
         assertTrue(raygen.contains("L += throughput * albedo * emission * emissiveRadiance;"));
         assertTrue(raygen.contains("float3 materialEmissive = albedo * emission * emissiveRadiance;"));
         assertTrue(raygen.contains("cacheableDirectLighting + liveDirectLighting + materialEmissive"));

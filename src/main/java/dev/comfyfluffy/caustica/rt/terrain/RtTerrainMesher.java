@@ -44,6 +44,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.BaseTorchBlock;
 import net.minecraft.world.level.block.IceBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.StainedGlassBlock;
@@ -486,6 +487,9 @@ final class RtTerrainMesher {
 
             // Emissive: vanilla block light level (0..15) -> 0..1, stashed in the free normal.w slot.
             q.emission = state != null ? state.getLightEmission() / 15f : 0f;
+            // BaseTorchBlock covers floor/wall ordinary, soul, redstone, and copper torch variants.
+            // The authored _s mask still decides which texels emit; this identity only gates the control.
+            q.torch = state != null && state.getBlock() instanceof BaseTorchBlock;
             // Heuristic PBR material (roughness, metalness) for the GGX BRDF / DLSS-RR guides.
             q.rough = RtMaterials.roughness(state);
             q.metal = RtMaterials.metalness(state);
@@ -663,7 +667,7 @@ final class RtTerrainMesher {
                 prim.add(q.nz);
                 // normal.w = block-light emission (0..1) + a +2 flag for non-SOLID layers, so the closest
                 // hit can opt SOLID terrain out of SSS (leaves/foliage keep it). See world.rchit.
-                prim.add(q.cutout ? q.emission + 2f : q.emission);
+                prim.add(q.emission + (q.cutout ? 2f : 0f) + (q.torch ? 4f : 0f));
                 prim.add(q.tr);
                 prim.add(q.tg);
                 prim.add(q.tb);
@@ -692,6 +696,7 @@ final class RtTerrainMesher {
         float nx, ny, nz;
         boolean cutout; // non-SOLID render layer (alpha-tested) — also an overlay candidate
         boolean translucent; // TRANSLUCENT layer (stained glass / ice): colored-transmission dielectric
+        boolean torch; // BaseTorchBlock family; permits the torch-only brightness control
         int opticalClass;
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
         float tr, tg, tb, emission, rough, metal;

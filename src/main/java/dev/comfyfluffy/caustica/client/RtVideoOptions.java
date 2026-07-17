@@ -417,11 +417,24 @@ public final class RtVideoOptions {
         return new OptionInstance<>(
             "caustica.options.rt.torchIntensity",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.torchIntensity.tooltip")),
-            (caption, step) -> Options.genericValueLabel(caption,
-                    Component.literal(String.format(Locale.ROOT, "%.1f", step / 10.0f))),
-            new OptionInstance.IntRange(0, 10),
-            Math.clamp(Math.round(setting.configuredValue() * 10.0f), 0, 10),
-            step -> setting.set(step / 10.0f));
+            (caption, level) -> Options.genericValueLabel(caption, level),
+            new OptionInstance.IntRange(0, 100),
+            torchSliderFromMultiplier(setting.configuredValue()),
+            level -> setting.set(torchMultiplierFromSlider(level)));
+    }
+
+    /** Perceptual curve: the former 0.1 setting is level 75, while 0 remains fully off. */
+    static int torchSliderFromMultiplier(float multiplier) {
+        if (!(multiplier > 0.0f)) {
+            return 0;
+        }
+        double level = 100.0 + 25.0 * Math.log10(Math.clamp(multiplier, 0.0001f, 1.0f));
+        return Math.clamp((int) Math.round(level), 1, 100);
+    }
+
+    static float torchMultiplierFromSlider(int level) {
+        int clamped = Math.clamp(level, 0, 100);
+        return clamped == 0 ? 0.0f : (float) Math.pow(10.0, (clamped - 100.0) / 25.0);
     }
 
     public static OptionInstance<?>[] sharcOptions() {

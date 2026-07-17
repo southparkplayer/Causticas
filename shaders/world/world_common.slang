@@ -87,7 +87,7 @@ public struct WorldPush {
     [vk::offset(336)] public float4   waterAnchor;   // xy world-stable wave anchor, z previous wave time
     [vk::offset(352)] public float4x4 curViewProj;   // forward camera-relative view-projection
     [vk::offset(416)] public uint     breakCount;
-    [vk::offset(420)] public float    emissiveIntensity; // normalized 0..1 control; raygen maps to 0..50x radiance
+    [vk::offset(420)] public float    torchIntensity; // normalized perceptual control; only torch-family hits use it
     [vk::offset(424)] public uint     psrMaxMirrors; // live exact-mirror recursion limit (1..32)
     [vk::offset(432)] public BreakEntry breaking[8]; // generated Java capacity/serialization
     [vk::offset(560)] public uint64_t sampleSequenceAddr; // interleaved 8D Sobol values, 1048576 samples
@@ -123,6 +123,7 @@ public static const uint PAYLOAD_OPTICAL_CLASS_MASK = 0xfu << PAYLOAD_OPTICAL_CL
 #if CAUSTICA_SHARC
 public static const uint PAYLOAD_SHARC_DYNAMIC = 1u << 8u;
 #endif
+public static const uint PAYLOAD_TORCH_EMITTER = 1u << 9u;
 
 // Terrain per-triangle record (48 B, stride must match RtTerrain's upload).
 // mat = {roughness, metalness, hasS, hasN} for solid/cutout; TRANSLUCENT-bucket prims repurpose it as

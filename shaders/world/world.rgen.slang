@@ -293,6 +293,7 @@ bool payloadInterfaceEntering() { return (payload.flags & PAYLOAD_INTERFACE_ENTE
 // Set by world.rchit only on a MATERIAL_WATER hit (see PAYLOAD_WATER_ENTERING) — whether the ray was
 // travelling into the water volume (vs. out of it) at this hit's face.
 bool payloadWaterEntering() { return (payload.flags & PAYLOAD_WATER_ENTERING) != 0u; }
+bool payloadTorchEmitter() { return (payload.flags & PAYLOAD_TORCH_EMITTER) != 0u; }
 float payloadRoughness() { return unpackHalf2(payload.roughMetal).x; }
 float payloadMetalness() { return unpackHalf2(payload.roughMetal).y; }
 float payloadEmission() { return unpackHalf2(payload.emissionSss).x; }
@@ -1613,13 +1614,14 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             continue;
         }
 
-        // Emissive material radiance. Closest-hit supplies only the normalized authored/fallback mask;
-        // intensity belongs here, where emitted radiance enters every camera path exactly once. This
-        // covers terrain and entity/held-item materials without a light list, extra ray, or analytic light.
+        // All emissive materials retain the legacy base radiance. Only BaseTorchBlock-family primitives
+        // receive the player-controlled boost; their authored _s map remains the normalized texel mask.
         float emission = payloadEmission();
 #if CAUSTICA_SHARC_UPDATE || CAUSTICA_SHARC_QUERY
-        float emissiveRadiance = EMISSIVE_BASE_RADIANCE * EMISSIVE_MAX_MULTIPLIER
-                * clamp(pc.emissiveIntensity, 0.0, 1.0);
+        float emissiveRadiance = EMISSIVE_BASE_RADIANCE;
+        if (payloadTorchEmitter()) {
+            emissiveRadiance *= EMISSIVE_MAX_MULTIPLIER * clamp(pc.torchIntensity, 0.0, 1.0);
+        }
         // Preserve the authored LabPBR emissive mask. SHaRC's separate-emissive mode stores reflected
         // lighting demodulated from albedo, while this live material signal is evaluated on every query.
         float3 materialEmissive = albedo * emission * emissiveRadiance;
@@ -1642,8 +1644,10 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         float3 liveDirectLighting = float3(0.0);
 #else
         if (emission > 0.0) {
-            float emissiveRadiance = EMISSIVE_BASE_RADIANCE * EMISSIVE_MAX_MULTIPLIER
-                    * clamp(pc.emissiveIntensity, 0.0, 1.0);
+            float emissiveRadiance = EMISSIVE_BASE_RADIANCE;
+            if (payloadTorchEmitter()) {
+                emissiveRadiance *= EMISSIVE_MAX_MULTIPLIER * clamp(pc.torchIntensity, 0.0, 1.0);
+            }
             L += throughput * albedo * emission * emissiveRadiance;
         }
 #endif
