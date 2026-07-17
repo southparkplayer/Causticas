@@ -84,7 +84,7 @@ public final class StreamlineSwapchainCoordinator {
         }
         mailboxVsyncCompatibility = true;
         presentMode = GpuSurface.PresentMode.MAILBOX;
-        CausticaMod.LOGGER.info(
+        CausticaMod.LOGGER.debug(
                 "DLSS-G VSync compatibility: requested {} -> MAILBOX (no application frame limiter)",
                 configuration.presentMode());
         return new GpuSurface.Configuration(configuration.width(), configuration.height(), presentMode);
@@ -121,7 +121,7 @@ public final class StreamlineSwapchainCoordinator {
         nativeSwapchain = StreamlineRuntime.nativeSwapchainTrace();
         RtDlssFg.INSTANCE.onSwapchainConfigured(width, height, format, imageCount, vsyncRequested,
                 physicalFifo, pluginForSwapchain, generation);
-        CausticaMod.LOGGER.info(
+        CausticaMod.LOGGER.debug(
                 "Streamline swapchain generation {}: {}x{}, format={}, applicationImages={}, plugin={}, requestedPresentMode={}, normalizedPresentMode={}, vsyncRequested={}, mailboxVsyncCompatibility={}, nativePresentMode={} (value={}), requestedNativeMinImages={}, proxyVisibleImages={}, nativeCreateResult={}, nativeProxyDispatch={}, nativeSwapchain={}",
                 generation, width, height, format, imageCount, pluginForSwapchain, requestedPresentMode, presentMode, vsyncRequested,
                 mailboxVsyncCompatibility, nativeSwapchain.presentMode(), nativeSwapchain.presentModeValue(),

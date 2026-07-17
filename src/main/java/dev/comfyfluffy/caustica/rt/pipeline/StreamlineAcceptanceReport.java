@@ -20,7 +20,6 @@ import java.util.List;
 public final class StreamlineAcceptanceReport {
     public static final int SCHEMA_VERSION = 7;
     private static final long DEVELOPMENT_WRITE_INTERVAL_NANOS = 250_000_000L;
-    private static final long PRODUCTION_WRITE_INTERVAL_NANOS = 60_000_000_000L;
     private static long lastWriteNanos;
     private static String lastStateKey = "";
 
@@ -30,10 +29,13 @@ public final class StreamlineAcceptanceReport {
     public static synchronized void publish() {
         long now = System.nanoTime();
         String stateKey = stateKey();
-        long interval = StreamlineRuntime.productionVariant()
-                ? PRODUCTION_WRITE_INTERVAL_NANOS : DEVELOPMENT_WRITE_INTERVAL_NANOS;
-        if (stateKey.equals(lastStateKey) && lastWriteNanos != 0L && now - lastWriteNanos < interval) {
-            return;
+        if (stateKey.equals(lastStateKey) && lastWriteNanos != 0L) {
+            // Production reports are durable state transitions, not a periodic telemetry stream. A final
+            // report is still forced during shutdown by publishNow(). Development retains its short cadence.
+            if (StreamlineRuntime.productionVariant()
+                    || now - lastWriteNanos < DEVELOPMENT_WRITE_INTERVAL_NANOS) {
+                return;
+            }
         }
         writeReports();
         lastWriteNanos = now;

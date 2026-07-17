@@ -456,7 +456,6 @@ public final class RtDlssFg {
         frameInputsSubmitted = false;
         if (pluginEnabled) {
             dlssgFailed = false;
-            probed = false;
             probeAvailabilityOnce();
         }
         // slDLSSGGetState is present-thread synchronized. Defer the first query until after this
@@ -618,7 +617,7 @@ public final class RtDlssFg {
             lastSubmissionReset = effectiveReset;
             if (loggedSubmissionGeneration != swapchainGeneration) {
                 loggedSubmissionGeneration = swapchainGeneration;
-                CausticaMod.LOGGER.info(
+                CausticaMod.LOGGER.debug(
                         "DLSS-G staged first world frame for swapchain {}: mode={}, generated={}, render={}x{}, output={}x{}, ui={}, queue={}, reset={}",
                         swapchainGeneration, CausticaConfig.Rt.Fg.mode(), effectiveMultiFrameCount(),
                         renderWidth, renderHeight, colorWidth, colorHeight, uiValid,
@@ -698,7 +697,7 @@ public final class RtDlssFg {
         if (reflexSupported) {
             warnResult(library.setReflexOptions(options), "slReflexSetOptions");
         }
-        CausticaMod.LOGGER.info("Reflex options applied: mode={}, interval={}us, dlssg={}",
+        CausticaMod.LOGGER.debug("Reflex options applied: mode={}, interval={}us, dlssg={}",
                 mode, limit, requested());
         lastReflexMode = mode;
         lastReflexLimit = limit;
@@ -816,7 +815,7 @@ public final class RtDlssFg {
             int generatedNow = optionsEnabled ? Math.max(0, framesActuallyPresented - 1) : 0;
             if (generatedNow > 0) {
                 if (!generatedFramesConfirmed) {
-                    CausticaMod.LOGGER.info("DLSS-G generated presentation active: {} total frames, {} interpolated",
+                    CausticaMod.LOGGER.debug("DLSS-G generated presentation active: {} total frames, {} interpolated",
                             framesActuallyPresented, generatedNow);
                 }
                 generatedFramesConfirmed = true;
@@ -1020,7 +1019,7 @@ public final class RtDlssFg {
             if (StreamlineRuntime.library().getFeatureRequirements(
                     StreamlineRuntime.FEATURE_DLSS_G, requirements) == RESULT_OK) {
                 ByteBuffer bytes = StreamlineAbi.bytes(requirements);
-                CausticaMod.LOGGER.info("DLSS-G {} requirements: tags={}, computeQueues={}, graphicsQueues={}, opticalFlowQueues={}",
+                CausticaMod.LOGGER.debug("DLSS-G {} requirements: tags={}, computeQueues={}, graphicsQueues={}, opticalFlowQueues={}",
                         featureVersion, bytes.getInt(8), bytes.getInt(12), bytes.getInt(16), bytes.getInt(20));
             }
         }

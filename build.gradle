@@ -102,9 +102,11 @@ def resolveVulkanTool = { String name ->
 	def exe = org.gradle.internal.os.OperatingSystem.current().windows ? ".exe" : ""
 	def sdk = System.getenv("VULKAN_SDK")
 	if (sdk) {
-		def fromSdk = file("${sdk}/Bin/${name}${exe}")
-		if (fromSdk.exists()) {
-			return fromSdk.absolutePath
+		for (def directory : ["Bin", "bin"]) {
+			def fromSdk = file("${sdk}/${directory}/${name}${exe}")
+			if (fromSdk.exists()) {
+				return fromSdk.absolutePath
+			}
 		}
 	}
 	return "${name}${exe}" // fall back to PATH; exec fails with a clear message if absent
