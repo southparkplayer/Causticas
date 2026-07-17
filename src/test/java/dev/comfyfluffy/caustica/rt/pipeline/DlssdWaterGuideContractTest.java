@@ -18,6 +18,12 @@ final class DlssdWaterGuideContractTest {
         String rr = read("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtDlssRr.java");
 
         assertTrue(raygen.contains("gAnimatedGuide[pix] = gv_animatedGuide"));
+        assertTrue(raygen.contains("interfacePos.xz + pc.waterAnchor.xy"));
+        assertTrue(raygen.contains("interfaceNormal = applyWaterWaves(interfaceNormal, waterDomain, pc.waterParams.w)"));
+        assertTrue(raygen.contains("encounteredAnimatedWater = true"));
+        assertTrue(raygen.contains("if (encounteredAnimatedWater) gv_animatedGuide = 1.0"));
+        assertTrue(raygen.indexOf("if (encounteredAnimatedWater) gv_animatedGuide = 1.0")
+                < raygen.indexOf("if (destinationValid)"));
         assertTrue(mask.contains("imageLoad(animatedGuideImage, pixel)"));
         assertTrue(mask.contains("max(disocclusion, animated)"));
         assertTrue(pipeline.contains("long biasCurrent, long animatedGuide"));

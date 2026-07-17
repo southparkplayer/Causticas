@@ -39,7 +39,10 @@ final class GlassOnlyIntegrationContractTest {
         assertFalse(raygen.contains("pathMedia"));
         assertTrue(raygen.contains("void opticalGuideHit"));
         assertTrue(raygen.contains("for (uint crossing = 0u; crossing < 8u; crossing++)"));
-        assertTrue(raygen.contains("continueThroughWater && interfaceMaterial == MATERIAL_WATER"));
+        assertTrue(raygen.contains("bool crossGlassExit = glassExitPending && interfaceMaterial == MATERIAL_GLASS"));
+        assertTrue(raygen.contains("bool crossWater = continueThroughWater && !glassExitPending"));
+        assertTrue(raygen.contains("glassExitPending = false"));
+        assertFalse(raygen.contains("!continueThroughWater && continueThroughExit"));
         assertTrue(raygen.contains("surfaceWaterEntering ? WATER_IOR : (1.0 / WATER_IOR)"));
         assertTrue(raygen.contains("diffuseAlbedo = SKY_DIFF_ALBEDO"));
         assertTrue(raygen.contains("gv_opticalGuideDir = transmittedDir"));
@@ -52,7 +55,7 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(raygen.contains("gv_albedo = destinationDiffuseAlbedo"));
         assertTrue(raygen.contains("float3 specSurfaceCamRel = gv_hitCamRel"));
         assertTrue(raygen.contains("specSurfaceAlbedo, dir, jndc, size"));
-        assertTrue(raygen.contains("gv_opticalGuideMode == 3u"));
+        assertTrue(raygen.contains("gv_opticalGuideMode == 3u, true, gv_opticalExitEta"));
         assertTrue(raygen.contains("Favg * Favg * Eavg"));
         assertTrue(closestHit.contains("float3 texAlbedo = srgbToLinear(blockAtlas.SampleLevel(uv, blockLod).rgb)"));
         assertTrue(closestHit.contains("float3 tintLinear = srgbToLinear(tint)"));

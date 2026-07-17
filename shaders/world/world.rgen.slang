@@ -1083,28 +1083,30 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
     return (prevNdc - currentNdc) * 0.5 * size;
 }
 
-// Deterministic transmitted destination for clear-interface guides. An entered solid uses one bounded
-// trace to find its real exit, refracts there, then uses one trace for the visible destination. Thin panes
-// cross their collapsed exit without bending. Ordinary pixels pay no additional work.
+// Deterministic transmitted destination for clear-interface guides. An entered solid consumes its real
+// glass exit before water continuation becomes eligible; thin panes start with no pending glass exit.
+// Both then share the same bounded water-interface walk. Ordinary pixels pay no additional work.
 void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNormal,
                      bool continueThroughExit, bool continueThroughWater, float exitEta,
                      float rayBias, float rayConeWidth, float rayConeSpread,
                      out float3 hitCamRel, out float3 motionPrev, out bool transmitted,
                      out float3 normal, out float roughness,
-                     out float3 diffuseAlbedo) {
+                     out float3 diffuseAlbedo, out bool encounteredAnimatedWater) {
     hitCamRel = surfacePos - pc.camOffset;
     motionPrev = float3(0.0, 0.0, 0.0);
     transmitted = false;
     normal = surfaceNormal;
     roughness = 1.0;
     diffuseAlbedo = float3(0.0, 0.0, 0.0);
+    encounteredAnimatedWater = false;
     if (dot(transmittedDir, transmittedDir) <= 0.0) return;
 
     float3 direction = normalize(transmittedDir);
     float3 ro = surfacePos - surfaceNormal * rayBias;
+    bool glassExitPending = continueThroughExit;
     // Water can cross several adjacent cells before reaching the visible opaque destination. A two-hit walk
     // incorrectly accepted the next water face as the destination and exported a neutral white silhouette.
-    // Keep glass at its existing one-exit contract, but walk a bounded chain of water interfaces.
+    // Keep glass at a single required-exit contract, then walk a bounded chain of water interfaces.
     for (uint crossing = 0u; crossing < 8u; crossing++) {
         payload.hitT = -1.0;
         payloadSetTraceState(false, rayConeWidth, rayConeSpread);
@@ -1120,9 +1122,9 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         }
 
         uint interfaceMaterial = payloadMaterial();
-        bool crossWater = continueThroughWater && interfaceMaterial == MATERIAL_WATER;
-        bool crossGlassExit = !continueThroughWater && continueThroughExit
-                && crossing == 0u && interfaceMaterial == MATERIAL_GLASS;
+        bool crossGlassExit = glassExitPending && interfaceMaterial == MATERIAL_GLASS;
+        bool crossWater = continueThroughWater && !glassExitPending
+                && interfaceMaterial == MATERIAL_WATER;
         if (!crossWater && !crossGlassExit) {
             if (interfaceMaterial == MATERIAL_OPAQUE) {
                 float3 hitPos = ro + direction * payload.hitT;
@@ -1142,9 +1144,17 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         float3 interfacePos = ro + direction * payload.hitT;
         float3 interfaceNormal = payload.normal;
         float eta = exitEta;
+        if (crossGlassExit) {
+            glassExitPending = false;
+        }
         if (crossWater) {
             bool entering = payloadWaterEntering();
             eta = entering ? (1.0 / WATER_IOR) : WATER_IOR;
+            if ((pc.flags & 16u) != 0u) {
+                float2 waterDomain = interfacePos.xz + pc.waterAnchor.xy;
+                interfaceNormal = applyWaterWaves(interfaceNormal, waterDomain, pc.waterParams.w);
+                encounteredAnimatedWater = true;
+            }
         }
         float3 nextDirection = refract(direction, interfaceNormal, eta);
         // Total internal reflection has no transmitted diffuse destination. Keep the primary water
@@ -2006,15 +2016,17 @@ void main() {
         float3 destinationNormal;
         float destinationRoughness;
         float3 destinationDiffuseAlbedo;
+        bool encounteredAnimatedWater;
         bool glassGuide = gv_opticalGuideMode >= 2u;
         float guideBias = glassGuide ? GLASS_TRANSMIT_BIAS : SURF_BIAS;
         float guideConeWidth = max(length(gv_hitCamRel) * rayConeSpread, RAY_CONE_MIN_WIDTH);
         opticalGuideHit(gv_hitCamRel + pc.camOffset, gv_opticalGuideDir, gv_normal,
-                gv_opticalGuideMode == 3u || !glassGuide, !glassGuide, gv_opticalExitEta,
+                gv_opticalGuideMode == 3u, true, gv_opticalExitEta,
                 guideBias, guideConeWidth, rayConeSpread,
                 destinationHitCamRel, destinationMotionPrev, destinationValid,
                 destinationNormal, destinationRoughness,
-                destinationDiffuseAlbedo);
+                destinationDiffuseAlbedo, encounteredAnimatedWater);
+        if (encounteredAnimatedWater) gv_animatedGuide = 1.0;
         if (destinationValid) {
             gv_motionHitCamRel = destinationHitCamRel;
             gv_motionObjDisp = destinationMotionPrev;
