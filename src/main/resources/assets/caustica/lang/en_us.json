@@ -80,7 +80,7 @@
 	"caustica.options.rt.sdrPsychoPeak": "SDR PsychoV Peak",
 	"caustica.options.rt.sdrPsychoPeak.tooltip": "Peak reference for the legacy SDR PsychoV map. Higher values preserve more highlight detail.",
 	"caustica.options.rt.sdrPsychoV23Peak": "SDR PsychoV23 Peak",
-	"caustica.options.rt.sdrPsychoV23Peak.tooltip": "Peak reference for the SDR PsychoV23 map.",
+	"caustica.options.rt.sdrPsychoV23Peak.tooltip": "Scene-linear peak reference compressed into SDR white. Higher values preserve more highlight brightness and delay the shoulder, but very high values can hard-clip highlights.",
 	"caustica.options.rt.psychoV23Compression": "PsychoV23 Compression",
 	"caustica.options.rt.psychoV23Compression.tooltip": "Shared curve-to-display compression for SDR and HDR PsychoV23. Zero uses the automatic reference-range fit.",
 	"caustica.options.rt.psychoV23Compression.auto": "Auto",
@@ -132,6 +132,7 @@
 	"caustica.options.rt.tonemapping.tooltip": "Open SDR and HDR tone-mapping controls.",
 	"caustica.options.rt.tonemapping.title": "Tone Mapping",
 	"caustica.options.rt.tonemapping.section.output": "Output",
+	"caustica.options.rt.tonemapping.section.hdrOutput": "HDR Output",
 	"caustica.options.rt.tonemapping.section.sdrAgx": "SDR - AgX",
 	"caustica.options.rt.tonemapping.section.sdrPbrNeutral": "SDR - PBR Neutral",
 	"caustica.options.rt.tonemapping.section.sdrReinhard": "SDR - Reinhard",
@@ -146,6 +147,8 @@
 	"caustica.options.rt.tonemapping.section.hdrPsycho": "PsychoV Legacy",
 	"caustica.options.rt.tonemapping.section.hdrPsycho23": "HDR - PsychoV23",
 	"caustica.options.rt.tonemapping.resetHint": "Shift+Left-click an option to restore its default.",
+	"caustica.options.rt.tonemapping.resetPage": "Reset Page",
+	"caustica.options.rt.tonemapping.resetVisible": "Reset Visible",
 
 	"caustica.options.rt.sdrAgxContrast": "AgX Contrast",
 	"caustica.options.rt.sdrAgxContrast.tooltip": "Contrast applied after AgX tone mapping. 1.0 preserves the original Caustica SDR look.",
@@ -260,6 +263,8 @@
 	"caustica.options.rt.fg.vsyncConflict": "FIFO VSync is unsupported by Vulkan Streamline; MAILBOX presentation is used when available.",
 
 	"caustica.options.title": "Caustica Settings...",
+	"caustica.options.search": "Search Caustica settings",
+	"caustica.options.search.hint": "Search...",
 	"caustica.options.tooltip": "Open all Caustica renderer, display, capture, frame-generation, and first-person settings.",
 	"caustica.options.section.general": "Caustica",
 	"caustica.options.enabled": "Ray Tracing",
@@ -318,5 +323,7 @@
 	"caustica.options.rt.sharcParityNotice": "Default: SHaRC On with conservative visual-parity tuning. Use debug views and the baseline toggle for validation.",
 	"caustica.options.rt.sharcAntiFirefly": "SHaRC Anti-Firefly Filter",
 	"caustica.options.rt.sharcAntiFirefly.tooltip": "Use NVIDIA's confidence-based high-sample-weight adjustment. This does not clamp final radiance or replace estimator validation.",
+	"key.category.caustica.controls": "Caustica",
+	"key.caustica.open_menu": "Open Caustica Menu",
 	"key.caustica.offline_ground_truth": "Start Offline Renderer"
 }

@@ -2,8 +2,7 @@ package dev.comfyfluffy.caustica.mixin;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import dev.comfyfluffy.caustica.CausticaConfig;
-import dev.comfyfluffy.caustica.client.OfflineGroundTruth;
-import dev.comfyfluffy.caustica.client.UltraScreenshot;
+import dev.comfyfluffy.caustica.client.CausticaKeyMappings;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Options;
 import org.spongepowered.asm.mixin.Final;
@@ -30,11 +29,11 @@ public abstract class OptionsMixin {
     @Inject(method = "<init>", at = @At(value = "FIELD",
             target = "Lnet/minecraft/client/Options;keyMappings:[Lnet/minecraft/client/KeyMapping;",
             shift = At.Shift.AFTER))
-    private void caustica$addUltraScreenshotKey(CallbackInfo ci) {
+    private void caustica$addKeyMappings(CallbackInfo ci) {
+        KeyMapping[] causticaMappings = CausticaKeyMappings.all();
         int originalLength = this.keyMappings.length;
-        this.keyMappings = Arrays.copyOf(this.keyMappings, originalLength + 2);
-        this.keyMappings[originalLength] = UltraScreenshot.KEY;
-        this.keyMappings[originalLength + 1] = OfflineGroundTruth.KEY;
+        this.keyMappings = Arrays.copyOf(this.keyMappings, originalLength + causticaMappings.length);
+        System.arraycopy(causticaMappings, 0, this.keyMappings, originalLength, causticaMappings.length);
     }
 
     @ModifyReturnValue(method = "isRestartRequiredToApplyVideoSettings", at = @At("RETURN"))

@@ -256,7 +256,7 @@ public final class RtVideoOptions {
     public static TonemapControl[] sdrPsychoV23Options() {
         return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrPsychoV23Peak", CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,
-                    10, 5, 80, 1),
+                    10, 5, 640, 1),
             psychoV23Compression("caustica.options.rt.psychoV23Compression",
                     CausticaConfig.Rt.PsychoV23.COMPRESSION),
             scaledFloat("caustica.options.rt.psychoV23GamutCompression",

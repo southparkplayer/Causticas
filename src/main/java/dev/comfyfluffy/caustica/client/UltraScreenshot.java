@@ -16,7 +16,7 @@ import org.lwjgl.glfw.GLFW;
 public final class UltraScreenshot {
     public static final UltraScreenshot INSTANCE = new UltraScreenshot();
     public static final KeyMapping KEY = new KeyMapping(
-            "key.caustica.ultra_screenshot", GLFW.GLFW_KEY_F4, KeyMapping.Category.MISC);
+            "key.caustica.ultra_screenshot", GLFW.GLFW_KEY_F4, CausticaKeyMappings.CATEGORY);
 
     private static final int DLAA_QUALITY = 5;
     private static final int SCREENSHOT_SPP = 8;

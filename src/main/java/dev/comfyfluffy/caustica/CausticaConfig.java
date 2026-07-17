@@ -1009,7 +1009,8 @@ public final class CausticaConfig {
             public static final FloatSetting PSYCHO_PEAK =
                     clampedFloat("caustica.rt.sdr.psychov.peak", "sdr.psychov.peak", 1.0f, 0.5f, 8.0f);
             public static final FloatSetting PSYCHOV23_PEAK =
-                    clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak", 1.0f, 0.5f, 8.0f);
+                    clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak",
+                            1000.0f / 203.0f, 0.5f, 64.0f);
 
             private Sdr() {
             }

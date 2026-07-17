@@ -32,6 +32,9 @@ public final class CausticaClient implements ClientModInitializer {
 		// runs on the render thread with the device idle between frames.
 		ClientTickEvents.START_CLIENT_TICK.register(client -> {
 			CausticaDebugBridge.tick(client);
+			while (CausticaKeyMappings.OPEN_MENU.consumeClick()) {
+				client.setScreenAndShow(new CausticaOptionsScreen(null, client.options));
+			}
 			while (OfflineGroundTruth.KEY.consumeClick()) {
 				OfflineGroundTruth.INSTANCE.handleHotkey(client);
 			}

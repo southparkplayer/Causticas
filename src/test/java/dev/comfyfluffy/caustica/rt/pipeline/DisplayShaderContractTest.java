@@ -31,6 +31,17 @@ final class DisplayShaderContractTest {
         assertTrue(source.contains("new OptionInstance.Enum<>(DEBUG_VIEW_ORDER, Codec.INT)"));
     }
 
+    @Test
+    void psychoV23SdrPeakUsesReferenceDefaultAndExpandedRange() throws IOException {
+        String config = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java"));
+        String options = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java")).replace("\r\n", "\n");
+
+        assertTrue(config.contains("1000.0f / 203.0f, 0.5f, 64.0f"));
+        assertTrue(options.contains("CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,\n                    10, 5, 640, 1"));
+    }
+
     private static String shader() throws IOException {
         Path cursor = Path.of("").toAbsolutePath();
         while (cursor != null) {

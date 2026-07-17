@@ -38,6 +38,11 @@ public final class CausticaWidgets {
     private CausticaWidgets() {
     }
 
+    /** Stable human-facing label used by menu search and local quick-access history. */
+    public interface LabeledControl {
+        Component causticaLabel();
+    }
+
     public static Component onOff(boolean value) {
         return Component.translatable(value ? "options.on" : "options.off");
     }
@@ -144,7 +149,7 @@ public final class CausticaWidgets {
         }
     }
 
-    public static final class Toggle extends AbstractButton {
+    public static final class Toggle extends AbstractButton implements LabeledControl {
         private final Component label;
         private final BooleanSupplier getter;
         private final Consumer<Boolean> setter;
@@ -176,6 +181,11 @@ public final class CausticaWidgets {
 
         private void refreshMessage() {
             setMessage(this.label.copy().append(": ").append(onOff(this.getter.getAsBoolean())));
+        }
+
+        @Override
+        public Component causticaLabel() {
+            return this.label;
         }
 
         @Override
@@ -215,7 +225,7 @@ public final class CausticaWidgets {
         }
     }
 
-    public static final class Dropdown<T> extends AbstractButton {
+    public static final class Dropdown<T> extends AbstractButton implements LabeledControl {
         private static final int ITEM_HEIGHT = 20;
         private static final int MAX_VISIBLE_ITEMS = 8;
 
@@ -262,6 +272,11 @@ public final class CausticaWidgets {
 
         private void refreshMessage() {
             setMessage(this.label.copy().append(": ").append(this.valueLabel.apply(this.getter.get())));
+        }
+
+        @Override
+        public Component causticaLabel() {
+            return this.label;
         }
 
         @Override
@@ -397,7 +412,7 @@ public final class CausticaWidgets {
         }
     }
 
-    public static final class Slider extends AbstractSliderButton {
+    public static final class Slider extends AbstractSliderButton implements LabeledControl {
         private final Component label;
         private final DoubleSupplier getter;
         private final DoubleConsumer setter;
@@ -424,6 +439,11 @@ public final class CausticaWidgets {
         public Slider activeWhen(BooleanSupplier activeWhen) {
             this.activeWhen = Objects.requireNonNull(activeWhen);
             return this;
+        }
+
+        @Override
+        public Component causticaLabel() {
+            return this.label;
         }
 
         public Slider tooltip(Component tooltip) {

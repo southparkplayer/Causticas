@@ -19,7 +19,7 @@ public final class OfflineGroundTruth {
 
     public static final OfflineGroundTruth INSTANCE = new OfflineGroundTruth();
     public static final KeyMapping KEY = new KeyMapping(
-            "key.caustica.offline_ground_truth", GLFW.GLFW_KEY_F7, KeyMapping.Category.MISC);
+            "key.caustica.offline_ground_truth", GLFW.GLFW_KEY_F7, CausticaKeyMappings.CATEGORY);
 
     private boolean active;
     private boolean startPending;

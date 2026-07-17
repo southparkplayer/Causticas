@@ -9,6 +9,7 @@ import dev.comfyfluffy.caustica.client.ui.CausticaWidgets;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.ActionButton;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.Dropdown;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.InfoStrip;
+import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.LabeledControl;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.SectionHeader;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.Slider;
 import dev.comfyfluffy.caustica.client.ui.CausticaWidgets.Toggle;
@@ -28,6 +29,7 @@ import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.ScrollableLayout;
 import net.minecraft.client.gui.layouts.SpacerElement;
 import net.minecraft.client.gui.screens.Screen;
@@ -38,14 +40,15 @@ import org.lwjgl.glfw.GLFW;
 
 /** Caustica's compact, category-based settings workstation. */
 public class CausticaSettingsScreen extends Screen {
-    private static final int MARGIN = 8;
+    private static final int MARGIN = 6;
     private static final int HEADER_HEIGHT = 28;
     private static final int FOOTER_HEIGHT = 28;
-    private static final int RAIL_WIDTH = 126;
+    private static final int RAIL_WIDTH = 104;
     private static final int GRID_GAP = 4;
     private static final int CONTROL_HEIGHT = 22;
-    private static final int MAX_CONTENT_WIDTH = 760;
-    private static final int TARGET_CELL_WIDTH = 250;
+    private static final int MAX_CONTENT_WIDTH = 1600;
+    private static final int TARGET_CELL_WIDTH = 220;
+    private static final int MAX_GRID_COLUMNS = 6;
     private static final List<Integer> DLSS_QUALITY_ORDER = List.of(3, 0, 1, 2, 5);
     private static final List<Integer> SHARC_CACHE_EXPONENTS = List.of(
             16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28);
@@ -64,14 +67,22 @@ public class CausticaSettingsScreen extends Screen {
     private ScrollableLayout bodyScroll;
     private CategoryLayout body;
     private final Map<AbstractWidget, Runnable> toneResets = new IdentityHashMap<>();
+    private final Map<AbstractWidget, String> usageLabels = new IdentityHashMap<>();
     private final List<Dropdown<?>> dropdowns = new ArrayList<>();
+    private final List<QuickHeading> quickHeadings = new ArrayList<>();
+    private final List<AbstractWidget> collectedSearchResults = new ArrayList<>();
+    private EditBox searchBox;
+    private String searchQuery = "";
+    private String searchContext = "";
+    private boolean collectingSearchResults;
     private boolean saved;
     private int contentWidth;
     private int gridColumns;
-    private Category category = Category.OUTPUT;
+    private Category category = Category.OVERVIEW;
 
     private enum Category {
-        OUTPUT("Output"), RENDERING("Rendering"), SHARC("SHaRC"), IMAGE("Image"), VIEW("View"), DIAGNOSTICS("Diagnostics");
+        OVERVIEW("Overview"), OUTPUT("Output"), RENDERING("Rendering"), SHARC("SHaRC"), IMAGE("Image"),
+        VIEW("View"), DIAGNOSTICS("Advanced");
         final String label;
         Category(String label) { this.label = label; }
     }
@@ -88,7 +99,7 @@ public class CausticaSettingsScreen extends Screen {
             try {
                 this.category = Category.valueOf(initialCategory.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException ignored) {
-                this.category = Category.OUTPUT;
+                this.category = Category.OVERVIEW;
             }
         }
     }
@@ -97,11 +108,24 @@ public class CausticaSettingsScreen extends Screen {
     protected void init() {
         saved = false;
         toneResets.clear();
+        usageLabels.clear();
         dropdowns.clear();
+        quickHeadings.clear();
+        collectedSearchResults.clear();
         int paneLeft = MARGIN + RAIL_WIDTH + 8;
         int availableWidth = Math.max(180, width - paneLeft - MARGIN - 8);
         contentWidth = Math.min(MAX_CONTENT_WIDTH, availableWidth);
-        gridColumns = Math.clamp((contentWidth + GRID_GAP) / (TARGET_CELL_WIDTH + GRID_GAP), 1, 3);
+        gridColumns = Math.clamp((contentWidth + GRID_GAP) / (TARGET_CELL_WIDTH + GRID_GAP),
+                1, MAX_GRID_COLUMNS);
+
+        searchBox = new EditBox(font, MARGIN, MARGIN + 3, RAIL_WIDTH, 20,
+                Component.translatable("caustica.options.search"));
+        searchBox.setMaxLength(80);
+        searchBox.setHint(Component.translatable("caustica.options.search.hint"));
+        searchBox.setCanLoseFocus(true);
+        searchBox.setValue(searchQuery);
+        searchBox.setResponder(this::searchChanged);
+        addRenderableWidget(searchBox);
 
         int railY = MARGIN + HEADER_HEIGHT + 6;
         for (Category value : Category.values()) {
@@ -113,15 +137,21 @@ public class CausticaSettingsScreen extends Screen {
             addRenderableWidget(button);
             railY += CONTROL_HEIGHT + 3;
         }
+        addQuickLinks(railY + 4);
 
         body = new CategoryLayout(contentWidth, 4);
-        switch (category) {
-            case OUTPUT -> addOutput();
-            case RENDERING -> addRendering();
-            case SHARC -> addSharc();
-            case IMAGE -> addImage();
-            case VIEW -> addView();
-            case DIAGNOSTICS -> addDiagnostics();
+        if (!searchQuery.isBlank()) {
+            addSearchResults();
+        } else {
+            switch (category) {
+                case OVERVIEW -> addOverview();
+                case OUTPUT -> addOutput();
+                case RENDERING -> addRendering();
+                case SHARC -> addSharc();
+                case IMAGE -> addImage();
+                case VIEW -> addView();
+                case DIAGNOSTICS -> addDiagnostics();
+            }
         }
         body.addChild(SpacerElement.height(8));
 
@@ -139,13 +169,131 @@ public class CausticaSettingsScreen extends Screen {
                 height - MARGIN - CONTROL_HEIGHT);
         addRenderableWidget(done);
         repositionElements();
+        setInitialFocus(searchBox);
     }
 
     private void selectCategory(Category target) {
-        if (category == target) return;
+        if (category == target && searchQuery.isBlank()) return;
         category = target;
-        clearWidgets();
-        init();
+        searchQuery = "";
+        rebuild();
+    }
+
+    private void addOverview() {
+        addHeader("Rendering & output", "The controls most players change during normal play");
+        List<AbstractWidget> rendering = new ArrayList<>();
+        rendering.add(toggle(Component.translatable("caustica.options.enabled"), CausticaConfig.Rt.ENABLED));
+        rendering.add(intSlider(Component.translatable("caustica.options.rt.spp"), CausticaConfig.Rt.Composite.SPP,
+                1, 8, value -> String.format(Locale.ROOT, "%.0f spp", value)));
+        rendering.add(intSlider(Component.translatable("caustica.options.rt.maxBounces"),
+                CausticaConfig.Rt.Composite.MAX_BOUNCES, 2, 8,
+                value -> String.format(Locale.ROOT, "%.0f bounces", value)));
+        rendering.add(toggle(Component.translatable("caustica.options.rt.dlssRr"),
+                CausticaConfig.Rt.DlssRr.ENABLED));
+        rendering.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.dlssQuality"),
+                DLSS_QUALITY_ORDER, CausticaConfig.Rt.DlssRr.QUALITY::configuredValue,
+                CausticaConfig.Rt.DlssRr.QUALITY::set,
+                value -> Component.translatable("caustica.options.rt.dlssQuality." + value), null)
+                .activeWhen(CausticaConfig.Rt.DlssRr.ENABLED::configuredValue));
+        rendering.add(toggle(Component.translatable("caustica.options.rt.hdr"), CausticaConfig.Rt.Hdr.ENABLED));
+        rendering.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.fg.mode"),
+                List.of("off", "fixed"), CausticaConfig.Rt.Fg::configuredMode, CausticaConfig.Rt.Fg::setMode,
+                value -> Component.translatable("caustica.options.rt.fg.mode." + value), null));
+        rendering.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.fg.reflex"),
+                List.of("off", "on", "boost"), this::reflexMode, this::setReflexMode,
+                value -> Component.translatable("caustica.options.rt.fg.reflex." + value), null));
+        addGrid(rendering);
+
+        addHeader("Scene & image", "Lighting, presentation, and view controls kept one click away");
+        List<AbstractWidget> scene = new ArrayList<>();
+        scene.add(new Slider(180, Component.translatable("caustica.options.rt.torchIntensity"),
+                CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER::configuredValue,
+                value -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set((float)value),
+                unit -> unit, value -> value, value -> String.format(Locale.ROOT, "%.1f", value))
+                .resetOnShift(() -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set(
+                        CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.defaultValue())));
+        scene.add(toggle(Component.translatable("caustica.options.rt.waterWaves"),
+                CausticaConfig.Rt.Composite.WATER_WAVES));
+        scene.add(toggle(Component.translatable("caustica.options.rt.entities"),
+                CausticaConfig.Rt.Entities.ENABLED));
+        scene.add(toggle(Component.translatable("caustica.options.rt.particles"),
+                CausticaConfig.Rt.Entities.PARTICLES_ENABLED));
+        scene.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.exposureMode"),
+                List.of("auto", "manual"), CausticaConfig.Rt.Exposure.MODE::configuredValue,
+                CausticaConfig.Rt.Exposure.MODE::set,
+                value -> Component.translatable("caustica.options.rt.exposureMode." + value), null));
+        scene.add(floatSlider(Component.translatable("caustica.options.rt.manualEv"),
+                CausticaConfig.Rt.Exposure.MANUAL_EV, -5, 5,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value))
+                .activeWhen(() -> "manual".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        scene.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.sdrTonemap"), SDR_TONEMAPPERS,
+                CausticaConfig.Rt.Sdr.TONEMAP_MODE::configuredValue, CausticaConfig.Rt.Sdr.TONEMAP_MODE::set,
+                value -> Component.translatable("caustica.options.rt.sdrTonemap." + value), this::rebuild));
+        scene.add(toggle(Component.translatable("caustica.options.rt.firstPerson.enabled"),
+                CausticaConfig.Rt.FirstPerson.ENABLED));
+        scene.add(toggle(Component.translatable("caustica.options.rt.sharc"), CausticaConfig.Rt.Sharc.ENABLED));
+        addGrid(scene);
+
+        addInfo(() -> CausticaConfig.Rt.Hdr.pendingRestart()
+                ? Component.translatable("caustica.options.rt.hdr.restartRequired")
+                : Component.literal("Changes save automatically  |  Shift+click restores a default"));
+    }
+
+    private void searchChanged(String value) {
+        if (value.equals(searchQuery)) return;
+        searchQuery = value;
+        rebuild();
+    }
+
+    private void addSearchResults() {
+        collectingSearchResults = true;
+        collectedSearchResults.clear();
+        addOutput();
+        addRendering();
+        addSharc();
+        addImage();
+        addView();
+        addDiagnostics();
+        collectingSearchResults = false;
+        searchContext = "";
+
+        addHeader("Search results", collectedSearchResults.size() + " matching controls");
+        if (collectedSearchResults.isEmpty()) {
+            addInfo(() -> Component.literal("No Caustica setting matches \"" + searchQuery + "\""));
+        } else {
+            addGridDirect(collectedSearchResults);
+        }
+    }
+
+    private void addQuickLinks(int top) {
+        int available = height - FOOTER_HEIGHT - MARGIN - top;
+        int itemLimit = Math.clamp((available - 24) / 40, 0, 3);
+        if (itemLimit == 0) return;
+
+        List<CausticaMenuUsage.Item> recent = CausticaMenuUsage.INSTANCE.recent(itemLimit);
+        List<CausticaMenuUsage.Item> frequent = CausticaMenuUsage.INSTANCE.frequent(itemLimit, recent);
+        int y = top;
+        y = addQuickGroup("Recent", recent, y);
+        addQuickGroup("Frequent", frequent, y);
+    }
+
+    private int addQuickGroup(String heading, List<CausticaMenuUsage.Item> items, int top) {
+        if (items.isEmpty()) return top;
+        quickHeadings.add(new QuickHeading(heading, top));
+        int y = top + 12;
+        for (CausticaMenuUsage.Item item : items) {
+            ActionButton button = new ActionButton(RAIL_WIDTH,
+                    () -> Component.literal(item.label()), () -> searchFor(item.label()), false);
+            button.setRectangle(RAIL_WIDTH, 18, MARGIN, y);
+            addRenderableWidget(button);
+            y += 20;
+        }
+        return y + 4;
+    }
+
+    private void searchFor(String label) {
+        searchQuery = label;
+        rebuild();
     }
 
     private void addOutput() {
@@ -173,9 +321,9 @@ public class CausticaSettingsScreen extends Screen {
         controls.add(toggle(Component.translatable("caustica.options.rt.fg.fullscreenMenu"),
                 CausticaConfig.Rt.Fg.FULLSCREEN_MENU_DETECTION));
         addGrid(controls);
-        body.addChild(new InfoStrip(contentWidth, () -> CausticaConfig.Rt.Hdr.pendingRestart()
+        addInfo(() -> CausticaConfig.Rt.Hdr.pendingRestart()
                 ? Component.translatable("caustica.options.rt.hdr.restartRequired")
-                : Component.literal("Output changes save automatically")));
+                : Component.literal("Output changes save automatically"));
     }
 
     private void addRendering() {
@@ -278,7 +426,7 @@ public class CausticaSettingsScreen extends Screen {
                 .tooltip(Component.translatable("caustica.options.rt.sharcDetailedStats.tooltip")));
         addGrid(controls);
 
-        body.addChild(new InfoStrip(contentWidth, this::sharcStatusText));
+        addInfo(this::sharcStatusText);
         addGrid(List.of(
                 new ActionButton(180, () -> Component.translatable("caustica.options.rt.sharcReset"),
                         () -> RtComposite.INSTANCE.requestSharcReset("manual menu reset"), false),
@@ -324,7 +472,7 @@ public class CausticaSettingsScreen extends Screen {
                 .activeWhen(CausticaConfig.Rt.Hdr.ENABLED::configuredValue));
         addGrid(controls);
 
-        body.addChild(new InfoStrip(contentWidth, () -> Component.literal("Active curve  \u2022  " + activeToneLabel())));
+        addInfo(() -> Component.literal("Active curve  \u2022  " + activeToneLabel()));
         List<AbstractWidget> active = toneWidgets(activeToneControls());
         if (!active.isEmpty()) addGrid(active);
     }
@@ -362,8 +510,7 @@ public class CausticaSettingsScreen extends Screen {
         controls.add(new ActionButton(180, () -> Component.literal("Frame Generation diagnostics"),
                 () -> minecraft.setScreenAndShow(new RtFrameGenerationDiagnosticsScreen(this, options)), false));
         addGrid(controls);
-        body.addChild(new InfoStrip(contentWidth,
-                () -> Component.literal("Offline renderer: use the configured capture key while in world")));
+        addInfo(() -> Component.literal("Offline renderer: use the configured capture key while in world"));
     }
 
     private RtVideoOptions.TonemapControl[] activeToneControls() {
@@ -407,14 +554,52 @@ public class CausticaSettingsScreen extends Screen {
     }
 
     private void addHeader(String title, String subtitle) {
+        searchContext = title + ' ' + subtitle;
+        if (collectingSearchResults) return;
         body.addChild(new SectionHeader(contentWidth, Component.literal(title), Component.literal(subtitle)));
     }
 
     private void addGrid(List<? extends AbstractWidget> controls) {
+        registerControls(controls);
+        if (collectingSearchResults) {
+            controls.stream().filter(this::matchesSearch).forEach(collectedSearchResults::add);
+            return;
+        }
+        addGridDirect(controls);
+    }
+
+    private void addGridDirect(List<? extends AbstractWidget> controls) {
+        if (controls.isEmpty()) return;
+        body.addChild(new WidgetGridLayout(contentWidth, gridColumns, GRID_GAP, GRID_GAP,
+                CONTROL_HEIGHT, controls));
+    }
+
+    private void registerControls(List<? extends AbstractWidget> controls) {
         for (AbstractWidget control : controls) {
             if (control instanceof Dropdown<?> dropdown) dropdowns.add(dropdown);
+            if (control instanceof LabeledControl || toneResets.containsKey(control)) {
+                usageLabels.put(control, controlLabel(control));
+            }
         }
-        body.addChild(new WidgetGridLayout(contentWidth, gridColumns, GRID_GAP, GRID_GAP, CONTROL_HEIGHT, controls));
+    }
+
+    private boolean matchesSearch(AbstractWidget control) {
+        String haystack = (searchContext + ' ' + controlLabel(control)).toLowerCase(Locale.ROOT);
+        return java.util.Arrays.stream(searchQuery.toLowerCase(Locale.ROOT).trim().split("\\s+"))
+                .allMatch(haystack::contains);
+    }
+
+    private static String controlLabel(AbstractWidget control) {
+        if (control instanceof LabeledControl labeled) {
+            return labeled.causticaLabel().getString();
+        }
+        String message = control.getMessage().getString();
+        int separator = message.indexOf(": ");
+        return separator > 0 ? message.substring(0, separator) : message;
+    }
+
+    private void addInfo(java.util.function.Supplier<Component> text) {
+        if (!collectingSearchResults) body.addChild(new InfoStrip(contentWidth, text));
     }
 
     private Toggle toggle(Component label, BooleanSetting setting) {
@@ -507,14 +692,16 @@ public class CausticaSettingsScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
         int paneLeft = MARGIN + RAIL_WIDTH + 8;
         int paneRight = paneLeft + contentWidth;
-        int railBottom = MARGIN + HEADER_HEIGHT + 6
-                + Category.values().length * (CONTROL_HEIGHT + 3);
+        int railBottom = height - FOOTER_HEIGHT - MARGIN;
         g.fill(MARGIN + RAIL_WIDTH + 4, MARGIN, MARGIN + RAIL_WIDTH + 5,
                 railBottom, 0x70FFFFFF);
         g.fill(MARGIN, MARGIN + HEADER_HEIGHT, paneRight,
                 MARGIN + HEADER_HEIGHT + 1, 0x50FFFFFF);
-        g.text(font, Component.literal("Caustica"), MARGIN, MARGIN + 5, CausticaWidgets.TEXT);
-        g.text(font, Component.literal(category.label), MARGIN + RAIL_WIDTH + 14, MARGIN + 5, CausticaWidgets.ACCENT);
+        g.text(font, Component.literal(searchQuery.isBlank() ? category.label : "Search"),
+                paneLeft + 2, MARGIN + 5, CausticaWidgets.ACCENT);
+        for (QuickHeading heading : quickHeadings) {
+            g.text(font, Component.literal(heading.label()), MARGIN + 2, heading.y(), CausticaWidgets.MUTED);
+        }
         g.fill(paneLeft, height - FOOTER_HEIGHT - MARGIN, paneRight,
                 height - FOOTER_HEIGHT - MARGIN + 1, 0x50FFFFFF);
         g.text(font, Component.literal("Shift+click a control to restore its default"),
@@ -530,7 +717,10 @@ public class CausticaSettingsScreen extends Screen {
         Dropdown<?> open = null;
         for (Dropdown<?> dropdown : dropdowns) {
             if (!dropdown.isOpen()) continue;
-            if (dropdown.clickOverlay(input.x(), input.y(), height)) return true;
+            if (dropdown.clickOverlay(input.x(), input.y(), height)) {
+                recordControl(dropdown);
+                return true;
+            }
             if (open == null) open = dropdown;
             else dropdown.close();
         }
@@ -540,12 +730,19 @@ public class CausticaSettingsScreen extends Screen {
                 AbstractWidget widget = entry.getKey();
                 if (widget.visible && widget.active && widget.isMouseOver(input.x(), input.y())) {
                     entry.getValue().run();
+                    recordControl(widget);
                     rebuild();
                     return true;
                 }
             }
         }
-        return super.mouseClicked(input, doubleClick);
+        AbstractWidget used = usageLabels.keySet().stream()
+                .filter(widget -> !(widget instanceof Dropdown<?>))
+                .filter(widget -> widget.visible && widget.active && widget.isMouseOver(input.x(), input.y()))
+                .findFirst().orElse(null);
+        boolean handled = super.mouseClicked(input, doubleClick);
+        if (handled && used != null) recordControl(used);
+        return handled;
     }
 
     @Override
@@ -558,6 +755,11 @@ public class CausticaSettingsScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyEvent input) {
+        if (input.hasControlDown() && input.key() == GLFW.GLFW_KEY_F) {
+            setFocused(searchBox);
+            searchBox.setFocused(true);
+            return true;
+        }
         if (input.key() == GLFW.GLFW_KEY_ESCAPE) {
             boolean closed = false;
             for (Dropdown<?> dropdown : dropdowns) {
@@ -567,6 +769,11 @@ public class CausticaSettingsScreen extends Screen {
                 }
             }
             if (closed) return true;
+            if (!searchQuery.isBlank()) {
+                searchQuery = "";
+                rebuild();
+                return true;
+            }
         }
         return super.keyPressed(input);
     }
@@ -586,7 +793,16 @@ public class CausticaSettingsScreen extends Screen {
     private void saveAll() {
         if (saved) return;
         saved = true;
+        CausticaMenuUsage.INSTANCE.save();
         CausticaConfig.save();
         options.save();
+    }
+
+    private void recordControl(AbstractWidget widget) {
+        String label = usageLabels.get(widget);
+        if (label != null) CausticaMenuUsage.INSTANCE.record(label);
+    }
+
+    private record QuickHeading(String label, int y) {
     }
 }
