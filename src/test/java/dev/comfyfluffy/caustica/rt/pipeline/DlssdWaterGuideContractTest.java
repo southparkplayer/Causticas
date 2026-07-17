@@ -35,7 +35,7 @@ final class DlssdWaterGuideContractTest {
     @Test
     void unresolvedWaterNeverExportsAbsorptionTintAsDiffuseAlbedo() throws IOException {
         String raygen = read("shaders/world/world.rgen.slang");
-        assertTrue(raygen.contains("for (uint crossing = 0u; crossing < 8u; crossing++)"));
+        assertTrue(raygen.contains("crossing < uint(MAX_OPTICAL_INTERFACE_DEPTH)"));
         assertTrue(raygen.contains("gv_albedo = float3(0.0, 0.0, 0.0)"));
         assertTrue(raygen.contains("Total internal reflection has no transmitted diffuse destination"));
         assertTrue(raygen.contains("transmitted = false"));

@@ -20,7 +20,7 @@ final class PathSamplingContractTest {
                 "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));
         assertTrue(raygen.contains("struct PathSampler"));
         assertTrue(raygen.contains("#if CAUSTICA_OFFLINE"));
-        assertTrue(raygen.contains("beginBounce(sampler, uint(bounce));"));
+        assertTrue(raygen.contains("beginBounce(sampler, uint(segment));"));
         assertTrue(raygen.contains("sampler.sampleIndex = completedSamples + s"));
         assertTrue(raygen.contains("pc.sampleSequenceAddr"));
         assertTrue(raygen.contains("owenScramble(value, dimensionSeed)"));

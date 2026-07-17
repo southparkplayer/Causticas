@@ -18,7 +18,7 @@ final class MirrorPsrShaderContractTest {
         assertTrue(source.contains("recursivePrimarySurfaceReplacement("));
         assertTrue(source.contains("maxMirrors = clamp(pc.psrMaxMirrors, 1u, PSR_MAX_CONFIGURED_MIRRORS)"));
         assertTrue(source.contains("translation += mappedNormal"));
-        assertTrue(source.contains("max(maxBounces, maxMirrorDepth)"));
+        assertTrue(source.contains("maxBounces + maxMirrorDepth + MAX_OPTICAL_INTERFACE_DEPTH + 1"));
     }
 
     @Test

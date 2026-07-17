@@ -38,7 +38,7 @@ final class GlassOnlyIntegrationContractTest {
         assertFalse(raygen.contains("MAX_MEDIUM_DEPTH"));
         assertFalse(raygen.contains("pathMedia"));
         assertTrue(raygen.contains("void opticalGuideHit"));
-        assertTrue(raygen.contains("for (uint crossing = 0u; crossing < 8u; crossing++)"));
+        assertTrue(raygen.contains("crossing < uint(MAX_OPTICAL_INTERFACE_DEPTH)"));
         assertTrue(raygen.contains("bool crossGlassExit = glassExitPending && interfaceMaterial == MATERIAL_GLASS"));
         assertTrue(raygen.contains("bool crossWater = continueThroughWater && !glassExitPending"));
         assertTrue(raygen.contains("glassExitPending = false"));
