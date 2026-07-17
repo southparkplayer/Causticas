@@ -29,6 +29,7 @@ import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 
 import java.util.List;
 
+import static org.lwjgl.vulkan.EXTOpacityMicromap.VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
 import static org.lwjgl.vulkan.EXTOpacityMicromap.VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
 import static org.lwjgl.vulkan.EXTOpacityMicromap.VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
 import static org.lwjgl.vulkan.EXTOpacityMicromap.VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT;
@@ -1084,7 +1085,7 @@ public final class RtAccel {
                 .srcStageMask(VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT)
                 .srcAccessMask(VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT)
                 .dstStageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR)
-                .dstAccessMask(VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+                .dstAccessMask(VK_ACCESS_2_MICROMAP_READ_BIT_EXT);
         VkDependencyInfo dep = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(barrier);
         vkCmdPipelineBarrier2KHR(cmd, dep);
     }
