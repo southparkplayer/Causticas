@@ -35,6 +35,9 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(raygen.contains("F = 2.0 * F / (1.0 + F)"));
         assertTrue(raygen.contains("float3 transmittedDir = thinPane ? rd : refract"));
         assertTrue(raygen.contains("float3 interfaceNormal = normalize(geometricNormal)"));
+        assertTrue(raygen.contains("static const float ICE_GUIDE_ROUGH = 0.02"));
+        assertTrue(raygen.contains("gv_normal = interfaceNormal"));
+        assertTrue(raygen.contains("gv_rough = solidIce ? ICE_GUIDE_ROUGH : GLASS_GUIDE_ROUGH"));
         assertTrue(raygen.contains("refract(rd, interfaceNormal, etaI / etaT)"));
         assertTrue(raygen.contains("reflect(rd, interfaceNormal)"));
         assertTrue(raygen.contains("crossGlassExit ? normalize(payload.geometricNormal) : payload.normal"));
@@ -68,6 +71,7 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(raygen.contains("eta = entering ? (1.0 / WATER_IOR) : WATER_IOR"));
         assertTrue(raygen.contains("Crossing-budget exhaustion means no trustworthy diffuse destination"));
         assertTrue(raygen.contains("gv_hitCamRel = destinationHitCamRel"));
+        assertTrue(raygen.contains("if (!glassGuide)"));
         assertTrue(raygen.contains("gv_normal = destinationNormal"));
         assertTrue(raygen.contains("gv_rough = destinationRoughness"));
         assertTrue(raygen.contains("gv_albedo = destinationDiffuseAlbedo"));

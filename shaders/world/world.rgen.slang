@@ -340,6 +340,7 @@ static const float3 SKY_DIFF_ALBEDO = float3(0.5, 0.5, 0.5);
 // Stained glass / ice (material 3): a thin colored dielectric. IOR ~1.5 (soda-lime glass).
 static const float GLASS_IOR = 1.52;
 static const float ICE_IOR = 1.31;
+static const float ICE_GUIDE_ROUGH = 0.02;
 static const float GLASS_GUIDE_ROUGH = 0.04;
 // Transmitted-ray origin offset when crossing a glass face. Must be SMALLER than the terrain-side
 // TRANSLUCENT_INSET (RtTerrain, 2e-4 blocks): glass is recessed into its block by that inset, so a face
@@ -1439,8 +1440,12 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             }
 
             if (captureGuides && segment == 0) { // primary glass hit: feed RR a smooth dielectric specular surface
-                gv_normal = n;
-                gv_rough = opticalClass == OPTICAL_SOLID_ICE ? 0.12 : GLASS_GUIDE_ROUGH;
+                bool solidIce = opticalClass == OPTICAL_SOLID_ICE;
+                // Ice reflection/refraction is sampled from the macro interface normal. Export that same
+                // normal and near-delta roughness so RR never pairs ice Fresnel with an unrelated texture
+                // normal or, after the optical walk, with the transmitted lakebed material.
+                gv_normal = interfaceNormal;
+                gv_rough = solidIce ? ICE_GUIDE_ROUGH : GLASS_GUIDE_ROUGH;
                 gv_specAlb = float3(F, F, F);
                 gv_albedo = glassTint;            // demodulate by the transmission tint
                 gv_hitCamRel = hitPos - pc.camOffset;
@@ -2200,8 +2205,10 @@ void main() {
             // depth here while exporting destination motion was the underwater ghosting defect. Specular
             // albedo/motion remain attached to the separately preserved primary dielectric interface.
             gv_hitCamRel = destinationHitCamRel;
-            gv_normal = destinationNormal;
-            gv_rough = destinationRoughness;
+            if (!glassGuide) {
+                gv_normal = destinationNormal;
+                gv_rough = destinationRoughness;
+            }
         } else {
             // No coherent transmitted layer exists. A value of one in BiasCurrentColorHint is NVIDIA's
             // hard history reject, preventing the foreground interface from validating stale background.
