@@ -37,9 +37,17 @@ final class BorderFogContractTest {
         assertTrue(composite.contains("EnvironmentAttributes.FOG_COLOR"));
         assertTrue(composite.contains("mc.options.getEffectiveRenderDistance()"));
         assertTrue(composite.contains("(renderDistanceChunks - 3.5f) * 16.0f"));
-        assertFalse(raygen.contains("primaryChunkFade"));
+        assertTrue(raygen.contains("float chunkFadeThreshold = frac"));
+        assertFalse(raygen.contains("chunkFadeThreshold = frac(float(pc.frameIndex"));
+        assertTrue(raygen.contains("if (gv_primaryChunkFade <= chunkFadeThreshold)"));
+        assertTrue(raygen.contains("frameRadiance = atmosphericBoundaryFog(dir, pc)"));
+        assertTrue(raygen.contains("gv_hitCamRel = dir * 1.0e6"));
+        assertTrue(raygen.contains("gv_animatedGuide = 1.0"));
+        assertTrue(raygen.contains("gv_albedo = SKY_DIFF_ALBEDO"));
+        assertTrue(raygen.contains("gv_specAlb = SKY_SPEC_ALBEDO"));
         assertFalse(raygen.contains("lerp(atmosphericBoundaryFog(rd, pc), L, primaryChunkFade)"));
-        assertFalse(read("shaders/world/world.rchit.slang").contains("world.chunkFade.x - sec.publishedTime"));
+        assertTrue(read("shaders/world/world.rchit.slang")
+                .contains("world.chunkFade.x - sec.publishedTime"));
     }
 
     private static String read(String path) throws Exception {

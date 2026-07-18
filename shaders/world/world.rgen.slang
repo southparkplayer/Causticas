@@ -291,6 +291,8 @@ static float3 gv_opticalGuideDir;
 static uint gv_opticalGuideMode; // 0 none, 1 water, 2 glass exit, 3 glass entry (trace exact exit)
 static float gv_opticalExitEta;
 static float gv_animatedGuide;
+// Presentation-only residency transition captured from the primary terrain hit.
+static float gv_primaryChunkFade;
 // Optional DLSSD B-mode guide: normalized world-space direction of the first diffuse continuation
 // and the world-space distance to its first hit. Zero means that the primary path chose no diffuse ray.
 static float4 gv_diffuseRayDirectionHitDistance;
@@ -1463,6 +1465,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 
         if (segment == 0 && payload.hitT >= 0.0) {
             primaryHitDistance = payload.hitT;
+            gv_primaryChunkFade = payload.chunkFade;
         }
 
         // The direction is captured when the first scattering vertex spawns its diffuse continuation.
@@ -2664,6 +2667,7 @@ void main() {
     gv_opticalGuideMode = 0u;
     gv_opticalExitEta = 1.0;
     gv_animatedGuide = 0.0;
+    gv_primaryChunkFade = 1.0;
     gv_diffuseRayDirectionHitDistance = float4(0.0, 0.0, 0.0, 0.0);
     gv_diffuseGuidePending = false;
     gv_specPreviousNormal = float3(0.0, 0.0, 0.0);
@@ -2794,6 +2798,31 @@ void main() {
     nrdDiffuseRadiance /= float(pathCount);
     nrdSpecularRadiance /= float(pathCount);
 #endif
+
+    // A section arrival is a visibility transition, not a change in transported radiance. The former
+    // continuous fog blend made one DLSS-D pixel describe fog-colored radiance with terrain depth, normal,
+    // albedo and motion, which highlighted the entire arriving section. Use binary, stable coverage
+    // instead. A hidden cell becomes a complete atmosphere/sky pixel; a revealed cell remains a complete
+    // terrain pixel. Both states reject history until the section is fully resident.
+    // Stable screen-space coverage is monotonic for a stationary view. Deliberately omit frameIndex:
+    // rotating the threshold would sparkle and repeatedly invalidate reconstruction history.
+    float chunkFadeThreshold = frac(float(pix.x + pix.y * 3) * 0.61803398875);
+    if (gv_primaryChunkFade < 1.0) {
+        gv_animatedGuide = 1.0;
+    }
+    if (gv_primaryChunkFade <= chunkFadeThreshold) {
+        frameRadiance = atmosphericBoundaryFog(dir, pc);
+        gv_normal = float3(0.0, 0.0, 0.0);
+        gv_albedo = SKY_DIFF_ALBEDO;
+        gv_specAlb = SKY_SPEC_ALBEDO;
+        gv_rough = 1.0;
+        gv_hitCamRel = dir * 1.0e6;
+        gv_motionHitCamRel = gv_hitCamRel;
+        gv_motionObjDisp = float3(0.0, 0.0, 0.0);
+        gv_motionUseRefracted = false;
+        gv_opticalGuideMode = 0u;
+        gv_diffuseRayDirectionHitDistance = float4(0.0, 0.0, 0.0, 0.0);
+    }
 
     // Optical transmission changes the visible layer, but reflection motion still belongs to the primary
     // glass/water interface. Preserve that interface before replacing ordinary guides with the destination.

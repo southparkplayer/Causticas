@@ -339,6 +339,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     }
 
     Section sec = ConstPtr<Section>(pc.tableAddr)[InstanceID()];
+    if ((payload.flags & PAYLOAD_PRIMARY_RAY) != 0u) {
+        WorldPush world = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+        float fadeDuration = world.chunkFade.y;
+        payload.chunkFade = fadeDuration <= 0.0 ? 1.0
+                : smoothstep(0.0, fadeDuration, max(world.chunkFade.x - sec.publishedTime, 0.0));
+    }
     // Any-hit/SBT opt: the section BLAS has one fixed geometry per material bucket (solid / cutout /
     // translucent / water). PrimitiveIndex() restarts at 0 per geometry, so re-add this geometry's
     // triangle base to land in the section's packed prim/uv arrays (concatenated in BUCKET order).
