@@ -554,6 +554,38 @@ public final class RtEntities {
         return byDistance != 0 ? byDistance : Long.compare(a.posKey, b.posKey);
     };
 
+    /** Mutable transform storage owned by one retired frame slot. Package-visible for behavioral tests. */
+    static final class TransformPool {
+        private final ArrayList<float[]> arrays;
+        private int cursor;
+        private long allocations;
+        private long reuses;
+
+        TransformPool(int initialCapacity) {
+            arrays = new ArrayList<>(initialCapacity);
+        }
+
+        float[] acquire() {
+            if (cursor == arrays.size()) {
+                arrays.add(new float[12]);
+                allocations++;
+            } else {
+                reuses++;
+            }
+            return arrays.get(cursor++);
+        }
+
+        void reset() {
+            cursor = 0;
+            allocations = 0;
+            reuses = 0;
+        }
+
+        long allocations() { return allocations; }
+        long reuses() { return reuses; }
+        void clear() { arrays.clear(); }
+    }
+
     /** Reused per-frame lists; one slot is retired before it can be selected again. */
     private static final class FrameLists {
         final ArrayList<RtAccel.Instance> instances = new ArrayList<>(entityListCapacity());
@@ -566,18 +598,16 @@ public final class RtEntities {
         final ArrayList<BeEntry> usedBlockEntities = new ArrayList<>();
         // Instance transforms escape into the TLAS instance list until this frame slot retires. Keep their
         // backing arrays with the same timeline-gated owner instead of allocating one float[12] per entity.
-        final ArrayList<float[]> transforms = new ArrayList<>(entityListCapacity());
-        int transformCursor;
+        final TransformPool transforms = new TransformPool(entityListCapacity());
         long lastGraphicsUse;
 
         float[] acquireTransform() {
-            if (transformCursor == transforms.size()) {
-                transforms.add(new float[12]);
-                RtFrameStats.FRAME.count("entityTransformPoolAllocations", 1);
-            } else {
-                RtFrameStats.FRAME.count("entityTransformPoolReuses", 1);
-            }
-            return transforms.get(transformCursor++);
+            return transforms.acquire();
+        }
+
+        void publishTransformStats() {
+            RtFrameStats.FRAME.count("entityTransformPoolAllocations", transforms.allocations());
+            RtFrameStats.FRAME.count("entityTransformPoolReuses", transforms.reuses());
         }
 
         void reset() {
@@ -589,7 +619,7 @@ public final class RtEntities {
             usedEntitySlots.clear();
             usedBlockEntities.clear();
             motion.reset();
-            transformCursor = 0;
+            transforms.reset();
         }
 
         void releaseDeferred() {
@@ -695,6 +725,7 @@ public final class RtEntities {
             if (offlineSession) offlineSnapshot = terrainOnly;
             return terrainOnly;
         }
+        build.lists.publishTransformStats();
         try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.uploadFlush")) {
             build.motion.flushWrites();
             if (build.count > 0) {
@@ -1604,7 +1635,7 @@ public final class RtEntities {
         return true;
     }
 
-    private void writeTranslationTransform(float[] out, float x, float y, float z) {
+    static void writeTranslationTransform(float[] out, float x, float y, float z) {
         out[0] = 1; out[1] = 0; out[2] = 0; out[3] = x;
         out[4] = 0; out[5] = 1; out[6] = 0; out[7] = y;
         out[8] = 0; out[9] = 0; out[10] = 1; out[11] = z;
@@ -1624,10 +1655,14 @@ public final class RtEntities {
             return out;
         }
         float[] out = build.lists.acquireTransform();
+        writePlacedTransform(out, local, x, y, z);
+        return out;
+    }
+
+    static void writePlacedTransform(float[] out, float[] local, float x, float y, float z) {
         out[0] = local[0]; out[1] = local[1]; out[2] = local[2]; out[3] = local[3] + x;
         out[4] = local[4]; out[5] = local[5]; out[6] = local[6]; out[7] = local[7] + y;
         out[8] = local[8]; out[9] = local[9]; out[10] = local[10]; out[11] = local[11] + z;
-        return out;
     }
 
     /**
