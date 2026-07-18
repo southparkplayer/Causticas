@@ -55,6 +55,7 @@ import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_COPY_ACCELERATION_STR
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_OPAQUE_BIT_KHR;
+import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_TYPE_INSTANCES_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_TYPE_TRIANGLES_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_INDEX_TYPE_NONE_KHR;
@@ -76,24 +77,24 @@ import static org.lwjgl.vulkan.KHRSynchronization2.vkCmdPipelineBarrier2KHR;
  * factories; free with {@link #destroy()}. One BLAS per section; one TLAS rebuilt per frame.
  */
 public final class RtAccel {
+    private static final long TLAS_INSTANCE_ADDRESS_ALIGNMENT = 16L;
     // vkCmdBuildMicromapsEXT requires both data.deviceAddress and triangleArray.deviceAddress to be
     // multiples of 256 (VUID-vkCmdBuildMicromapsEXT-pInfos-07515).
     private static final long MICROMAP_INPUT_ADDRESS_ALIGNMENT = 256L;
 
-    /**
-     * Size an allocation that will expose {@code requiredSize} bytes after its device address is aligned
-     * for an acceleration-structure or micromap scratch address.
-     */
-    public static long scratchBufferSize(RtContext ctx, long requiredSize) {
-        return Math.addExact(requiredSize, ctx.accelerationStructureScratchAlignment() - 1L);
-    }
-
     private static RtBuffer createScratchBuffer(RtContext ctx, long requiredSize, String label) {
-        return ctx.createBuffer(scratchBufferSize(ctx, requiredSize), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, label);
+        long alignment = ctx.accelerationStructureScratchAlignment();
+        return ctx.createAlignedBuffer(Math.max(requiredSize, alignment), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                false, label, alignment);
     }
 
     private static long scratchAddress(RtContext ctx, RtBuffer scratch) {
-        return alignUp(scratch.deviceAddress, ctx.accelerationStructureScratchAlignment());
+        long alignment = ctx.accelerationStructureScratchAlignment();
+        if ((scratch.deviceAddress & (alignment - 1L)) != 0L) {
+            throw new IllegalStateException("Scratch device address 0x"
+                    + Long.toUnsignedString(scratch.deviceAddress, 16) + " is not aligned to " + alignment);
+        }
+        return scratch.deviceAddress;
     }
 
     public final long handle;
@@ -188,7 +189,7 @@ public final class RtAccel {
         RtBuffer data;
         RtBuffer triangles;
         RtBuffer scratch;
-        final long scratchAddress; // aligned into the over-allocated scratch using the queried device limit
+        final long scratchAddress;
         final long dataAddress;
         final long triangleArrayAddress;
         final int triangleCount;
@@ -495,17 +496,15 @@ public final class RtAccel {
         RtBuffer scratch = null;
         long handle = 0L;
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            data = ctx.createAsyncBuffer(input.data().length + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1,
-                    inputUsage, true, label + " data");
-            long dataOffset = alignUp(data.deviceAddress, MICROMAP_INPUT_ADDRESS_ALIGNMENT) - data.deviceAddress;
-            long dataAddress = data.deviceAddress + dataOffset;
-            MemoryUtil.memByteBuffer(data.mapped + dataOffset, input.data().length).put(input.data());
+            data = ctx.createAsyncAlignedBuffer(input.data().length, inputUsage, true, label + " data",
+                    MICROMAP_INPUT_ADDRESS_ALIGNMENT);
+            long dataAddress = data.deviceAddress;
+            MemoryUtil.memByteBuffer(data.mapped, input.data().length).put(input.data());
             long triangleBytes = input.triangles().length;
-            triangles = ctx.createAsyncBuffer(triangleBytes + MICROMAP_INPUT_ADDRESS_ALIGNMENT - 1, inputUsage, true,
-                    label + " triangles");
-            long triangleOffset = alignUp(triangles.deviceAddress, MICROMAP_INPUT_ADDRESS_ALIGNMENT) - triangles.deviceAddress;
-            long triangleArrayAddress = triangles.deviceAddress + triangleOffset;
-            MemoryUtil.memByteBuffer(triangles.mapped + triangleOffset, input.triangles().length).put(input.triangles());
+            triangles = ctx.createAsyncAlignedBuffer(triangleBytes, inputUsage, true, label + " triangles",
+                    MICROMAP_INPUT_ADDRESS_ALIGNMENT);
+            long triangleArrayAddress = triangles.deviceAddress;
+            MemoryUtil.memByteBuffer(triangles.mapped, input.triangles().length).put(input.triangles());
             data.flush();
             triangles.flush();
 
@@ -1006,21 +1005,19 @@ public final class RtAccel {
                 "frame TLAS " + count + " instances");
     }
 
-    // Pack directly into the mapped Vulkan array to keep this per-instance TLAS hot path allocation-free.
+    // Wrap the mapped Vulkan array in LWJGL structs so its generated accessors own the native ABI/bitfields.
     private static void writeTlasInstances(List<Instance> instances, long mapped, int firstInstance) {
-        final int facingCullDisable = 0x00000001;
+        VkAccelerationStructureInstanceKHR.Buffer records = VkAccelerationStructureInstanceKHR.create(
+                mapped + (long) firstInstance * VkAccelerationStructureInstanceKHR.SIZEOF, instances.size());
         for (int i = 0, count = instances.size(); i < count; i++) {
             Instance instance = instances.get(i);
-            long dst = mapped + (long) (firstInstance + i) * VkAccelerationStructureInstanceKHR.SIZEOF;
-            float[] transform = instance.transform3x4();
-            for (int component = 0; component < 12; component++) {
-                MemoryUtil.memPutFloat(dst + (long) component * Float.BYTES, transform[component]);
-            }
-            MemoryUtil.memPutInt(dst + 48L,
-                    (instance.customIndex() & 0x00FF_FFFF) | ((instance.mask() & 0xFF) << 24));
-            MemoryUtil.memPutInt(dst + 52L,
-                    (instance.sbtRecordOffset() & 0x00FF_FFFF) | (facingCullDisable << 24));
-            MemoryUtil.memPutLong(dst + 56L, instance.blasDeviceAddress());
+            VkAccelerationStructureInstanceKHR record = records.get(i);
+            record.transform().matrix().put(instance.transform3x4());
+            record.instanceCustomIndex(instance.customIndex())
+                    .mask(instance.mask())
+                    .instanceShaderBindingTableRecordOffset(instance.sbtRecordOffset())
+                    .flags(VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR)
+                    .accelerationStructureReference(instance.blasDeviceAddress());
         }
     }
 
@@ -1030,9 +1027,9 @@ public final class RtAccel {
         String label = "TLAS ring slot (" + capacity + " instance capacity)";
         TlasRing.Slot slot = new TlasRing.Slot();
         slot.capacity = capacity;
-        slot.instanceBuffer = ctx.createBuffer((long) VkAccelerationStructureInstanceKHR.SIZEOF * capacity,
+        slot.instanceBuffer = ctx.createAlignedBuffer((long) VkAccelerationStructureInstanceKHR.SIZEOF * capacity,
                 org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true,
-                label + " instance buffer");
+                label + " instance buffer", TLAS_INSTANCE_ADDRESS_ALIGNMENT);
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // Size the AS + scratch for the slot CAPACITY: build sizes are monotonic in instance count, so
             // every per-frame build with count ≤ capacity fits the same backing/scratch.
@@ -1246,10 +1243,6 @@ public final class RtAccel {
                 .dstAccessMask(VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
         VkDependencyInfo dep = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(barrier);
         vkCmdPipelineBarrier2KHR(cmd, dep);
-    }
-
-    private static long alignUp(long value, long alignment) {
-        return (value + alignment - 1) & -alignment;
     }
 
     private static String labelOr(String label, String fallback) {

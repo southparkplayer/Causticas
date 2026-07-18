@@ -861,6 +861,7 @@ public final class RtComposite {
                     breaking.length,
                     breaking
             ).write(push);
+            pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Build the entity BLAS this frame, then the TLAS that references them (+ the already-built
