@@ -15,6 +15,12 @@ import org.joml.Vector3fc;
 /** Exact direct traversal for vanilla {@link ModelPart.Cube} geometry. */
 final class RtCuboidEmitter {
     private static final int STANDARD_CORNERS = 8;
+    private static final ClassValue<Boolean> VANILLA_MODEL_CLASS = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            return type.getName().startsWith("net.minecraft.");
+        }
+    };
 
     private final IdentityHashMap<Model<?>, ModelTemplate> templates = new IdentityHashMap<>();
     private final Vector3f scratch = new Vector3f();
@@ -32,6 +38,9 @@ final class RtCuboidEmitter {
      * so the caller can safely use vanilla's final render method as the fallback.
      */
     ModelTemplate prepare(Model<?> model) {
+        if (!VANILLA_MODEL_CLASS.get(model.getClass())) {
+            return null;
+        }
         ModelTemplate template = templates.get(model);
         if (template != null && template.matches(model.root())) {
             return template;
