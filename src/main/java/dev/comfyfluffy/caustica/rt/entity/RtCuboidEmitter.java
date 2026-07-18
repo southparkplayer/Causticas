@@ -1,11 +1,15 @@
 package dev.comfyfluffy.caustica.rt.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.mixin.ModelPartAccessor;
+import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.client.model.Model;
 import net.minecraft.client.model.geom.ModelPart;
 import org.joml.Matrix4f;
@@ -23,6 +27,9 @@ final class RtCuboidEmitter {
     };
 
     private final IdentityHashMap<Model<?>, ModelTemplate> templates = new IdentityHashMap<>();
+    private final IdentityHashMap<Model<?>, ModelPart> structurallyRejectedRoots = new IdentityHashMap<>();
+    private final Set<Class<?>> loggedNamespaceRejects = new HashSet<>();
+    private final Set<Class<?>> loggedTopologyRejects = new HashSet<>();
     private final Vector3f scratch = new Vector3f();
     private final float[] quadX = new float[4];
     private final float[] quadY = new float[4];
@@ -39,23 +46,47 @@ final class RtCuboidEmitter {
      */
     ModelTemplate prepare(Model<?> model) {
         if (!VANILLA_MODEL_CLASS.get(model.getClass())) {
+            RtFrameStats.FRAME.count("entityDirectRejectNamespace", 1);
+            logFallbackOnce(loggedNamespaceRejects, model, "class namespace");
+            return null;
+        }
+        ModelPart root = model.root();
+        if (structurallyRejectedRoots.get(model) == root) {
+            RtFrameStats.FRAME.count("entityDirectRejectCachedTopology", 1);
             return null;
         }
         ModelTemplate template = templates.get(model);
-        if (template != null && template.matches(model.root())) {
+        if (template != null && template.matches(root)) {
             return template;
         }
-        template = ModelTemplate.create(model.root());
+        template = ModelTemplate.create(root);
         if (template == null) {
             templates.remove(model);
+            structurallyRejectedRoots.put(model, root);
+            RtFrameStats.FRAME.count("entityDirectRejectTopology", 1);
+            logFallbackOnce(loggedTopologyRejects, model, "nonstandard cube topology");
             return null;
         }
+        structurallyRejectedRoots.remove(model);
         templates.put(model, template);
         return template;
     }
 
     void clear() {
         templates.clear();
+        structurallyRejectedRoots.clear();
+        loggedNamespaceRejects.clear();
+        loggedTopologyRejects.clear();
+    }
+
+    private static void logFallbackOnce(Set<Class<?>> logged, Model<?> model, String reason) {
+        Class<?> type = model.getClass();
+        if (!logged.add(type)) {
+            return;
+        }
+        var codeSource = type.getProtectionDomain() != null ? type.getProtectionDomain().getCodeSource() : null;
+        CausticaMod.LOGGER.info("Entity direct capture fallback: reason={}, modelClass={}, codeSource={}",
+                reason, type.getName(), codeSource != null ? codeSource.getLocation() : "unknown");
     }
 
     /** Return packed actual cube counts: specialized in the high 32 bits, generic in the low 32 bits. */

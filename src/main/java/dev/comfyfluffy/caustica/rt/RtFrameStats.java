@@ -79,6 +79,7 @@ public final class RtFrameStats {
                     "entityModelSubmissions", "entityCuboids",
                     "entityModelQuads", "entityModelVertices", "entityBakedQuads", "entityBakedVertices",
                     "entityDirectSubmissions", "entityDirectFallbacks", "entityDirectQuads", "entityDirectVertices",
+                    "entityDirectRejectNamespace", "entityDirectRejectTopology", "entityDirectRejectCachedTopology",
                     "entitySpecializedCuboids", "entityGenericCuboids",
                     "entityParityChecks", "entityVmaBufferCreates", "entityGeometryBufferReuses",
                     "entityScratchBufferReuses", "entityUploadBytes", "entityMotionUploadBytes",
