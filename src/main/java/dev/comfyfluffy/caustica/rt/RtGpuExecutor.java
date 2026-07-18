@@ -391,8 +391,18 @@ public final class RtGpuExecutor {
             VkSemaphoreSubmitInfo.Buffer signal = VkSemaphoreSubmitInfo.calloc(1, stack)
                     .sType$Default().semaphore(buildTimeline).value(signalValue)
                     .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+            long priorGraphicsUse = latestGraphicsUseValue.get();
+            VkSemaphoreSubmitInfo.Buffer wait = null;
+            if (priorGraphicsUse != 0L) {
+                // NVIDIA 610.62 has repeatedly faulted when terrain AS builds overlap a graphics TLAS
+                // build/trace, even though the structures and scratch allocations are disjoint. Preserve
+                // asynchronous CPU submission, but alternate the two GPU AS lanes through their timelines.
+                wait = VkSemaphoreSubmitInfo.calloc(1, stack).sType$Default()
+                        .semaphore(graphicsTimeline).value(priorGraphicsUse)
+                        .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+            }
             VkSubmitInfo2.Buffer submit = VkSubmitInfo2.calloc(1, stack).sType$Default()
-                    .pCommandBufferInfos(command).pSignalSemaphoreInfos(signal);
+                    .pCommandBufferInfos(command).pWaitSemaphoreInfos(wait).pSignalSemaphoreInfos(signal);
             VulkanDiagnostics.noteQueueSubmission(computeQueue.vkQueue(), "Caustica compute queue");
             synchronized (ctx.deviceQueueHostLock()) {
                 RtContext.check(org.lwjgl.vulkan.KHRSynchronization2.vkQueueSubmit2KHR(

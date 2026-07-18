@@ -12,5 +12,7 @@ final class TerrainBuildBatchContractTest {
         String executor = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/rt/RtGpuExecutor.java"));
         assertTrue(executor.contains("private static final int MAX_BUILD_BATCH = 1;"));
+        assertTrue(executor.contains(".semaphore(graphicsTimeline).value(priorGraphicsUse)"));
+        assertTrue(executor.contains(".pWaitSemaphoreInfos(wait).pSignalSemaphoreInfos(signal)"));
     }
 }
