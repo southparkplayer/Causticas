@@ -67,12 +67,6 @@ public final class RtEntityCapture implements VertexConsumer {
     private final float[] qnx = new float[4], qny = new float[4], qnz = new float[4];
     private final int[] qcol = new int[4];
     private final Vector3f scratch = new Vector3f(); // baked-quad position transform scratch
-    private boolean normalCacheValid;
-    private int cachedNxBits, cachedNyBits, cachedNzBits;
-    private float cachedNx, cachedNy, cachedNz;
-    private boolean colorCacheValid;
-    private int cachedColor;
-    private float cachedTr, cachedTg, cachedTb;
 
     /** Clear all accumulators for a fresh entity capture. */
     public void reset() {
@@ -96,8 +90,6 @@ public final class RtEntityCapture implements VertexConsumer {
         currentPrimFlags = 0;
         currentOrder = 0;
         uvRemap = false;
-        normalCacheValid = false;
-        colorCacheValid = false;
     }
 
     private void ensureVertexCapacity(int vertexCount) {
@@ -359,23 +351,7 @@ public final class RtEntityCapture implements VertexConsumer {
         // face normal. Baked quads (items/blocks) pass no normal → fall back to a geometric one from the
         // quad edges. The closest-hit flips it toward the viewer, as for terrain. Computed BEFORE the
         // positions are staged so a same-order offset (below) can push along it.
-        int nxBits = Float.floatToRawIntBits(nx);
-        int nyBits = Float.floatToRawIntBits(ny);
-        int nzBits = Float.floatToRawIntBits(nz);
-        float len;
-        boolean normalCacheHit = normalCacheValid
-                && nxBits == cachedNxBits && nyBits == cachedNyBits && nzBits == cachedNzBits;
-        boolean authoredNormal;
-        if (normalCacheHit) {
-            nx = cachedNx;
-            ny = cachedNy;
-            nz = cachedNz;
-            len = 1f;
-            authoredNormal = true;
-        } else {
-            len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-            authoredNormal = len > 1.0e-6f;
-        }
+        float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
         if (len <= 1.0e-6f) {
             int p0 = positionIndex(corners, 0);
             int p1 = positionIndex(corners, 1);
@@ -391,15 +367,6 @@ public final class RtEntityCapture implements VertexConsumer {
             nx /= len;
             ny /= len;
             nz /= len;
-            if (authoredNormal && !normalCacheHit) {
-                normalCacheValid = true;
-                cachedNxBits = nxBits;
-                cachedNyBits = nyBits;
-                cachedNzBits = nzBits;
-                cachedNx = nx;
-                cachedNy = ny;
-                cachedNz = nz;
-            }
         }
         // Stacked decal layers (banner/shield patterns: base cloth + per-pattern cutout layers, all the
         // SAME coplanar mesh submitted repeatedly via SubmitNodeCollector#order) tie exactly in the BVH —
@@ -425,23 +392,10 @@ public final class RtEntityCapture implements VertexConsumer {
         idx.add(base + 2);
         idx.add(base + 3);
         // Vertex colour as a flat per-prim tint (ARGB → rgb). White (-1) for most models → grey when lit.
-        float tr;
-        float tg;
-        float tb;
-        if (colorCacheValid && cachedColor == color) {
-            tr = cachedTr;
-            tg = cachedTg;
-            tb = cachedTb;
-        } else {
-            tr = ((color >> 16) & 0xFF) * (1f / 255f);
-            tg = ((color >> 8) & 0xFF) * (1f / 255f);
-            tb = (color & 0xFF) * (1f / 255f);
-            colorCacheValid = true;
-            cachedColor = color;
-            cachedTr = tr;
-            cachedTg = tg;
-            cachedTb = tb;
-        }
+        int c = color;
+        float tr = ((c >> 16) & 0xFF) * (1f / 255f);
+        float tg = ((c >> 8) & 0xFF) * (1f / 255f);
+        float tb = (c & 0xFF) * (1f / 255f);
         for (int t = 0; t < 2; t++) { // one {normal+emission, tint, mat} record per triangle
             prim.add(nx);
             prim.add(ny);
