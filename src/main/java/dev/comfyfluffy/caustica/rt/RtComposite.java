@@ -155,6 +155,10 @@ public final class RtComposite {
     public float skyMoonX() { return publishedMoonX; }
     public float skyMoonY() { return publishedMoonY; }
     public float skyMoonZ() { return publishedMoonZ; }
+    public float skyMoonAltitudeRadians() { return publishedMoonAltitudeRadians; }
+    public float skyMoonLitFraction() { return publishedMoonLitFraction; }
+    public float skyMoonHorizonVisibility() { return publishedMoonHorizonVisibility; }
+    public float skyMoonEffectiveIlluminanceLux() { return publishedMoonEffectiveIlluminanceLux; }
     public float exposureActualEv() { return exposure.actualEv(); }
     public float exposureTargetEv() { return exposure.targetEv(); }
     public float exposureConfidence() { return exposure.confidence(); }
@@ -372,6 +376,8 @@ public final class RtComposite {
     private volatile float publishedSunAngle, publishedMoonAngle, publishedDayFactor, publishedTwilightFactor;
     private volatile float publishedAmbientEv, publishedSunX, publishedSunY, publishedSunZ;
     private volatile float publishedMoonX, publishedMoonY, publishedMoonZ;
+    private volatile float publishedMoonAltitudeRadians, publishedMoonLitFraction;
+    private volatile float publishedMoonHorizonVisibility, publishedMoonEffectiveIlluminanceLux;
     private int groundTruthAccumulationFrames;
     private SkyPush offlineSkyPush;
     private int groundTruthSettingsSignature = Integer.MIN_VALUE;
@@ -2034,11 +2040,16 @@ public final class RtComposite {
         float sunMultiplier = (float)Math.pow(2.0, sunlightEv);
         float moonMultiplier = (float)Math.pow(2.0, moonlightEv);
         float airglowMultiplier = (float)Math.pow(2.0, airglowEv);
+        float moonHorizonVisibility = AstronomicalSky.lunarDiscHorizonVisibility(moonY, moonAngularRadius);
         float sunPeak = 120_000.0f * sceneScale * sunMultiplier * dayFactor * rainBrightness;
-        float moonPeak = 0.25f * sceneScale * moonMultiplier * litFraction
-                * (1.0f - solarEnvelope) * rainBrightness;
+        float moonTransmittanceLuma = 0.2627f * moonTrans[0] + 0.6780f * moonTrans[1] + 0.0593f * moonTrans[2];
+        float moonTopOfAtmosphereLux = lunarIlluminanceLux(moonMultiplier, litFraction,
+                solarEnvelope, rainBrightness, moonHorizonVisibility, 1.0f);
+        float moonEffectiveIlluminanceLux = lunarIlluminanceLux(moonMultiplier, litFraction,
+                solarEnvelope, rainBrightness, moonHorizonVisibility, moonTransmittanceLuma);
+        float moonPeak = moonTopOfAtmosphereLux * sceneScale;
         float sunLuma = sunPeak * (0.2627f * sunTrans[0] + 0.6780f * sunTrans[1] + 0.0593f * sunTrans[2]);
-        float moonLuma = moonPeak * (0.2627f * moonTrans[0] + 0.6780f * moonTrans[1] + 0.0593f * moonTrans[2]);
+        float moonLuma = moonPeak * moonTransmittanceLuma;
         float lx, ly, lz, rr, rg, rb, lightRadius;
         if (sunLuma >= moonLuma) {
             lx = sunX; ly = sunY; lz = sunZ;
@@ -2053,12 +2064,18 @@ public final class RtComposite {
             dayFactor = twilightFactor = solarEnvelope = 0.0f;
             rr = rg = rb = 0.0f;
             starBrightness = 0.0f;
+            moonHorizonVisibility = 0.0f;
+            moonEffectiveIlluminanceLux = 0.0f;
         }
         float ambientMultiplier = (float)Math.pow(2.0, ambientEv);
         publishedSunAngle = astronomy.solarHourAngle(); publishedMoonAngle = astronomy.lunarHourAngle();
         publishedDayFactor = dayFactor; publishedTwilightFactor = twilightFactor; publishedAmbientEv = ambientEv;
         publishedSunX = sunX; publishedSunY = sunY; publishedSunZ = sunZ;
         publishedMoonX = moonX; publishedMoonY = moonY; publishedMoonZ = moonZ;
+        publishedMoonAltitudeRadians = (float)Math.asin(Math.clamp(moonY, -1.0f, 1.0f));
+        publishedMoonLitFraction = litFraction;
+        publishedMoonHorizonVisibility = moonHorizonVisibility;
+        publishedMoonEffectiveIlluminanceLux = moonEffectiveIlluminanceLux;
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, rainBrightness),
@@ -2076,6 +2093,16 @@ public final class RtComposite {
     static float vanillaDayFactor(int packedSky) {
         return Math.max((packedSky >>> 16) & 0xff,
                 Math.max((packedSky >>> 8) & 0xff, packedSky & 0xff)) / 255.0f;
+    }
+
+    static float lunarIlluminanceLux(float moonMultiplier, float litFraction, float solarEnvelope,
+                                     float rainBrightness, float horizonVisibility,
+                                     float atmosphereTransmittanceLuma) {
+        return 0.25f * moonMultiplier * Math.clamp(litFraction, 0.0f, 1.0f)
+                * (1.0f - Math.clamp(solarEnvelope, 0.0f, 1.0f))
+                * Math.clamp(rainBrightness, 0.0f, 1.0f)
+                * Math.clamp(horizonVisibility, 0.0f, 1.0f)
+                * Math.max(atmosphereTransmittanceLuma, 0.0f);
     }
 
     static float vanillaTwilightFactor(int packedTwilight) {

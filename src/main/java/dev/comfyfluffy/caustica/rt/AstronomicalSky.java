@@ -104,6 +104,24 @@ final class AstronomicalSky {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    /**
+     * Fraction of a circular lunar disc above the geometric horizon. The Moon direction identifies the
+     * disc centre, while {@code angularRadius} is the same configurable apparent radius used by rendering
+     * and direct-light sampling. This avoids both an abrupt light pop at centre-set and illumination from
+     * a disc that is entirely below the horizon.
+     */
+    static float lunarDiscHorizonVisibility(float moonDirectionY, float angularRadius) {
+        double altitude = Math.asin(Math.clamp(moonDirectionY, -1.0f, 1.0f));
+        double radius = Math.max(angularRadius, 1.0e-6f);
+        double normalizedAltitude = Math.clamp(altitude / radius, -1.0, 1.0);
+        if (normalizedAltitude <= -1.0) return 0.0f;
+        if (normalizedAltitude >= 1.0) return 1.0f;
+        // Area of the circular segment above a line at -normalizedAltitude from the disc centre.
+        return (float)((Math.acos(-normalizedAltitude)
+                + normalizedAltitude * Math.sqrt(Math.max(1.0 - normalizedAltitude * normalizedAltitude, 0.0)))
+                / Math.PI);
+    }
+
     private static double wrapPi(double angle) {
         double wrapped = angle % TAU;
         if (wrapped <= -Math.PI) wrapped += TAU;

@@ -68,6 +68,32 @@ final class CelestialTimelineContractTest {
     }
 
     @Test
+    void lunarDiscVisibilityCrossesTheHorizonContinuously() {
+        float radius = (float)Math.toRadians(0.2727);
+        assertEquals(0.0f, AstronomicalSky.lunarDiscHorizonVisibility((float)Math.sin(-radius), radius),
+                1.0e-5f);
+        assertEquals(0.5f, AstronomicalSky.lunarDiscHorizonVisibility(0.0f, radius), 1.0e-5f);
+        assertEquals(1.0f, AstronomicalSky.lunarDiscHorizonVisibility((float)Math.sin(radius), radius),
+                1.0e-5f);
+        float low = AstronomicalSky.lunarDiscHorizonVisibility((float)Math.sin(-0.5f * radius), radius);
+        float high = AstronomicalSky.lunarDiscHorizonVisibility((float)Math.sin(0.5f * radius), radius);
+        assertTrue(low > 0.0f && low < 0.5f);
+        assertEquals(1.0f, low + high, 1.0e-5f);
+    }
+
+    @Test
+    void lunarIlluminanceIsCalibratedByPhaseAndVisibility() {
+        assertEquals(0.25f, RtComposite.lunarIlluminanceLux(1.0f, 1.0f,
+                0.0f, 1.0f, 1.0f, 1.0f), 1.0e-6f);
+        assertEquals(0.125f, RtComposite.lunarIlluminanceLux(1.0f, 0.5f,
+                0.0f, 1.0f, 1.0f, 1.0f), 1.0e-6f);
+        assertEquals(0.0f, RtComposite.lunarIlluminanceLux(1.0f, 0.0f,
+                0.0f, 1.0f, 1.0f, 1.0f), 1.0e-6f);
+        assertEquals(0.0f, RtComposite.lunarIlluminanceLux(1.0f, 1.0f,
+                0.0f, 1.0f, 0.0f, 1.0f), 1.0e-6f);
+    }
+
+    @Test
     void minecraftClockAndPhaseRemainTheOnlyTimelineInputs() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));

@@ -35,14 +35,32 @@ final class PhysicalSceneContractTest {
         assertTrue(miss.contains("float solarDisc"));
         assertTrue(miss.contains("SUN_LIMB_DARKENING = 0.6"));
         assertTrue(miss.contains("1.0 - SUN_LIMB_DARKENING / 3.0"));
-        assertTrue(miss.contains("MOON_DISC_HALF_ANGLE = 0.0047595129"));
+        assertFalse(miss.contains("MOON_DISC_HALF_ANGLE"));
         assertFalse(miss.contains("sunIsNeeLight ? max(pc.lightDir.w"));
         assertTrue(miss.contains("celestialTextureLod"));
         assertTrue(miss.contains("pc.celestialRadii.x"));
+        assertTrue(miss.contains("squareBody(dir, pc.moonDir.xyz, pc.celestialRadii.y"));
+        assertTrue(miss.contains("celestialTextureLod(pc.moonUv, pc.celestialRadii.y"));
         assertTrue(miss.contains("validUvRect(pc.moonUv)"));
         assertTrue(miss.contains("1.0 - smoothstep(0.90, 1.0, m)"));
         assertFalse(miss.contains("float core = pow(clamp(dot(t.rgb, t.rgb) * 0.45"));
         assertFalse(miss.contains("return m <= 1.0 ? 1.0 : 0.0"));
+    }
+
+    @Test
+    void moonDirectLightAndDebugStateShareThePhysicalVisibilityContract() throws Exception {
+        String composite = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));
+        String bridge = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/client/CausticaDebugBridge.java"));
+        assertTrue(composite.contains("lunarIlluminanceLux(moonMultiplier, litFraction"));
+        assertTrue(composite.contains("AstronomicalSky.lunarDiscHorizonVisibility(moonY, moonAngularRadius)"));
+        assertTrue(composite.contains("return 0.25f * moonMultiplier"));
+        assertTrue(composite.contains("lightRadius = moonAngularRadius"));
+        for (String property : new String[] {"moonAltitudeRadians", "moonLitFraction",
+                "moonHorizonVisibility", "moonEffectiveIlluminanceLux"}) {
+            assertTrue(bridge.contains("setProperty(\"" + property + "\""), property);
+        }
     }
 
     @Test

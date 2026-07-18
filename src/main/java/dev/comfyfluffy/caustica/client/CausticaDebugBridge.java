@@ -187,6 +187,14 @@ final class CausticaDebugBridge {
                 + RtComposite.INSTANCE.skySunY() + "," + RtComposite.INSTANCE.skySunZ());
         state.setProperty("moonDirection", RtComposite.INSTANCE.skyMoonX() + ","
                 + RtComposite.INSTANCE.skyMoonY() + "," + RtComposite.INSTANCE.skyMoonZ());
+        state.setProperty("moonAltitudeRadians",
+                Float.toString(RtComposite.INSTANCE.skyMoonAltitudeRadians()));
+        state.setProperty("moonLitFraction",
+                Float.toString(RtComposite.INSTANCE.skyMoonLitFraction()));
+        state.setProperty("moonHorizonVisibility",
+                Float.toString(RtComposite.INSTANCE.skyMoonHorizonVisibility()));
+        state.setProperty("moonEffectiveIlluminanceLux",
+                Float.toString(RtComposite.INSTANCE.skyMoonEffectiveIlluminanceLux()));
         state.setProperty("dayFactor", Float.toString(RtComposite.INSTANCE.skyDayFactor()));
         state.setProperty("twilightFactor", Float.toString(RtComposite.INSTANCE.skyTwilightFactor()));
         state.setProperty("exposureMode", CausticaConfig.Rt.Exposure.MODE.get());

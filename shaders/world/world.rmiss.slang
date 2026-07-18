@@ -32,7 +32,6 @@ static const float MOON_DISC_BASE_LUMINANCE = 0.000244140625; // 0.25 * 2^-10
 static const float SKY_SATURATION = 1.0; // spectral conversion supplies physical chromaticity
 // Physical mean apparent angular radii. These match the default NEE radii, so visible bodies and their
 // lighting share one angular scale instead of reflecting Minecraft's enormous decorative sky quads.
-static const float MOON_DISC_HALF_ANGLE = 0.0047595129; // 0.2727 degrees
 static const float SUN_LIMB_DARKENING = 0.6;
 // Faint night-sky ambient so the night isn't pure black where the atmosphere in-scatter falls to zero.
 static const float3 AIRGLOW_ZENITH  = float3(0.00000060, 0.00000078, 0.00000120);
@@ -508,11 +507,11 @@ void main(inout Payload payload) {
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
-        float moonCoverage = squareBody(dir, pc.moonDir.xyz, MOON_DISC_HALF_ANGLE, pc.celestial.xyz, local);
+        float moonCoverage = squareBody(dir, pc.moonDir.xyz, pc.celestialRadii.y, pc.celestial.xyz, local);
         if (aboveHorizon && moonCoverage > 0.0 && validUvRect(pc.moonUv)) {
             float2 uv = lerp(pc.moonUv.xy, pc.moonUv.zw, local * 0.5 + 0.5);
             float4 t = celestialsAtlas.SampleLevel(uv,
-                    celestialTextureLod(pc.moonUv, MOON_DISC_HALF_ANGLE, payload.rayCone));
+                    celestialTextureLod(pc.moonUv, pc.celestialRadii.y, payload.rayCone));
             // The selected vanilla phase sprite remains authoritative; synthesizing a second phase mask
             // here would fight resource packs and make the displayed phase disagree with Minecraft.
             float3 textureLinear = bt709ToBt2020(srgbToLinear(t.rgb));
