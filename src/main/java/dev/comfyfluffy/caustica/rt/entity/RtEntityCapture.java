@@ -37,6 +37,7 @@ public final class RtEntityCapture implements VertexConsumer {
     private final IntArrayList packedIdx = new IntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY));
     private final FloatArrayList packedPrim = new FloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY));
     private final int[] packedBucketTris = new int[RtAccel.ENTITY_BUCKETS];
+    private final int[] packedBucketCursor = new int[RtAccel.ENTITY_BUCKETS];
 
     // Bindless texture slot for the geometry currently being submitted (set by the collector per
     // submitModel, so body + feature layers get their own texture). Stored per-prim in tint.w;
@@ -246,24 +247,27 @@ public final class RtEntityCapture implements VertexConsumer {
         packedPrim.ensureCapacity(prim.size());
         int[] indices = idx.elements();
         float[] primitives = prim.elements();
-        for (int bucket = 0; bucket < RtAccel.ENTITY_BUCKETS; bucket++) {
-            for (int tri = 0; tri < triangleCount; tri++) {
-                if (alphaBuckets.getInt(tri) != bucket) {
-                    continue;
-                }
-                int indexBase = tri * 3;
-                packedIdx.add(indices[indexBase]);
-                packedIdx.add(indices[indexBase + 1]);
-                packedIdx.add(indices[indexBase + 2]);
-                int primBase = tri * 12;
-                for (int lane = 0; lane < 12; lane++) {
-                    packedPrim.add(primitives[primBase + lane]);
-                }
-                packedBucketTris[bucket]++;
+        int[] buckets = alphaBuckets.elements();
+        for (int tri = 0; tri < triangleCount; tri++) {
+            int bucket = buckets[tri];
+            if (bucket < 0 || bucket >= RtAccel.ENTITY_BUCKETS) {
+                throw new IllegalStateException("Entity capture contains invalid alpha bucket " + bucket);
             }
+            packedBucketTris[bucket]++;
         }
-        if (packedIdx.size() != idx.size() || packedPrim.size() != prim.size()) {
-            throw new IllegalStateException("Entity capture contains an invalid alpha bucket");
+        int triangleBase = 0;
+        for (int bucket = 0; bucket < RtAccel.ENTITY_BUCKETS; bucket++) {
+            packedBucketCursor[bucket] = triangleBase;
+            triangleBase += packedBucketTris[bucket];
+        }
+        packedIdx.size(idx.size());
+        packedPrim.size(prim.size());
+        int[] outputIndices = packedIdx.elements();
+        float[] outputPrimitives = packedPrim.elements();
+        for (int tri = 0; tri < triangleCount; tri++) {
+            int outputTriangle = packedBucketCursor[buckets[tri]]++;
+            System.arraycopy(indices, tri * 3, outputIndices, outputTriangle * 3, 3);
+            System.arraycopy(primitives, tri * 12, outputPrimitives, outputTriangle * 12, 12);
         }
         return new PackedGeometry(packedIdx, packedPrim, packedBucketTris);
     }
