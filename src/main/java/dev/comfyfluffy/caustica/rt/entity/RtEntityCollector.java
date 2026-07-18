@@ -377,8 +377,21 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         int idxStart = capture.idx.size();
         long started = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
         try {
+            TextureAtlasSprite lastSprite = null;
+            ChunkSectionLayer lastLayer = null;
+            boolean materialInitialized = false;
+            capture.currentOrder = 0; // baked-quad paths never stack decal layers
             for (BakedQuad q : quads) {
-                addQuad(pose, q, tintLayers);
+                var materialInfo = q.materialInfo();
+                TextureAtlasSprite sprite = materialInfo.sprite();
+                ChunkSectionLayer layer = materialInfo.layer();
+                if (!materialInitialized || sprite != lastSprite || layer != lastLayer) {
+                    applyBakedMaterial(sprite, layer);
+                    lastSprite = sprite;
+                    lastLayer = layer;
+                    materialInitialized = true;
+                }
+                capture.addBakedQuad(pose, q, tintColor(materialInfo.tintIndex(), tintLayers));
             }
         } finally {
             RtFrameStats.FRAME.endStage("entity.capture.submit.bakedQuads", started);
@@ -395,9 +408,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         RtFrameStats.FRAME.count("entityBakedVertices", (long) quads * 4L);
     }
 
-    /** Capture one baked quad, resolving its atlas (block vs item) to a bindless slot stamped per-prim. */
-    private void addQuad(Matrix4f pose, BakedQuad q, int[] tintLayers) {
-        TextureAtlasSprite sprite = q.materialInfo().sprite();
+    /** Resolve one baked material run; every quad in the run is still emitted individually. */
+    private void applyBakedMaterial(TextureAtlasSprite sprite, ChunkSectionLayer layer) {
         capture.currentTexSlot = sprite != null
                 ? RtEntityTextures.INSTANCE.slotForAtlas(sprite.atlasLocation())
                 : 0;
@@ -405,14 +417,12 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         // dropped and held translucent block items (glass, ice, etc.) use the thin-dielectric variant
         // instead of the opaque DEFAULT variant. No BlockState reaches submitItem, so the layer is the
         // authoritative semantic available here; glass-model roughness/IOR are profile-independent.
-        boolean transmissive = q.materialInfo().layer() == ChunkSectionLayer.TRANSLUCENT;
+        boolean transmissive = layer == ChunkSectionLayer.TRANSLUCENT;
         capture.currentPrimFlags = firstPersonHeldItem && transmissive
                 ? RtEntityCapture.PRIM_FIRST_PERSON_THIN_GLASS : 0;
-        capture.currentAlphaBucket = alphaBucket(q.materialInfo().layer(), false);
+        capture.currentAlphaBucket = alphaBucket(layer, false);
         setSpriteMaterial(sprite, transmissive ? RtMaterials.Profile.GLASS : RtMaterials.Profile.DEFAULT,
                 transmissive, false);
-        capture.currentOrder = 0; // baked-quad paths never stack decal layers
-        capture.addBakedQuad(pose, q, tintColor(q.materialInfo().tintIndex(), tintLayers));
     }
 
     /** Resolve block-atlas geometry through the same immutable material snapshot as terrain. */
