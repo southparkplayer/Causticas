@@ -49,7 +49,9 @@ final class NightRenderingContractTest {
                 "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));
         String miss = Files.readString(Path.of("shaders/world/world.rmiss.slang"));
         String skyLut = Files.readString(Path.of("shaders/display/sky_view.comp.slang"));
-        assertTrue(composite.contains("0.25f * sceneScale * moonMultiplier"));
+        assertTrue(composite.contains("lunarIlluminanceLux(moonMultiplier, litFraction"));
+        assertTrue(composite.contains("return 0.25f * moonMultiplier"));
+        assertTrue(composite.contains("moonTopOfAtmosphereLux * sceneScale"));
         assertTrue(skyLut.contains("pc.moon.w"));
         assertTrue(miss.contains("pc.skyLighting.z"));
         assertTrue(miss.contains("bool aboveHorizon = dir.y >= 0.0"));
