@@ -492,6 +492,9 @@ public final class RtDlssFg {
 
     /** Must run before Caustica writes or destroys any previously tagged frame input. */
     public boolean beforeFrameInputs() {
+        if (dlssgFailed) {
+            return false;
+        }
         if (inputSlots.prepared() || !useNoClientQueues()) {
             inputSlots.markPrepared();
             return true;
@@ -936,26 +939,19 @@ public final class RtDlssFg {
     }
 
     private boolean enterBlockingQueueFallback(String reason) {
-        if (!StreamlineRuntime.initialized()
-                || !(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend()
-                instanceof VulkanDevice device)) {
-            return false;
-        }
-        int result = StreamlineRuntime.vkDeviceWaitIdle(
-                device.vkDevice(), "DLSSG queue fallback", false);
-        if (result != RESULT_OK) {
-            dlssgFailed = true;
-            unavailableReason = "Could not quiesce for Streamline queue fallback: " + StreamlineRuntime.lastError();
-            CausticaMod.LOGGER.error(unavailableReason);
-            return false;
-        }
+        // A missing/failed completion fence means the no-client-queues ownership contract cannot be
+        // proven. Waiting for device-idle here deadlocks when Caustica's GPU worker is itself waiting
+        // for graphics progress from this render thread. Fail FG closed and leave the tagged input
+        // slots untouched; normal rendering can continue without reusing potentially live resources.
+        dlssgFailed = true;
+        optionsEnabled = false;
         queueFallback = true;
         queueFallbackReason = reason;
-        clearAllInputSlots();
-        inputSlots.markPrepared();
         forceResetNextSubmission = true;
-        CausticaMod.LOGGER.warn("DLSS-G queue parallelism fell back to blocking mode: {}", reason);
-        return true;
+        unavailableReason = "Disabled DLSS-G because asynchronous input retirement was unavailable: " + reason;
+        submissionStatus = unavailableReason;
+        CausticaMod.LOGGER.error(unavailableReason);
+        return false;
     }
 
     private void drainInputSlots(String reason) {
@@ -996,8 +992,10 @@ public final class RtDlssFg {
 
     private boolean useNoClientQueues() {
         String override = diagnosticQueueOverride();
-        return "no-client-queues".equals(override)
-                || ("auto".equals(override) && !queueFallback);
+        // Streamline's default presenting-queue block is the stable automatic policy. The faster
+        // no-client-queues path remains an explicit diagnostic opt-in until its completion fence has
+        // been proven reliable on the active driver/runtime combination.
+        return "no-client-queues".equals(override) && !queueFallback;
     }
 
     private static String diagnosticQueueOverride() {

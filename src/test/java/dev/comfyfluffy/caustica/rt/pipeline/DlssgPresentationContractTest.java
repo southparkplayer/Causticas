@@ -36,13 +36,17 @@ class DlssgPresentationContractTest {
         int fallback = fg.indexOf("private boolean enterBlockingQueueFallback", wait);
         assertTrue(wait >= 0 && fallback > wait);
         assertFalse(fg.substring(wait, fallback).contains("vkDeviceWaitIdle"));
+        int drain = fg.indexOf("private void drainInputSlots", fallback);
+        assertTrue(drain > fallback);
+        assertFalse(fg.substring(fallback, drain).contains("vkDeviceWaitIdle"));
+        assertTrue(fg.substring(fallback, drain).contains("dlssgFailed = true"));
     }
 
     @Test
-    void automaticQueuePolicyUsesTimelineRetirementForMailboxVsync() throws Exception {
+    void automaticQueuePolicyKeepsThePresentingQueueSafe() throws Exception {
         String fg = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtDlssFg.java");
-        assertTrue(fg.contains("\"auto\".equals(override) && !queueFallback"));
-        assertTrue(fg.contains("Asynchronous MAILBOX presentation with timeline-retired inputs"));
+        assertTrue(fg.contains("return \"no-client-queues\".equals(override) && !queueFallback;"));
+        assertFalse(fg.contains("\"auto\".equals(override) && !queueFallback"));
         assertFalse(fg.contains("!queueFallback && !logicalVsyncRequested"));
     }
 
