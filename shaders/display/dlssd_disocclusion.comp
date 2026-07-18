@@ -1,5 +1,9 @@
 #version 460
 
+#ifndef CAUSTICA_PARTICLE_TEMPORAL_HISTORY
+#define CAUSTICA_PARTICLE_TEMPORAL_HISTORY 0
+#endif
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(binding = 0, set = 0, r32f) uniform readonly image2D depthImage;
@@ -9,6 +13,10 @@ layout(binding = 3, set = 0, r32f) uniform writeonly image2D currentDepthHistory
 layout(binding = 4, set = 0, r16f) uniform writeonly image2D disocclusionImage;
 layout(binding = 5, set = 0, r16f) uniform writeonly image2D biasCurrentColorImage;
 layout(binding = 6, set = 0, r16f) uniform readonly image2D animatedGuideImage;
+#if CAUSTICA_PARTICLE_TEMPORAL_HISTORY
+layout(binding = 7, set = 0, r16f) uniform readonly image2D previousTemporalGuideHistory;
+layout(binding = 8, set = 0, r16f) uniform writeonly image2D currentTemporalGuideHistory;
+#endif
 
 layout(push_constant) uniform Push {
     uint width;
@@ -58,6 +66,21 @@ void main() {
     }
 
     imageStore(disocclusionImage, pixel, vec4(disocclusion));
-    float animated = clamp(imageLoad(animatedGuideImage, pixel).x, 0.0, 1.0);
+    float animated = imageLoad(animatedGuideImage, pixel).x;
+    if (!finiteValue(animated)) animated = 1.0;
+    animated = clamp(animated, 0.0, 1.0);
+#if CAUSTICA_PARTICLE_TEMPORAL_HISTORY
+    imageStore(currentTemporalGuideHistory, pixel, vec4(animated));
+
+    float previousAnimated = 0.0;
+    if (pc.resetHistory == 0u) {
+        previousAnimated = imageLoad(previousTemporalGuideHistory, pixel).x;
+        if (!finiteValue(previousAnimated)) previousAnimated = 1.0;
+        previousAnimated = clamp(previousAnimated, 0.0, 1.0);
+    }
+    float currentBias = max(disocclusion, animated);
+    imageStore(biasCurrentColorImage, pixel, vec4(max(currentBias, previousAnimated)));
+#else
     imageStore(biasCurrentColorImage, pixel, vec4(max(disocclusion, animated)));
+#endif
 }

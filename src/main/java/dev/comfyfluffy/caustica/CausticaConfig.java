@@ -78,6 +78,7 @@ public final class CausticaConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED,
             Rt.FirstPerson.DISABLE_VANILLA_MODEL, Rt.EntityTextures.MAX_TEXTURES,
             Rt.Reconstruction.BACKEND, Rt.DlssRr.ENABLED, Rt.DlssRr.DIFFUSE_PATH_GUIDE,
+            Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY, Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY,
             Rt.Nrd.DENOISER, Rt.Nrd.SPHERICAL_HARMONICS, Rt.Nrd.MAX_ACCUMULATED_FRAMES,
             Rt.Nrd.MAX_FAST_ACCUMULATED_FRAMES, Rt.Nrd.HISTORY_FIX_FRAMES,
             Rt.Nrd.PREPASS_BLUR_RADIUS, Rt.Nrd.MAX_BLUR_RADIUS, Rt.Nrd.ANTI_FIREFLY,
@@ -900,6 +901,12 @@ public final class CausticaConfig {
             public static final BooleanSetting ENABLED = bool("caustica.rt.dlssRr", "dlss-rr.enabled", true);
             public static final BooleanSetting DIFFUSE_PATH_GUIDE = bool(
                     "caustica.rt.dlssRr.diffusePathGuide", "dlss-rr.diffuse-path-guide", false);
+            public static final BooleanSetting HIGH_QUALITY_TRANSPARENCY = bool(
+                    "caustica.rt.dlssRr.highQualityTransparency",
+                    "dlss-rr.high-quality-transparency", false);
+            public static final BooleanSetting PARTICLE_TEMPORAL_HISTORY = bool(
+                    "caustica.rt.dlssRr.particleTemporalHistory",
+                    "dlss-rr.particle-temporal-history", false);
             public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 0);
             public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0);
 

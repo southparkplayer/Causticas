@@ -18,6 +18,7 @@ import dev.comfyfluffy.caustica.client.ui.CategoryLayout;
 import dev.comfyfluffy.caustica.client.ui.WidgetGridLayout;
 import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtSharcSupport;
+import dev.comfyfluffy.caustica.rt.pipeline.RtReconstruction;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -442,10 +443,18 @@ public class CausticaSettingsScreen extends Screen {
                 CausticaConfig.Rt.DlssRr.QUALITY::configuredValue, CausticaConfig.Rt.DlssRr.QUALITY::set,
                 value -> Component.translatable("caustica.options.rt.dlssQuality." + value), null)
                 .activeWhen(this::dlssControlsActive));
+        controls.add(toggle(Component.translatable("caustica.options.rt.highQualityTransparency"),
+                CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY)
+                .tooltip(Component.translatable("caustica.options.rt.highQualityTransparency.tooltip"))
+                .activeWhen(this::dlssControlsActive));
+        controls.add(toggle(Component.translatable("caustica.options.rt.particleTemporalHistory"),
+                CausticaConfig.Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY)
+                .tooltip(Component.translatable("caustica.options.rt.particleTemporalHistory.tooltip"))
+                .activeWhen(this::dlssControlsActive));
         addBundle("Global backend", "Auto selects NRD on AMD/Linux and DLSS-RR on supported Windows NVIDIA systems");
         addGrid(List.of(controls.get(0)));
         addBundle("DLSS Ray Reconstruction", "NVIDIA Streamline enablement, upscale quality, and guide inputs");
-        addGrid(List.of(controls.get(1), controls.get(3), controls.get(2)));
+        addGrid(List.of(controls.get(1), controls.get(3), controls.get(2), controls.get(4), controls.get(5)));
 
         List<AbstractWidget> nrd = new ArrayList<>();
         nrd.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.nrd.denoiser"),
@@ -602,12 +611,14 @@ public class CausticaSettingsScreen extends Screen {
     private boolean dlssControlsActive() {
         String backend = CausticaConfig.Rt.Reconstruction.BACKEND.configuredValue();
         return CausticaConfig.Rt.DlssRr.ENABLED.configuredValue()
-                && ("auto".equals(backend) || "dlss-rr".equals(backend));
+                && ("dlss-rr".equals(backend)
+                || ("auto".equals(backend) && RtReconstruction.usesDlss()));
     }
 
     private boolean nrdControlsActive() {
         String backend = CausticaConfig.Rt.Reconstruction.BACKEND.configuredValue();
-        return "auto".equals(backend) || "nrd".equals(backend);
+        return "nrd".equals(backend)
+                || ("auto".equals(backend) && RtReconstruction.usesNrd());
     }
 
     private void addLighting() {

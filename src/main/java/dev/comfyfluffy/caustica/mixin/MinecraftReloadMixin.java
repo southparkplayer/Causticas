@@ -26,4 +26,12 @@ public class MinecraftReloadMixin {
     private void caustica$rtReloadStart(CallbackInfoReturnable<CompletableFuture<Void>> cir) {
         RtComposite.INSTANCE.onResourceReloadStart();
     }
+
+    @Inject(method = "reloadResourcePacks()Ljava/util/concurrent/CompletableFuture;", at = @At("RETURN"))
+    private void caustica$rtReloadCompletion(CallbackInfoReturnable<CompletableFuture<Void>> cir) {
+        CompletableFuture<Void> reload = cir.getReturnValue();
+        if (reload != null) {
+            reload.whenComplete((ignored, failure) -> RtComposite.INSTANCE.onResourceReloadComplete(failure));
+        }
+    }
 }

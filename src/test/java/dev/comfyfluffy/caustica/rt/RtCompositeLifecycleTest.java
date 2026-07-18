@@ -20,13 +20,24 @@ final class RtCompositeLifecycleTest {
     }
 
     @Test
-    void reloadWaitsForBothReplacementAtlasGenerations() {
-        long oldBlock = 11L;
-        long oldCelestial = 22L;
-        assertFalse(RtComposite.replacementAtlasesReady(0L, 0L, oldBlock, oldCelestial));
-        assertFalse(RtComposite.replacementAtlasesReady(33L, oldCelestial, oldBlock, oldCelestial));
-        assertFalse(RtComposite.replacementAtlasesReady(oldBlock, 44L, oldBlock, oldCelestial));
-        assertTrue(RtComposite.replacementAtlasesReady(33L, 44L, oldBlock, oldCelestial));
+    void reloadUsesCompletionEpochAndAcceptsRecycledAtlasHandles() {
+        assertFalse(RtComposite.replacementAtlasesReady(false, 11L, 22L));
+        assertFalse(RtComposite.replacementAtlasesReady(true, 0L, 22L));
+        assertFalse(RtComposite.replacementAtlasesReady(true, 11L, 0L));
+        assertTrue(RtComposite.replacementAtlasesReady(true, 11L, 22L));
+    }
+
+    @Test
+    void reloadTeardownCannotStrandTheTerrainPause() throws Exception {
+        String composite = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));
+        String mixin = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/mixin/MinecraftReloadMixin.java"));
+        assertTrue(composite.contains("catch (Throwable teardownFailure)"));
+        assertTrue(composite.contains("RtTerrain.resumeAfterResourceReload()"));
+        assertTrue(composite.contains("resource reload teardown recovery"));
+        assertTrue(mixin.contains("reload.whenComplete"));
+        assertTrue(composite.contains("reloadCompletionObserved"));
     }
 
     @Test

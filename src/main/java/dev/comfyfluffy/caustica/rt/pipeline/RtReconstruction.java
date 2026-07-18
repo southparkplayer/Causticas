@@ -75,7 +75,11 @@ public final class RtReconstruction {
 
     public static int resourceIdentity() {
         int identity = backend().ordinal();
-        if (usesDlss()) return 31 * identity + RtDlssRr.quality();
+        if (usesDlss()) {
+            identity = 31 * identity + RtDlssRr.quality();
+            return 31 * identity + Boolean.hashCode(
+                    CausticaConfig.Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY.value());
+        }
         if (usesNrd()) {
             identity = 31 * identity + CausticaConfig.Rt.Nrd.DENOISER.get().hashCode();
             identity = 31 * identity + Boolean.hashCode(CausticaConfig.Rt.Nrd.SPHERICAL_HARMONICS.value());

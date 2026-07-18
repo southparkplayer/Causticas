@@ -6,6 +6,8 @@ import com.mojang.blaze3d.vulkan.init.VulkanFeature;
 import com.mojang.blaze3d.vulkan.init.VulkanPNextStruct;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
+import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
+import dev.comfyfluffy.caustica.rt.pipeline.RtReconstruction;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VKCapabilitiesDevice;
 import org.lwjgl.vulkan.VK10;
@@ -143,12 +145,12 @@ public final class RtDeviceBringup {
     }
 
     public static String worldRaygenShader(boolean nrd) {
-        if (!nrd) return serBackend.worldRaygenShader;
-        return switch (serBackend) {
+        String shader = nrd ? switch (serBackend) {
             case NV -> "world_nrd_nv.rgen.spv";
             case EXT -> "world_nrd.rgen.spv";
             case NONE -> "world_nrd_base.rgen.spv";
-        };
+        } : serBackend.worldRaygenShader;
+        return highQualityTransparencyShader(shader);
     }
 
     public static String offlineWorldRaygenShader() {
@@ -160,17 +162,18 @@ public final class RtDeviceBringup {
     }
 
     public static String sharcQueryRaygenShader() {
-        return backendShader("world_sharc.rgen.spv", "world_sharc_nv.rgen.spv", "world_sharc_base.rgen.spv");
+        return highQualityTransparencyShader(
+                backendShader("world_sharc.rgen.spv", "world_sharc_nv.rgen.spv", "world_sharc_base.rgen.spv"));
     }
 
     public static String sharcDiffuseQueryRaygenShader() {
-        return backendShader("world_sharc_diffuse.rgen.spv", "world_sharc_diffuse_nv.rgen.spv",
-                "world_sharc_diffuse_base.rgen.spv");
+        return highQualityTransparencyShader(backendShader("world_sharc_diffuse.rgen.spv",
+                "world_sharc_diffuse_nv.rgen.spv", "world_sharc_diffuse_base.rgen.spv"));
     }
 
     public static String sharcPrimaryQueryRaygenShader() {
-        return backendShader("world_sharc_primary.rgen.spv", "world_sharc_primary_nv.rgen.spv",
-                "world_sharc_primary_base.rgen.spv");
+        return highQualityTransparencyShader(backendShader("world_sharc_primary.rgen.spv",
+                "world_sharc_primary_nv.rgen.spv", "world_sharc_primary_base.rgen.spv"));
     }
 
     public static String sharcUpdateRaygenShader() {
@@ -179,13 +182,24 @@ public final class RtDeviceBringup {
     }
 
     public static String sharcDiagnosticQueryRaygenShader() {
-        return backendShader("world_sharc_diagnostic.rgen.spv", "world_sharc_diagnostic_nv.rgen.spv",
-                "world_sharc_diagnostic_base.rgen.spv");
+        return highQualityTransparencyShader(backendShader("world_sharc_diagnostic.rgen.spv",
+                "world_sharc_diagnostic_nv.rgen.spv", "world_sharc_diagnostic_base.rgen.spv"));
     }
 
     public static String sharcPrimaryDiagnosticQueryRaygenShader() {
-        return backendShader("world_sharc_primary_diagnostic.rgen.spv",
-                "world_sharc_primary_diagnostic_nv.rgen.spv", "world_sharc_primary_diagnostic_base.rgen.spv");
+        return highQualityTransparencyShader(backendShader("world_sharc_primary_diagnostic.rgen.spv",
+                "world_sharc_primary_diagnostic_nv.rgen.spv",
+                "world_sharc_primary_diagnostic_base.rgen.spv"));
+    }
+
+    private static String highQualityTransparencyShader(String shader) {
+        // HQ is a DLSS-RR guide/transport experiment. A persisted true value must not select the
+        // two-path shader after reconstruction is switched to NRD or off.
+        if (!RtReconstruction.usesDlss() || !RtDlssRr.INSTANCE.isOperational()
+                || !CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.value()) return shader;
+        int suffix = shader.indexOf(".rgen.spv");
+        if (suffix < 0) throw new IllegalArgumentException("not a raygen shader: " + shader);
+        return shader.substring(0, suffix) + "_hq" + shader.substring(suffix);
     }
 
     public static String sharcDiagnosticUpdateRaygenShader() {

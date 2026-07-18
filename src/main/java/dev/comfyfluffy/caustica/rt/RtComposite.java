@@ -268,6 +268,7 @@ public final class RtComposite {
     // boundAtlasHandle to a fresh non-zero value (MC's deferred free keeps the old handle live for a few
     // frames, so "handle != 0" alone isn't enough to tell old from new).
     private volatile boolean reloadRebindRequested;
+    private volatile boolean reloadCompletionObserved;
     // The block-atlas view handle currently bound into the world pipeline (set by bindWorldTextures).
     private long boundAtlasHandle;
     private long boundCelestialAtlasHandle;
@@ -355,6 +356,8 @@ public final class RtComposite {
     private RtImage nrdResolvedOutput;
     private RtImage gDepthHistoryA;
     private RtImage gDepthHistoryB;
+    private RtImage gTemporalGuideHistoryA;
+    private RtImage gTemporalGuideHistoryB;
     private RtImage gDisocclusion;
     private RtImage gBiasCurrentColor;
     private boolean diffusePathGuideKnown;
@@ -421,6 +424,7 @@ public final class RtComposite {
     private long atlasSampler;
     private boolean failed;
     private boolean loggedActive;
+    private Boolean highQualityTransparencyPipeline;
 
     // Camera captured each frame from GameRenderer (unjittered level projection + camera rotation + pos).
     private final Matrix4f frameProjection = new Matrix4f();
@@ -489,8 +493,7 @@ public final class RtComposite {
         if (worldPipeline == null || !materialBindingsReady) return true;
         if (RtEntityTextures.maxTextures() > bindlessTextureCapacity) return true;
         if (reloadRebindRequested) {
-            long atlas = blockAtlasView();
-            return atlas == 0L || atlas == boundAtlasHandle;
+            return !reloadCompletionObserved || blockAtlasView() == 0L || celestialsAtlasView() == 0L;
         }
         return false;
     }
@@ -691,7 +694,8 @@ public final class RtComposite {
             CausticaMod.LOGGER.error("RT terrain streaming failed; reverting to vanilla path", t);
             return false;
         }
-        if (RtTerrain.currentOrNull() == null || !frameCaptured || Minecraft.getInstance().level == null) {
+        if ((RtTerrain.currentOrNull() == null && !reloadRebindRequested)
+                || !frameCaptured || Minecraft.getInstance().level == null) {
             // No usable world/camera this frame. Skip RT so presentation falls back to vanilla SDR or the
             // menu-safe PQ conversion path instead of reusing stale temporal inputs.
             return false;
@@ -717,8 +721,7 @@ public final class RtComposite {
             if (reloadRebindRequested) {
                 long atlas = blockAtlasView();
                 long celestialAtlas = celestialsAtlasView();
-                if (!replacementAtlasesReady(atlas, celestialAtlas,
-                        boundAtlasHandle, boundCelestialAtlasHandle)) {
+                if (!replacementAtlasesReady(reloadCompletionObserved, atlas, celestialAtlas)) {
                     return false;
                 }
             }
@@ -728,8 +731,12 @@ public final class RtComposite {
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
             exposure.ensureResources(ctx);
             refreshPipelineShapeIfNeeded(ctx);
+            refreshTransparencyPipelineIfNeeded(ctx);
             boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
             RtPipeline active = offlineGroundTruth ? ensureOfflineWorld(ctx) : ensureWorld(ctx);
+            // A reload quiesces the old terrain epoch. Pipeline/material rebind above releases the pause;
+            // let the next frame rebuild residency before attempting to record a world trace.
+            if (!offlineGroundTruth && RtTerrain.currentOrNull() == null) return false;
             syncSharcResources(ctx, !offlineGroundTruth);
             syncSharcPrimaryQueryPipeline(ctx, !offlineGroundTruth);
             syncSharcDiagnosticPipelines(ctx, !offlineGroundTruth);
@@ -745,6 +752,11 @@ public final class RtComposite {
             return true;
         } catch (Throwable t) {
             ctx.gpuExecutor().throwIfFailed();
+            if (reloadRebindRequested) {
+                reloadRebindRequested = false;
+                reloadCompletionObserved = false;
+                RtTerrain.resumeAfterResourceReload();
+            }
             failed = true;
             CausticaMod.LOGGER.error("RT composite failed; reverting to vanilla path", t);
             return false;
@@ -800,12 +812,16 @@ public final class RtComposite {
             }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             boolean nrdPipeline = requestedNrd;
-            worldPipeline = RtPipeline.create(ctx, RtDeviceBringup.worldRaygenShader(nrdPipeline),
+            String raygenShader = RtDeviceBringup.worldRaygenShader(nrdPipeline);
+            worldPipeline = RtPipeline.create(ctx, raygenShader,
                     new String[]{"world.rmiss.spv", "world_guide.rmiss.spv", "world_shadow.rmiss.spv"},
                     "world.rchit.spv", RtDeviceBringup.shadowClosestHitShader(), "world.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, true,
                     nrdPipeline ? NRD_GUIDE_COUNT : BASE_GUIDE_COUNT, bindlessTextureCapacity, true, true);
             worldPipelineNrd = nrdPipeline;
+            highQualityTransparencyPipeline = highQualityTransparencyEnabled();
+            CausticaMod.LOGGER.info("RT transparency quality active: {} (raygen={})",
+                    highQualityTransparencyPipeline ? "high / two-ray" : "standard / one-ray", raygenShader);
             // Per-frame push data lives in this BDA ring; the pipeline only pushes its address.
             if (pushRing == null) {
                 pushRing = new RtBuffer[PUSH_RING];
@@ -821,8 +837,19 @@ public final class RtComposite {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
             }
-            bindWorldTextures(ctx);
+            if (materialBindingsReady && !reloadRebindRequested && RtMaterialRegistry.INSTANCE.isReady()) {
+                // A transparency-quality switch changes only the raygen binary. Rebind the existing
+                // material/atlas registry instead of rebuilding every terrain section.
+                bindPipelineTextures(ctx, worldPipeline);
+            } else {
+                bindWorldTextures(ctx);
+            }
+            boolean completedReloadRebind = reloadRebindRequested;
             reloadRebindRequested = false;
+            reloadCompletionObserved = false;
+            if (completedReloadRebind) {
+                RtTerrain.resumeAfterResourceReload();
+            }
         }
         // The TLAS is rebuilt and bound per frame in recordFrame since dynamic entity content animates
         // the instance set every frame.
@@ -1160,8 +1187,8 @@ public final class RtComposite {
      * the world pipeline outright</b> — dropping every descriptor reference (block atlas binding 2 +
      * bindless set) — so MC can free its textures cleanly. The pipeline is cheap to rebuild (no terrain
      * re-upload); {@code ensureWorld} recreates it on the first world frame after the reload, once the new
-     * atlas is ready (gated in {@link #composite}). Terrain stays resident and is re-extracted via
-     * {@code markAllDirty()} so material flags pick up the new pack.
+     * atlas is ready (gated in {@link #composite}). Terrain's old residency is drained before teardown,
+     * held paused throughout the asynchronous reload, then rebuilt against the replacement material epoch.
      */
     public void onResourceReloadStart() {
         if (OfflineGroundTruth.INSTANCE.active()) {
@@ -1169,19 +1196,66 @@ public final class RtComposite {
         }
         requestTemporalReset();
         reloadRebindRequested = true;
-        sharcCreationResetReason = "resource pack/material reload";
-        materialBindingsReady = false;
-        setCelestialUvAtlas(0L);
-        RtEntities.INSTANCE.onResourceReload();
+        reloadCompletionObserved = false;
+        RtTerrain.pauseForResourceReload();
         RtContext ctx = RtContext.currentOrNull();
-        if (ctx != null && worldPipeline != null) {
-            ctx.waitIdle("resource reload");
+        try {
+            sharcCreationResetReason = "resource pack/material reload";
+            materialBindingsReady = false;
+            setCelestialUvAtlas(0L);
+            RtEntities.INSTANCE.onResourceReload();
+            if (ctx != null) {
+                // vkDeviceWaitIdle alone is racy while the terrain executor can still submit. Quiesce its
+                // complete worker -> compute lifecycle first, then no old-epoch submission can outlive the
+                // pipelines, SHARC buffers, descriptors, or atlases destroyed below.
+                RtTerrain.quiesceForResourceReload(ctx);
+                destroyReloadOwnedResources();
+            }
+        } catch (Throwable teardownFailure) {
+            // The RETURN injection cannot attach its future callback if HEAD teardown throws. Release the
+            // pause here and make one conservative idle+descriptor teardown attempt before Minecraft
+            // continues replacing atlases. If that recovery also fails, abort the reload rather than let
+            // Minecraft destroy an image still referenced by a live descriptor set.
+            reloadRebindRequested = false;
+            reloadCompletionObserved = false;
+            RtTerrain.resumeAfterResourceReload();
+            failed = true;
+            try {
+                if (ctx != null) {
+                    ctx.waitIdle("resource reload teardown recovery");
+                    destroyReloadOwnedResources();
+                }
+                CausticaMod.LOGGER.error("RT resource-reload teardown failed; RT disabled for this session",
+                        teardownFailure);
+            } catch (Throwable recoveryFailure) {
+                teardownFailure.addSuppressed(recoveryFailure);
+                throw new IllegalStateException("RT could not release atlas descriptors; resource reload aborted",
+                        teardownFailure);
+            }
+        }
+    }
+
+    private void destroyReloadOwnedResources() {
+        if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;
-            destroyOfflineResources();
-            destroySharcResources();
-            bindlessTextureCapacity = 0;
         }
+        destroyOfflineResources();
+        destroySharcResources();
+        bindlessTextureCapacity = 0;
+    }
+
+    /** Mark the resource epoch complete without relying on recyclable Vulkan handle identity. */
+    public void onResourceReloadComplete(Throwable failure) {
+        if (!reloadRebindRequested) return;
+        if (failure != null) {
+            reloadRebindRequested = false;
+            reloadCompletionObserved = false;
+            RtTerrain.resumeAfterResourceReload();
+            CausticaMod.LOGGER.error("Resource reload failed; RT terrain pause released", failure);
+            return;
+        }
+        reloadCompletionObserved = true;
     }
 
     /** Bind the guide buffers into the world pipeline's extra storage-image slots. */
@@ -1306,6 +1380,14 @@ public final class RtComposite {
         if (gDepthHistoryB != null) {
             gDepthHistoryB.destroy();
             gDepthHistoryB = null;
+        }
+        if (gTemporalGuideHistoryA != null) {
+            gTemporalGuideHistoryA.destroy();
+            gTemporalGuideHistoryA = null;
+        }
+        if (gTemporalGuideHistoryB != null) {
+            gTemporalGuideHistoryB.destroy();
+            gTemporalGuideHistoryB = null;
         }
         if (gDisocclusion != null) {
             gDisocclusion.destroy();
@@ -1458,7 +1540,10 @@ public final class RtComposite {
             offlinePilotB = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
                     "offline adaptive pilot B " + pilotW + "x" + pilotH);
         }
-        gAnimatedGuide = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
+        boolean dlssOperational = rrOperational && RtReconstruction.usesDlss();
+        int dlssGuideW = dlssOperational ? renderW : 1;
+        int dlssGuideH = dlssOperational ? renderH : 1;
+        gAnimatedGuide = ctx.createStorageImage(dlssGuideW, dlssGuideH, VK10.VK_FORMAT_R16_SFLOAT,
                 "DLSSD animated-surface responsivity");
         gDiffuseRayDirectionHitDistance = ctx.createStorageImage(rrGuideW, rrGuideH,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSSD diffuse ray direction + hit distance");
@@ -1476,19 +1561,29 @@ public final class RtComposite {
             gNrdViewDirection = ctx.createStorageImage(nrdSh ? renderW : 1, nrdSh ? renderH : 1,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "NRD view direction and specular roughness");
         }
-        gDepthHistoryA = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
+        gDepthHistoryA = ctx.createStorageImage(dlssGuideW, dlssGuideH, VK10.VK_FORMAT_R32_SFLOAT,
                 "DLSSD depth history A");
-        gDepthHistoryB = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R32_SFLOAT,
+        gDepthHistoryB = ctx.createStorageImage(dlssGuideW, dlssGuideH, VK10.VK_FORMAT_R32_SFLOAT,
                 "DLSSD depth history B");
-        gDisocclusion = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
+        boolean particleTemporalHistory = dlssOperational
+                && CausticaConfig.Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY.value();
+        if (particleTemporalHistory) {
+            gTemporalGuideHistoryA = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16_SFLOAT,
+                    "DLSSD temporal responsivity history A");
+            gTemporalGuideHistoryB = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16_SFLOAT,
+                    "DLSSD temporal responsivity history B");
+        }
+        gDisocclusion = ctx.createStorageImage(dlssGuideW, dlssGuideH, VK10.VK_FORMAT_R16_SFLOAT,
                 "DLSSD disocclusion mask");
-        gBiasCurrentColor = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16_SFLOAT,
+        gBiasCurrentColor = ctx.createStorageImage(dlssGuideW, dlssGuideH, VK10.VK_FORMAT_R16_SFLOAT,
                 "DLSSD current color bias");
-        if (rrOperational && RtReconstruction.usesDlss()) {
-            dlssdDisocclusionPipeline = RtDlssdDisocclusionPipeline.create(ctx);
+        if (dlssOperational) {
+            dlssdDisocclusionPipeline = RtDlssdDisocclusionPipeline.create(ctx, particleTemporalHistory);
             dlssdDisocclusionPipeline.setImages(gDepth.view, gMotion.view,
                     gDepthHistoryA.view, gDepthHistoryB.view, gDisocclusion.view, gBiasCurrentColor.view,
-                    gAnimatedGuide.view);
+                    gAnimatedGuide.view,
+                    particleTemporalHistory ? gTemporalGuideHistoryA.view : 0L,
+                    particleTemporalHistory ? gTemporalGuideHistoryB.view : 0L);
         }
         // At native resolution the display mapper can consume the trace image directly; reserve a second
         // full-resolution FP16 image only when RR may write or need a same-frame fallback upscale.
@@ -2121,6 +2216,32 @@ public final class RtComposite {
         RtEntities.INSTANCE.markGraphicsUse(frameEntities, graphicsUse);
     }
 
+    /** Apply the transparency-quality toggle without requiring a process or resource-pack restart. */
+    private void refreshTransparencyPipelineIfNeeded(RtContext ctx) {
+        boolean desired = highQualityTransparencyEnabled();
+        if (worldPipeline == null) {
+            highQualityTransparencyPipeline = desired;
+            return;
+        }
+        if (highQualityTransparencyPipeline != null && highQualityTransparencyPipeline == desired) {
+            return;
+        }
+        ctx.waitIdle("transparency quality pipeline change");
+        worldPipeline.destroy();
+        worldPipeline = null;
+        destroyOfflineResources();
+        destroySharcResources();
+        highQualityTransparencyPipeline = desired;
+        requestTemporalReset();
+        CausticaMod.LOGGER.info("RT transparency quality changed: {}; rebuilding ray pipelines",
+                desired ? "high / two-ray" : "standard / one-ray");
+    }
+
+    private static boolean highQualityTransparencyEnabled() {
+        return RtReconstruction.usesDlss() && RtDlssRr.INSTANCE.isOperational()
+                && CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.value();
+    }
+
     private void clearOfflineAccumulation(VkCommandBuffer cmd, MemoryStack stack) {
         VkClearColorValue zero = VkClearColorValue.calloc(stack);
         zero.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
@@ -2352,10 +2473,8 @@ public final class RtComposite {
         lastMoonAngularRadius = moonAngularRadius;
     }
 
-    static boolean replacementAtlasesReady(long blockAtlas, long celestialAtlas,
-                                            long boundBlockAtlas, long boundCelestialAtlas) {
-        return blockAtlas != 0L && celestialAtlas != 0L
-                && blockAtlas != boundBlockAtlas && celestialAtlas != boundCelestialAtlas;
+    static boolean replacementAtlasesReady(boolean reloadComplete, long blockAtlas, long celestialAtlas) {
+        return reloadComplete && blockAtlas != 0L && celestialAtlas != 0L;
     }
 
     private boolean skyViewChanged(float sunX, float sunY, float sunZ, float sunSource,

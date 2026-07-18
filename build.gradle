@@ -242,16 +242,30 @@ abstract class CompileShaders extends DefaultTask {
 				// Build both hit-object encodings from one source; RtDeviceBringup selects the supported backend.
 				// Live rendering omits invocation reordering. Offline is an independent throughput specialization.
 				compileOneSlang(src, spv, base == "world.rgen"
-						? ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0", "-O2", "-fp-mode", "precise",
+						? ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0",
+						   "-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise",
 						   "-capability", "spvShaderInvocationReorderEXT"] : [])
 				if (base == "world.rgen") {
 					compileOneSlang(src, new File(scratchDir, "world_base.rgen.spv"),
-							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=1", "-O2", "-fp-mode", "precise"])
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=1",
+							 "-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise"])
 					compileOneSlang(src, new File(scratchDir, "world_nv.rgen.spv"),
-							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0", "-O2", "-fp-mode", "precise",
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0",
+							 "-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderNV"])
+					compileOneSlang(src, new File(scratchDir, "world_base_hq.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=1",
+							 "-DCAUSTICA_TRANSPARENCY_HQ=1", "-O2", "-fp-mode", "precise"])
+					compileOneSlang(src, new File(scratchDir, "world_hq.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0",
+							 "-DCAUSTICA_TRANSPARENCY_HQ=1", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderEXT"])
+					compileOneSlang(src, new File(scratchDir, "world_nv_hq.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_PORTABLE_TRACE=0",
+							 "-DCAUSTICA_TRANSPARENCY_HQ=1", "-O2", "-fp-mode", "precise",
 							 "-capability", "spvShaderInvocationReorderNV"])
 					def nrdDefines = ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_NRD=1",
-							"-O2", "-fp-mode", "precise"]
+							"-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise"]
 					compileOneSlang(src, new File(scratchDir, "world_nrd_base.rgen.spv"),
 							nrdDefines + ["-DCAUSTICA_PORTABLE_TRACE=1"])
 					compileOneSlang(src, new File(scratchDir, "world_nrd.rgen.spv"),
@@ -269,7 +283,12 @@ abstract class CompileShaders extends DefaultTask {
 							 "-capability", "spvShaderInvocationReorderNV"])
 				}
 			} else {
-				compileOne(src, spv, [])
+				def particleHistory = base == "dlssd_disocclusion.comp"
+				compileOne(src, spv, particleHistory ? ["-DCAUSTICA_PARTICLE_TEMPORAL_HISTORY=0"] : [])
+				if (particleHistory) {
+					compileOne(src, new File(scratchDir, "dlssd_disocclusion_particle_history.comp.spv"),
+							["-DCAUSTICA_PARTICLE_TEMPORAL_HISTORY=1"])
+				}
 			}
 		}
 		def sharcRootPath = sharcSdk.get()
@@ -339,6 +358,32 @@ abstract class CompileShaders extends DefaultTask {
 					diagnosticUpdateDefines + sharcInclude + ["-DCAUSTICA_PORTABLE_TRACE=1"])
 			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_update_diagnostic_nv.rgen.spv"),
 					diagnosticUpdateDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderNV"])
+			def transparencyHq = ["-DCAUSTICA_TRANSPARENCY_HQ=1"]
+			[
+					["world_sharc_hq.rgen.spv", queryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_nv_hq.rgen.spv", queryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_diffuse_hq.rgen.spv", diffuseQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_diffuse_nv_hq.rgen.spv", diffuseQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_primary_hq.rgen.spv", primaryQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_primary_nv_hq.rgen.spv", primaryQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_diagnostic_hq.rgen.spv", diagnosticQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_diagnostic_nv_hq.rgen.spv", diagnosticQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_primary_diagnostic_hq.rgen.spv", primaryDiagnosticQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_primary_diagnostic_nv_hq.rgen.spv", primaryDiagnosticQueryDefines, "spvShaderInvocationReorderNV"]
+			].each { variant ->
+				compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, variant[0]),
+						variant[1] + transparencyHq + sharcInclude + ["-capability", variant[2]])
+			}
+			[
+					["world_sharc_base_hq.rgen.spv", queryDefines],
+					["world_sharc_diffuse_base_hq.rgen.spv", diffuseQueryDefines],
+					["world_sharc_primary_base_hq.rgen.spv", primaryQueryDefines],
+					["world_sharc_diagnostic_base_hq.rgen.spv", diagnosticQueryDefines],
+					["world_sharc_primary_diagnostic_base_hq.rgen.spv", primaryDiagnosticQueryDefines]
+			].each { variant ->
+				compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, variant[0]),
+						variant[1] + transparencyHq + sharcInclude + ["-DCAUSTICA_PORTABLE_TRACE=1"])
+			}
 			[
 					"world.rchit.slang": "world_sharc.rchit.spv",
 					"world.rahit.slang": "world_sharc.rahit.spv",
@@ -846,7 +891,12 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 		def sourceJar = tasks.named("sourcesJar", Jar).get().archiveFile.get().asFile
 		def required = [
 			"fabric.mod.json",
+			"caustica/rt/world.rgen.spv",
+			"caustica/rt/world_nv.rgen.spv",
 			"caustica/rt/world_base.rgen.spv",
+			"caustica/rt/world_hq.rgen.spv",
+			"caustica/rt/world_nv_hq.rgen.spv",
+			"caustica/rt/world_base_hq.rgen.spv",
 			"caustica/rt/world_nrd_base.rgen.spv",
 			"caustica/rt/world_nrd.rgen.spv",
 			"caustica/rt/world_nrd_nv.rgen.spv",
@@ -856,6 +906,8 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 			"caustica/rt/world_shadow.rchit.spv",
 			"caustica/rt/world_shadow.rmiss.spv",
 			"caustica/rt/nrd_resolve.comp.spv",
+			"caustica/rt/dlssd_disocclusion.comp.spv",
+			"caustica/rt/dlssd_disocclusion_particle_history.comp.spv",
 			"caustica/streamline.properties",
 			"caustica/sharc.properties",
 			"caustica/natives/windows-x64/nrdbridge.dll",
@@ -896,6 +948,21 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 				"caustica/rt/world_sharc_primary_diagnostic.rgen.spv",
 				"caustica/rt/world_sharc_primary_diagnostic_nv.rgen.spv",
 				"caustica/rt/world_sharc_primary_diagnostic_base.rgen.spv",
+				"caustica/rt/world_sharc_hq.rgen.spv",
+				"caustica/rt/world_sharc_nv_hq.rgen.spv",
+				"caustica/rt/world_sharc_base_hq.rgen.spv",
+				"caustica/rt/world_sharc_diffuse_hq.rgen.spv",
+				"caustica/rt/world_sharc_diffuse_nv_hq.rgen.spv",
+				"caustica/rt/world_sharc_diffuse_base_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_nv_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_base_hq.rgen.spv",
+				"caustica/rt/world_sharc_diagnostic_hq.rgen.spv",
+				"caustica/rt/world_sharc_diagnostic_nv_hq.rgen.spv",
+				"caustica/rt/world_sharc_diagnostic_base_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_diagnostic_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_diagnostic_nv_hq.rgen.spv",
+				"caustica/rt/world_sharc_primary_diagnostic_base_hq.rgen.spv",
 				"caustica/rt/world_sharc_update_diagnostic.rgen.spv",
 				"caustica/rt/world_sharc_update_diagnostic_nv.rgen.spv",
 				"caustica/rt/world_sharc_update_diagnostic_base.rgen.spv",

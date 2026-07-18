@@ -26,11 +26,13 @@ import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-/** Produces DLSSD disocclusion and current-color-bias masks from depth history and motion. */
+/** Produces DLSSD disocclusion and current-color-bias masks from depth and temporal-guide history. */
 public final class RtDlssdDisocclusionPipeline {
-    private static final String SHADER = "/caustica/rt/dlssd_disocclusion.comp.spv";
+    private static final String BASE_SHADER = "/caustica/rt/dlssd_disocclusion.comp.spv";
+    private static final String PARTICLE_HISTORY_SHADER =
+            "/caustica/rt/dlssd_disocclusion_particle_history.comp.spv";
     private static final int SET_COUNT = 2;
-    private static final int IMAGE_BINDINGS = 7;
+    private static final int BASE_IMAGE_BINDINGS = 7;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -38,23 +40,27 @@ public final class RtDlssdDisocclusionPipeline {
     private final long[] descriptorSets;
     private final long pipelineLayout;
     private final long pipeline;
+    private final boolean particleTemporalHistory;
     private boolean destroyed;
 
     private RtDlssdDisocclusionPipeline(RtContext ctx, long descriptorSetLayout,
-            long descriptorPool, long[] descriptorSets, long pipelineLayout, long pipeline) {
+            long descriptorPool, long[] descriptorSets, long pipelineLayout, long pipeline,
+            boolean particleTemporalHistory) {
         this.ctx = ctx;
         this.descriptorSetLayout = descriptorSetLayout;
         this.descriptorPool = descriptorPool;
         this.descriptorSets = descriptorSets;
         this.pipelineLayout = pipelineLayout;
         this.pipeline = pipeline;
+        this.particleTemporalHistory = particleTemporalHistory;
     }
 
-    public static RtDlssdDisocclusionPipeline create(RtContext ctx) {
+    public static RtDlssdDisocclusionPipeline create(RtContext ctx, boolean particleTemporalHistory) {
+        int imageBindings = particleTemporalHistory ? 9 : BASE_IMAGE_BINDINGS;
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(IMAGE_BINDINGS, stack);
-            for (int i = 0; i < IMAGE_BINDINGS; i++) {
+            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(imageBindings, stack);
+            for (int i = 0; i < imageBindings; i++) {
                 bindings.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
@@ -67,7 +73,7 @@ public final class RtDlssdDisocclusionPipeline {
 
             VkDescriptorPoolSize.Buffer poolSize = VkDescriptorPoolSize.calloc(1, stack);
             poolSize.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .descriptorCount(IMAGE_BINDINGS * SET_COUNT);
+                    .descriptorCount(imageBindings * SET_COUNT);
             VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(SET_COUNT).pPoolSizes(poolSize);
             output.position(0).limit(1);
@@ -95,7 +101,8 @@ public final class RtDlssdDisocclusionPipeline {
                     "vkCreatePipelineLayout(DLSSD disocclusion)");
             long pipelineLayout = output.get(0);
 
-            long module = loadModule(vk, stack);
+            long module = loadModule(vk, stack,
+                    particleTemporalHistory ? PARTICLE_HISTORY_SHADER : BASE_SHADER);
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)
                     .sType$Default().stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT)
                     .module(module).pName(stack.UTF8("main"));
@@ -106,22 +113,30 @@ public final class RtDlssdDisocclusionPipeline {
             long pipeline = output.get(0);
             VK10.vkDestroyShaderModule(vk, module, null);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, pipeline, "DLSSD disocclusion");
-            return new RtDlssdDisocclusionPipeline(ctx, descriptorLayout, pool, sets, pipelineLayout, pipeline);
+            return new RtDlssdDisocclusionPipeline(ctx, descriptorLayout, pool, sets,
+                    pipelineLayout, pipeline, particleTemporalHistory);
         }
     }
 
     public void setImages(long depth, long motion, long historyA, long historyB,
-            long disocclusion, long biasCurrent, long animatedGuide) {
+            long disocclusion, long biasCurrent, long animatedGuide,
+            long temporalGuideHistoryA, long temporalGuideHistoryB) {
+        int imageBindings = particleTemporalHistory ? 9 : BASE_IMAGE_BINDINGS;
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorImageInfo.Buffer infos = VkDescriptorImageInfo.calloc(IMAGE_BINDINGS * SET_COUNT, stack);
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(IMAGE_BINDINGS * SET_COUNT, stack);
+            VkDescriptorImageInfo.Buffer infos = VkDescriptorImageInfo.calloc(imageBindings * SET_COUNT, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(imageBindings * SET_COUNT, stack);
             int write = 0;
             for (int parity = 0; parity < SET_COUNT; parity++) {
                 long previousHistory = parity == 0 ? historyA : historyB;
                 long currentHistory = parity == 0 ? historyB : historyA;
-                long[] images = {depth, motion, previousHistory, currentHistory, disocclusion, biasCurrent,
-                        animatedGuide};
-                for (int binding = 0; binding < IMAGE_BINDINGS; binding++) {
+                long previousTemporalGuide = parity == 0 ? temporalGuideHistoryA : temporalGuideHistoryB;
+                long currentTemporalGuide = parity == 0 ? temporalGuideHistoryB : temporalGuideHistoryA;
+                long[] images = particleTemporalHistory
+                        ? new long[] {depth, motion, previousHistory, currentHistory, disocclusion, biasCurrent,
+                                animatedGuide, previousTemporalGuide, currentTemporalGuide}
+                        : new long[] {depth, motion, previousHistory, currentHistory, disocclusion, biasCurrent,
+                                animatedGuide};
+                for (int binding = 0; binding < imageBindings; binding++) {
                     infos.get(write).imageView(images[binding]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                     writes.get(write).sType$Default().dstSet(descriptorSets[parity]).dstBinding(binding)
                             .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -159,13 +174,13 @@ public final class RtDlssdDisocclusionPipeline {
         destroyed = true;
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack) {
+    private static long loadModule(VkDevice vk, MemoryStack stack, String shader) {
         byte[] bytes;
-        try (InputStream input = RtDlssdDisocclusionPipeline.class.getResourceAsStream(SHADER)) {
-            if (input == null) throw new IllegalStateException("missing SPIR-V resource: " + SHADER);
+        try (InputStream input = RtDlssdDisocclusionPipeline.class.getResourceAsStream(shader)) {
+            if (input == null) throw new IllegalStateException("missing SPIR-V resource: " + shader);
             bytes = input.readAllBytes();
         } catch (IOException exception) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER, exception);
+            throw new IllegalStateException("failed to read SPIR-V resource: " + shader, exception);
         }
         ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
         code.flip();
