@@ -1558,8 +1558,9 @@ public final class RtEntities {
             a += (double) cx * rx + (double) cz * rz;
             b += (double) cx * rz - (double) cz * rx;
         }
-        float cos = (float) Math.cos(Math.atan2(b, a));
-        float sin = (float) Math.sin(Math.atan2(b, a));
+        double yaw = Math.atan2(b, a);
+        float cos = (float) Math.cos(yaw);
+        float sin = (float) Math.sin(yaw);
         for (int i = 0; i < vc; i++) {
             float rx = ref[i * 3] - crx, ry = ref[i * 3 + 1] - cry, rz = ref[i * 3 + 2] - crz;
             float ex = (rx * cos + rz * sin) - (cur[i * 3] - ccx);
