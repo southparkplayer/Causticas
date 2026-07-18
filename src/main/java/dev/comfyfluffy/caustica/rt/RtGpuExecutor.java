@@ -38,7 +38,9 @@ import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_RAY_TRACI
  * queue-synchronization rule without coordinating a host mutex with Blaze3D.
  */
 public final class RtGpuExecutor {
-    private static final int MAX_BUILD_BATCH = 32;
+    // NVIDIA 610.62 loses the device when the startup burst records many independent terrain AS builds
+    // into one command buffer. Keep submissions asynchronous but isolate each build's scratch/query state.
+    private static final int MAX_BUILD_BATCH = 1;
     private static final Job STOP = new Job(null, null, null, null, null);
     private static final Job WAKE = new Job(null, null, null, null, null);
     private static final long TERRAIN_READ_STAGES =
