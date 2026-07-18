@@ -126,6 +126,12 @@ In the same entity-heavy scene, provisional normalized fallback cost increased f
 per emitted quad (8.60 to 9.15 microseconds per model submission). The JVM already optimizes this temporary
 well enough that the redirect and injected-field access were counterproductive; the mixin was fully removed.
 
+Reusing Minecraft's already-extracted visible-entity render states was also tested and removed. Hooks at
+both `LevelExtractor.extractEntity` and the owning `EntityRenderDispatcher.extractEntity` produced zero
+same-frame hits during RT capture (about 128-135 fallbacks per frame), proving the RT pass runs before those
+states are available at this seam. Consuming the previous frame's state would add animation latency, so that
+visually lossy fallback was not attempted.
+
 ## 2026-07-17 additional 25% village pass
 
 The second optimization goal used the same SHaRC-off 3840x2160-output / 1920x1080-internal scene at
