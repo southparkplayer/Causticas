@@ -2,10 +2,23 @@ package dev.comfyfluffy.caustica.rt;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class RtCompositeLifecycleTest {
+    @Test
+    void offlineAccumulationFreezesTheSkyState() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java"));
+        assertTrue(source.contains("if (offlineSkyPush == null || groundTruthAccumulationFrames == 0)"));
+        assertTrue(source.contains("offlineSkyPush = liveSky"));
+        assertTrue(source.contains("sky = offlineSkyPush"));
+        assertTrue(source.contains("offlineSkyPush = null"));
+    }
+
     @Test
     void reloadWaitsForBothReplacementAtlasGenerations() {
         long oldBlock = 11L;

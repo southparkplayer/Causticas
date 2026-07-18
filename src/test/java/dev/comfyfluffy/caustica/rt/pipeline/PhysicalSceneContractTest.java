@@ -18,8 +18,10 @@ final class PhysicalSceneContractTest {
         assertTrue(miss.contains("SPECTRAL_OZONE_DU = 334.5"));
         assertTrue(miss.contains("spectralToBt2020"));
         assertTrue(miss.contains("sampleSkyView(skyDir)"));
-        assertTrue(miss.contains("filterSky ? sampleSkyViewFiltered(skyDir) : sampleSkyView(skyDir)"));
-        assertTrue(miss.contains("cubicBSplineWeights"));
+        assertTrue(miss.contains("filterSky ? sampleMirrorSky(skyDir, pc) : sampleSkyView(skyDir)"));
+        assertTrue(miss.contains("spectralAtmosphere(dir, pc.sunDir.xyz, solarSource)"));
+        assertFalse(miss.contains("sampleSkyViewFiltered"));
+        assertFalse(miss.contains("cubicBSplineWeights"));
         assertTrue(miss.contains("PAYLOAD_FILTER_SKY"));
         String skyLut = Files.readString(Path.of("shaders/display/sky_view.comp.slang"));
         assertTrue(skyLut.contains("pc.sun.w"));

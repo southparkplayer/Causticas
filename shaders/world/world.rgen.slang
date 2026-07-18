@@ -1022,6 +1022,7 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     float3 finalMotion = float3(0.0, 0.0, 0.0);
     float finalRoughness = 1.0;
     float3 finalDiffuse = SKY_DIFF_ALBEDO;
+    bool finalIsSky = false;
     float travelled = length(surfacePos - pc.camOffset);
 
     for (uint segment = 0u; segment < PSR_MAX_CONFIGURED_MIRRORS; ++segment) {
@@ -1033,6 +1034,7 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
                 RAY_TMIN, rayDir, 10000.0);
         if (payload.hitT <= 0.0) {
             finalHit = rayOrigin + rayDir * 1.0e6;
+            finalIsSky = true;
             break;
         }
 
@@ -1086,6 +1088,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     // The mirror chain itself has been replaced. A further specular lobe on the terminal surface would
     // require another correctly transformed specular-motion chain, so keep this bounded PSR pass diffuse.
     gv_specAlb = float3(0.0, 0.0, 0.0);
+    // A reflected environment has no finite surface identity for the depth-only disocclusion test.
+    // Bias reconstruction toward current deterministic radiance so stale LUT/history tiles cannot linger.
+    if (finalIsSky) gv_animatedGuide = 1.0;
     return float2(0.0, 0.0);
 }
 

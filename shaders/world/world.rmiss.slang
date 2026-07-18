@@ -246,6 +246,7 @@ float3 spectralTransmittanceToSpace(float3 dir) {
 }
 
 float3 spectralAtmosphere(float3 dir, float3 lightDir, float sourceScale) {
+    if (sourceScale <= 0.0) return float3(0.0);
     float3 origin = float3(0.0, SPECTRAL_PLANET_R + 2.0, 0.0);
     float2 t = spectralRaySphere(origin, dir, SPECTRAL_ATMOS_R);
     if (t.x > t.y) return float3(0.0);
@@ -299,44 +300,19 @@ float3 sampleSkyView(float3 dir) {
     return lerp(a, b, f.y);
 }
 
-float4 cubicBSplineWeights(float t) {
-    float t2 = t * t;
-    float t3 = t2 * t;
-    return float4(
-            (1.0 - 3.0 * t + 3.0 * t2 - t3) / 6.0,
-            (4.0 - 6.0 * t2 + 3.0 * t3) / 6.0,
-            (1.0 + 3.0 * t + 3.0 * t2 - 3.0 * t3) / 6.0,
-            t3 / 6.0);
-}
-
-int wrapSkyX(int x, int width) {
-    return ((x % width) + width) % width;
-}
-
-// Exact mirrors turn the bilinear LUT's derivative discontinuities into visible rectangular frames and
-// elevation-row moire. A separable cubic B-spline is positive, normalized and C2 continuous, so it cannot
-// overshoot HDR radiance or reproduce those cell edges. This path is requested only after a delta mirror.
-float3 sampleSkyViewFiltered(float3 dir) {
-    uint width, height;
-    skyViewLut.GetDimensions(width, height);
-    float elevation = asin(clamp(dir.y, 0.0, 1.0));
-    float2 uv = float2(atan2(dir.z, dir.x) / (2.0 * PI) + 0.5,
-            sqrt(elevation / (0.5 * PI)));
-    float2 pixel = uv * float2(width, height) - 0.5;
-    int2 base = int2(floor(pixel));
-    float4 wx = cubicBSplineWeights(frac(pixel.x));
-    float4 wy = cubicBSplineWeights(frac(pixel.y));
-    float3 result = float3(0.0);
-    for (int j = 0; j < 4; ++j) {
-        int y = clamp(base.y + j - 1, 0, int(height) - 1);
-        float3 row = float3(0.0);
-        for (int i = 0; i < 4; ++i) {
-            int x = wrapSkyX(base.x + i - 1, int(width));
-            row += skyViewLut[uint2(x, y)].rgb * wx[i];
-        }
-        result += row * wy[j];
-    }
-    return max(result, float3(0.0));
+// A delta mirror exposes the angular texel grid of the sky-view LUT because it supplies no BRDF
+// footprint that could integrate over the table. Filtering the same finite grid merely turns its cell
+// edges into wider rectangular ghosts. Mirror misses are uncommon and already pay for a recursive PSR
+// guide, so evaluate the continuous spectral atmosphere here instead of feeding deterministic LUT error
+// into either the offline running mean or DLSS-RR history.
+float3 sampleMirrorSky(float3 dir, WorldPush pc) {
+    float solarEnvelope = pc.skyState.w;
+    float rainBrightness = pc.sunDir.w;
+    float solarSource = solarEnvelope * pc.skyLighting.x * rainBrightness;
+    float lunarSource = (0.25 / 120000.0) * pc.skyLighting.y * pc.skyLighting.w
+            * (1.0 - solarEnvelope) * rainBrightness;
+    return spectralAtmosphere(dir, pc.sunDir.xyz, solarSource)
+            + spectralAtmosphere(dir, pc.moonDir.xyz, lunarSource);
 }
 
 // Build the celestial body's square tangent frame: `right` along the arc-travel direction, `up`
@@ -493,7 +469,7 @@ void main(inout Payload payload) {
     float3 skyDir = aboveHorizon ? dir : horizonDir;
     float3 col;
     if (earthAtmosphere) {
-        col = filterSky ? sampleSkyViewFiltered(skyDir) : sampleSkyView(skyDir);
+        col = filterSky ? sampleMirrorSky(skyDir, pc) : sampleSkyView(skyDir);
     } else {
         col = max(pc.environmentSky.xyz, float3(0.0)) * fallbackGradient;
     }

@@ -19,6 +19,7 @@ final class MirrorPsrShaderContractTest {
         assertTrue(source.contains("maxMirrors = clamp(pc.psrMaxMirrors, 1u, PSR_MAX_CONFIGURED_MIRRORS)"));
         assertTrue(source.contains("translation += mappedNormal"));
         assertTrue(source.contains("maxBounces + maxMirrorDepth + MAX_OPTICAL_INTERFACE_DEPTH + 1"));
+        assertTrue(source.contains("if (finalIsSky) gv_animatedGuide = 1.0"));
     }
 
     @Test

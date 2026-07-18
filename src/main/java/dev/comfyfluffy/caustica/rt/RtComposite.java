@@ -373,6 +373,7 @@ public final class RtComposite {
     private volatile float publishedAmbientEv, publishedSunX, publishedSunY, publishedSunZ;
     private volatile float publishedMoonX, publishedMoonY, publishedMoonZ;
     private int groundTruthAccumulationFrames;
+    private SkyPush offlineSkyPush;
     private int groundTruthSettingsSignature = Integer.MIN_VALUE;
     private float groundTruthWaterWaveTime = Float.NaN;
 
@@ -1629,7 +1630,17 @@ public final class RtComposite {
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
-            SkyPush sky = skyPush();
+            SkyPush liveSky = skyPush();
+            SkyPush sky;
+            if (offlineGroundTruth) {
+                // Progressive ground truth is one frozen scene. Accumulating live day/night motion into the
+                // same running mean creates deterministic sky trails that more samples can never remove.
+                if (offlineSkyPush == null || groundTruthAccumulationFrames == 0) offlineSkyPush = liveSky;
+                sky = offlineSkyPush;
+            } else {
+                offlineSkyPush = null;
+                sky = liveSky;
+            }
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
