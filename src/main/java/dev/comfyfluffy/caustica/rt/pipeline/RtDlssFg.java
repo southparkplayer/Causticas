@@ -1003,7 +1003,7 @@ public final class RtDlssFg {
 
     private static String diagnosticQueueOverride() {
         String value = System.getProperty("caustica.streamline.queueParallelism",
-                        CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.value())
+                        CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.configuredValue())
                 .trim().toLowerCase(java.util.Locale.ROOT);
         return switch (value) {
             case "safe", "no-client-queues" -> value;
