@@ -617,6 +617,7 @@ public final class RtEntities {
             // The deferred horizon guarantees these are off all queues, so destroying them now is safe.
             listsForFree.releaseDeferred();
         }));
+        tableRing[tableSlot].flush(0L, (long) build.count * TABLE_ENTRY_BYTES);
         return new FrameEntities(base, build.instances, build.blas, build.geomTableAddr);
     }
 
