@@ -29,11 +29,12 @@ function Require-Version([string]$Name, [string]$Actual, [string]$Pattern) {
 }
 
 function Get-LiveMinecraftProcess {
+    $instanceRoot = (Split-Path -Parent $Instance).Replace('\', '/').TrimEnd('/')
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Name -match '^javaw?\.exe$' -and
             $_.CommandLine -and
-            $_.CommandLine.IndexOf($Instance, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            $_.CommandLine.Replace('\', '/').IndexOf($instanceRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
         } |
         Select-Object -First 1
 }
@@ -81,6 +82,14 @@ Write-Host "Pinned Streamline:$streamlineSdk"
 Write-Host "Pinned SHaRC:     $(if ($WithSharc) { $sharcSdk } else { 'off (pass -WithSharc to include)' })"
 Write-Host "Gradle tasks:     $($tasks -join ' ')"
 
+if ($Mode -eq 'Deploy') {
+    Remove-Item -LiteralPath "$deployedJar.tmp" -Force -ErrorAction SilentlyContinue
+    $live = Get-LiveMinecraftProcess
+    if ($live) {
+        throw "Refusing to replace a JAR under live Minecraft PID $($live.ProcessId). Shut it down through tools\caustica-debug-bridge.ps1 first."
+    }
+}
+
 Push-Location $repo
 try {
     & $gradle @tasks '--console=plain'
@@ -93,17 +102,22 @@ try {
     }
 
     if ($Mode -eq 'Deploy') {
-        $live = Get-LiveMinecraftProcess
-        if ($live) {
-            throw "Refusing to replace a JAR under live Minecraft PID $($live.ProcessId). Shut it down through tools\caustica-debug-bridge.ps1 first."
-        }
         $mods = Split-Path -Parent $deployedJar
         if (-not (Test-Path -LiteralPath $mods -PathType Container)) {
             throw "Prism mods directory is missing: $mods"
         }
         $temporary = "$deployedJar.tmp"
-        Copy-Item -LiteralPath $builtJar -Destination $temporary -Force
-        Move-Item -LiteralPath $temporary -Destination $deployedJar -Force
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        try {
+            Copy-Item -LiteralPath $builtJar -Destination $temporary
+            if (Test-Path -LiteralPath $deployedJar -PathType Leaf) {
+                [System.IO.File]::Replace($temporary, $deployedJar, $null, $true)
+            } else {
+                Move-Item -LiteralPath $temporary -Destination $deployedJar
+            }
+        } finally {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
         $deployedHash = (Get-FileHash -LiteralPath $deployedJar -Algorithm SHA256).Hash
         if ($deployedHash -ne $builtHash) {
             throw "Deployment hash mismatch: built=$builtHash deployed=$deployedHash"
