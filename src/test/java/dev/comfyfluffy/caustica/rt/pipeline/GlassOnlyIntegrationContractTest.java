@@ -27,15 +27,24 @@ final class GlassOnlyIntegrationContractTest {
     void glassIsCompactAndWaterKeepsTheCoreTransport() throws IOException {
         String raygen = source("shaders/world/world.rgen.slang");
         String closestHit = source("shaders/world/world.rchit.slang");
+        String common = source("shaders/world/world_common.slang");
+        String registry = source("src/main/java/dev/comfyfluffy/caustica/rt/material/RtMaterialRegistry.java");
 
         assertTrue(raygen.contains("F = 2.0 * F / (1.0 + F)"));
         assertTrue(raygen.contains("float3 transmittedDir = thinPane ? rd : refract"));
+        assertTrue(raygen.contains("float3 interfaceNormal = normalize(geometricNormal)"));
+        assertTrue(raygen.contains("refract(rd, interfaceNormal, etaI / etaT)"));
+        assertTrue(raygen.contains("reflect(rd, interfaceNormal)"));
+        assertTrue(raygen.contains("crossGlassExit ? normalize(payload.geometricNormal) : payload.normal"));
         assertTrue(raygen.contains("bool inWater = (pc.flags & 1u) != 0u;"));
         assertTrue(raygen.contains("throughput *= exp(-waterExt * payload.hitT);"));
         assertTrue(raygen.contains("waterExt = waterExtinction(surfaceWaterTint);"));
         assertTrue(raygen.contains("inWater = surfaceWaterEntering;"));
         assertTrue(closestHit.contains("materialHeader.model == MATERIAL_WATER"));
         assertTrue(closestHit.contains("(pr.aux0 & 0xfu) << PAYLOAD_OPTICAL_CLASS_SHIFT"));
+        assertEquals(2, occurrences(closestHit, "payload.flags |= PAYLOAD_INTERFACE_ENTERING"));
+        assertTrue(common.contains("PRIM_FIRST_PERSON_THIN_GLASS = 1u << 1u"));
+        assertFalse(registry.contains("normalizeForTransport"));
 
         assertFalse(raygen.contains("MAX_MEDIUM_DEPTH"));
         assertFalse(raygen.contains("pathMedia"));
@@ -67,6 +76,19 @@ final class GlassOnlyIntegrationContractTest {
         assertEquals(2, occurrences(raygen, "opticalGuideHit(")); // definition plus one shared call site
         assertFalse(raygen.contains("world_dlssd_guides"));
         assertFalse(closestHit.contains("PAYLOAD_SHADOW_QUERY"));
+    }
+
+    @Test
+    void onlyFirstPersonHeldTranslucentItemsUsePresentationGlass() throws IOException {
+        String capture = source("src/main/java/dev/comfyfluffy/caustica/rt/entity/RtEntityCapture.java");
+        String collector = source("src/main/java/dev/comfyfluffy/caustica/rt/entity/RtEntityCollector.java");
+        String closestHit = source("shaders/world/world.rchit.slang");
+
+        assertTrue(capture.contains("PRIM_FIRST_PERSON_THIN_GLASS = 1 << 1"));
+        assertTrue(capture.contains("prim.add(Float.intBitsToFloat(currentPrimFlags))"));
+        assertTrue(collector.contains("firstPersonHeldItem = captureMode == CaptureMode.FIRST_PERSON_BODY"));
+        assertTrue(collector.contains("firstPersonHeldItem && transmissive"));
+        assertTrue(closestHit.contains("(pr.flags & PRIM_FIRST_PERSON_THIN_GLASS) != 0u ? 2u : 3u"));
     }
 
     @Test

@@ -3,7 +3,6 @@ package dev.comfyfluffy.caustica.rt.material;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class RtMaterialDescTest {
@@ -30,7 +29,7 @@ final class RtMaterialDescTest {
     }
 
     @Test
-    void glassDropsOnlyNormalMappingAtTheTransportBoundary() {
+    void glassRetainsAllAuthoredShadingFeatures() {
         int authoredFeatures = RtMaterialRegistry.FEATURE_SPEC
                 | RtMaterialRegistry.FEATURE_NORMAL
                 | RtMaterialRegistry.FEATURE_OVERRIDE_EMISSION;
@@ -39,23 +38,12 @@ final class RtMaterialDescTest {
                 0.12f, 0.0f, 1.52f, 0.85f, RtMaterialDesc.EmissionSource.OVERRIDE,
                 1.5f, new RtMaterialDesc.EmissionSummary(0.2f, 0.3f, 0.4f, 0.25f, 0.5f));
 
-        RtMaterialDesc normalized = RtMaterialRegistry.normalizeForTransport(glass);
-
-        assertEquals(authoredFeatures & ~RtMaterialRegistry.FEATURE_NORMAL, normalized.features());
-        assertEquals(glass.model(), normalized.model());
-        assertEquals(glass.source(), normalized.source());
-        assertEquals(glass.roughness(), normalized.roughness());
-        assertEquals(glass.metalness(), normalized.metalness());
-        assertEquals(glass.ior(), normalized.ior());
-        assertEquals(glass.transmission(), normalized.transmission());
-        assertEquals(glass.emissionSource(), normalized.emissionSource());
-        assertEquals(glass.emissionStrength(), normalized.emissionStrength());
-        assertEquals(glass.emissionSummary(), normalized.emissionSummary());
-
-        RtMaterialDesc opaque = new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE,
-                RtMaterialDesc.Source.LAB_PBR, authoredFeatures,
-                0.5f, 0.1f, 1.0f, 0.0f, RtMaterialDesc.EmissionSource.LAB_PBR,
-                1.0f, RtMaterialDesc.EmissionSummary.NONE);
-        assertSame(opaque, RtMaterialRegistry.normalizeForTransport(opaque));
+        assertEquals(authoredFeatures, glass.features());
+        assertEquals(RtMaterialRegistry.MODEL_GLASS, glass.model());
+        assertEquals(RtMaterialDesc.Source.OVERRIDE, glass.source());
+        assertEquals(0.12f, glass.roughness());
+        assertEquals(1.52f, glass.ior());
+        assertEquals(0.85f, glass.transmission());
+        assertEquals(RtMaterialDesc.EmissionSource.OVERRIDE, glass.emissionSource());
     }
 }

@@ -119,8 +119,8 @@ public struct Payload {
 };
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
-// Set by world.rchit on a MATERIAL_WATER hit: true when the incoming ray travels against the prim's
-// outward face normal (entering the water volume), false when it exits (water -> air). Bit 2
+// Set by world.rchit on a dielectric hit: true when the incoming ray travels against the prim's
+// outward face normal (entering the water/glass volume), false when it exits. Bit 2
 // (PAYLOAD_SHOW_CELESTIAL) is only meaningful on a miss and this bit only on a hit, so they never need
 // to be read together, but they get distinct bits anyway to keep the two concerns unambiguous.
 public static const uint PAYLOAD_WATER_ENTERING = 8u;
@@ -158,6 +158,11 @@ public struct Prim {
     public uint aux0;
     public uint aux1;
 };
+
+// Entity-only primitive semantic. A translucent baked item captured as part of the directly visible
+// first-person body is an optical presentation surface, not a macroscopic closed glass volume.
+// Terrain currently uses bit 0 for torch-emitter ownership, so keep this on a separate bit.
+public static const uint PRIM_FIRST_PERSON_THIN_GLASS = 1u << 1u;
 
 // Terrain per-triangle record (48 B). The final 16-byte lane contains integer geometry-local metadata;
 // shared surface parameters live once in MaterialHeader instead of being copied into every triangle.

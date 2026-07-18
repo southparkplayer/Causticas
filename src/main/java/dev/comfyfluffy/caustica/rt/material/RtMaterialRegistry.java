@@ -214,7 +214,6 @@ public final class RtMaterialRegistry {
                 entityMatchedOverrides.add(rule);
                 break;
             }
-            desc = normalizeForTransport(desc);
             int id = headers.size();
             add(headers, descriptions, desc, transparentWhiteAverage(), entry);
             nextEntityTextureIds.put(name, id);
@@ -455,33 +454,14 @@ public final class RtMaterialRegistry {
 
     private static void add(List<MaterialHeaderData> headers, List<RtMaterialDesc> descriptions,
                             RtMaterialDesc desc, float[] average, RtBlockMaterials.Entry entry) {
-        desc = normalizeForTransport(desc);
         headers.add(header(desc, average, entry, entry.albedoU(), entry.albedoV(),
                 entry.albedoInvDu(), entry.albedoInvDv()));
         descriptions.add(desc);
     }
 
-    /**
-     * Normal maps describe small-scale shading detail, not the macroscopic boundary used by Snell
-     * transport. Letting a glass descriptor retain FEATURE_NORMAL makes every authored bevel or scratch
-     * steer the continuation ray as if the whole block face were curved. Keep the specular channels and
-     * all physical parameters, but restore the pre-registry invariant that glass interfaces stay planar.
-     */
-    static RtMaterialDesc normalizeForTransport(RtMaterialDesc desc) {
-        if (desc.model() != MODEL_GLASS || (desc.features() & FEATURE_NORMAL) == 0) {
-            return desc;
-        }
-        return new RtMaterialDesc(desc.model(), desc.source(), desc.features() & ~FEATURE_NORMAL,
-                desc.roughness(), desc.metalness(), desc.ior(), desc.transmission(),
-                desc.emissionSource(), desc.emissionStrength(), desc.emissionSummary());
-    }
-
     private static MaterialHeaderData header(RtMaterialDesc desc, float[] average,
                                              RtBlockMaterials.Entry entry, float albedoU, float albedoV,
                                              float albedoInvDu, float albedoInvDv) {
-        // Dynamic entity-atlas records bypass add(), so enforce the transport invariant at the final ABI
-        // boundary too. This also covers any future descriptor construction path.
-        desc = normalizeForTransport(desc);
         int packedFeatures = desc.features() | (entry.maxLod() << MAX_LOD_SHIFT);
         if ((desc.features() & FEATURE_OVERRIDE_EMISSION) != 0) {
             int strength = Math.round(Math.min(MAX_OVERRIDE_EMISSION_STRENGTH, desc.emissionStrength())

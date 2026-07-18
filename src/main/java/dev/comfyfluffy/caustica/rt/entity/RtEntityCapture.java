@@ -21,6 +21,7 @@ import org.joml.Vector3fc;
  */
 public final class RtEntityCapture implements VertexConsumer {
     private static final int DEFAULT_VERTEX_CAPACITY = 1024;
+    static final int PRIM_FIRST_PERSON_THIN_GLASS = 1 << 1;
     // Same magnitude as RtTerrain.QuadCapture.OFFSET (2e-4 blocks) — proven large enough to break a BVH
     // depth tie without a visible gap at terrain/entity scale.
     private static final float ORDER_OFFSET = 2.0e-4f;
@@ -47,6 +48,9 @@ public final class RtEntityCapture implements VertexConsumer {
     // Conservative default: unknown submissions retain alpha testing instead of incorrectly becoming
     // opaque. RtEntityCollector assigns this from the RenderPipeline before every known submission.
     int currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+    // Entity Prim.flags written for the current submission. Used only to distinguish directly visible
+    // first-person translucent held items from physical world/dropped-item glass volumes.
+    int currentPrimFlags;
     // Decal-stacking rank for the current submission (0 = no offset). Set by the collector from
     // SubmitNodeCollector#order(int) — see emitQuad's coincident-layer push.
     int currentOrder;
@@ -83,6 +87,7 @@ public final class RtEntityCapture implements VertexConsumer {
         currentTexSlot = 0;
         currentMaterialId = 0;
         currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+        currentPrimFlags = 0;
         currentOrder = 0;
         uvRemap = false;
     }
@@ -136,6 +141,7 @@ public final class RtEntityCapture implements VertexConsumer {
         target.currentTexSlot = currentTexSlot;
         target.currentMaterialId = currentMaterialId;
         target.currentAlphaBucket = currentAlphaBucket;
+        target.currentPrimFlags = currentPrimFlags;
         target.currentOrder = currentOrder;
         target.uvRemap = uvRemap;
         target.uvU0 = uvU0;
@@ -400,7 +406,7 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add(tb);
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
             prim.add(Float.intBitsToFloat(currentMaterialId));
-            prim.add(0f); // flags
+            prim.add(Float.intBitsToFloat(currentPrimFlags));
             prim.add(0f); // aux0
             prim.add(0f); // aux1
             alphaBuckets.add(currentAlphaBucket);

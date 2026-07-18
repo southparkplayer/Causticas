@@ -97,6 +97,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     private RtEntityCapture capture;
     private boolean profileDynamicEntity;
     private CaptureMode captureMode = CaptureMode.FULL;
+    // True only while submitItem emits the non-head item layer of a directly visible first-person body.
+    // Per-quad material classification still decides whether the presentation flag is written.
+    private boolean firstPersonHeldItem;
     private final RtEntityCapture parityCapture = new RtEntityCapture();
     private final RtCuboidEmitter cuboidEmitter = new RtCuboidEmitter();
     // Lazy FRAPI emitter used for contained and moving block models. Its callback reads the synchronous
@@ -403,6 +406,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         // instead of the opaque DEFAULT variant. No BlockState reaches submitItem, so the layer is the
         // authoritative semantic available here; glass-model roughness/IOR are profile-independent.
         boolean transmissive = q.materialInfo().layer() == ChunkSectionLayer.TRANSLUCENT;
+        capture.currentPrimFlags = firstPersonHeldItem && transmissive
+                ? RtEntityCapture.PRIM_FIRST_PERSON_THIN_GLASS : 0;
         capture.currentAlphaBucket = alphaBucket(q.materialInfo().layer(), false);
         setSpriteMaterial(sprite, transmissive ? RtMaterials.Profile.GLASS : RtMaterials.Profile.DEFAULT,
                 transmissive, false);
@@ -843,8 +848,16 @@ public final class RtEntityCollector implements SubmitNodeCollector {
                 || captureMode == CaptureMode.FIRST_PERSON_BODY && headItem) {
             return;
         }
-        addQuads(poseStack.last().pose(), quads, tintLayers);
-        addMeshQuads(poseStack, mesh, tintLayers, true);
+        boolean previousHeldItem = firstPersonHeldItem;
+        int previousPrimFlags = capture.currentPrimFlags;
+        firstPersonHeldItem = captureMode == CaptureMode.FIRST_PERSON_BODY;
+        try {
+            addQuads(poseStack.last().pose(), quads, tintLayers);
+            addMeshQuads(poseStack, mesh, tintLayers, true);
+        } finally {
+            firstPersonHeldItem = previousHeldItem;
+            capture.currentPrimFlags = previousPrimFlags;
+        }
     }
 
     /** Capture a Fabric Renderer API mesh; each quad already carries final atlas UVs. */
@@ -874,6 +887,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         // Chunk-layer translucency denotes a block-derived dielectric; a blended item render type denotes
         // ordinary stochastic alpha when the quad did not come from such a layer.
         boolean transmissive = quad.chunkLayer() == ChunkSectionLayer.TRANSLUCENT;
+        capture.currentPrimFlags = firstPersonHeldItem && transmissive
+                ? RtEntityCapture.PRIM_FIRST_PERSON_THIN_GLASS : 0;
         boolean stochasticAlpha = itemMesh && !transmissive && quad.itemRenderType() != null
                 && quad.itemRenderType().hasBlending();
         capture.currentAlphaBucket = alphaBucket(quad.chunkLayer(), stochasticAlpha);
@@ -938,7 +953,15 @@ public final class RtEntityCollector implements SubmitNodeCollector {
                 || captureMode == CaptureMode.FIRST_PERSON_BODY && headItem) {
             return;
         }
-        addQuads(poseStack.last().pose(), quads, tintLayers);
+        boolean previousHeldItem = firstPersonHeldItem;
+        int previousPrimFlags = capture.currentPrimFlags;
+        firstPersonHeldItem = captureMode == CaptureMode.FIRST_PERSON_BODY;
+        try {
+            addQuads(poseStack.last().pose(), quads, tintLayers);
+        } finally {
+            firstPersonHeldItem = previousHeldItem;
+            capture.currentPrimFlags = previousPrimFlags;
+        }
     }
 
     @Override

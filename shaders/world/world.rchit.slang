@@ -326,7 +326,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                 emission, sss, header.params.z, header.params.w,
                 materialEmissionSource(header, emission));
         if (material == MATERIAL_GLASS) {
-            payload.flags |= (3u << PAYLOAD_OPTICAL_CLASS_SHIFT);
+            uint opticalClass = (pr.flags & PRIM_FIRST_PERSON_THIN_GLASS) != 0u ? 2u : 3u;
+            payload.flags |= (opticalClass << PAYLOAD_OPTICAL_CLASS_SHIFT);
+            if (entering) {
+                payload.flags |= PAYLOAD_INTERFACE_ENTERING;
+            }
         }
         if (material == MATERIAL_WATER && entering) {
             payload.flags |= PAYLOAD_WATER_ENTERING;
@@ -403,6 +407,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                 glassSurface.metalness, 0.0, 0.0, materialHeader.params.z,
                 materialHeader.params.w, EMISSION_SOURCE_NONE);
         payload.flags |= ((pr.aux0 & 0xfu) << PAYLOAD_OPTICAL_CLASS_SHIFT);
+        if (entering) {
+            payload.flags |= PAYLOAD_INTERFACE_ENTERING;
+        }
         return;
     }
 

@@ -1208,7 +1208,9 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         }
 
         float3 interfacePos = ro + direction * payload.hitT;
-        float3 interfaceNormal = payload.normal;
+        // Glass transport follows the macro triangle boundary. A LabPBR normal may shape the visible
+        // surface response, but must never bend the deterministic Snell continuation at the exit face.
+        float3 interfaceNormal = crossGlassExit ? normalize(payload.geometricNormal) : payload.normal;
         float eta = exitEta;
         if (crossGlassExit) {
             glassExitPending = false;
@@ -1403,12 +1405,13 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             float3 glassTint = payload.albedo;
             bool entering = payloadInterfaceEntering();
             bool thinPane = opticalClass == OPTICAL_THIN_GLASS;
+            float3 interfaceNormal = normalize(geometricNormal);
 
             // A pane model has an entry and exit shell. The entry is the effective sheet; a later exit is
             // crossed without a second tint/Fresnel event. Keep a primary exit for a camera starting inside.
             if (thinPane && !entering && segment > 0) {
                 ++opticalInterfaceDepth;
-                ro = hitPos - n * GLASS_TRANSMIT_BIAS;
+                ro = hitPos - interfaceNormal * GLASS_TRANSMIT_BIAS;
                 continue;
             }
 
@@ -1416,13 +1419,13 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             float outsideIor = inWater ? WATER_IOR : 1.0;
             float etaI = thinPane ? outsideIor : (entering ? outsideIor : materialIor);
             float etaT = thinPane ? materialIor : (entering ? materialIor : outsideIor);
-            float cosI = clamp(dot(-rd, n), 0.0, 1.0);
+            float cosI = clamp(dot(-rd, interfaceNormal), 0.0, 1.0);
             float F = fresnelDielectric(cosI, etaI, etaT);
             if (thinPane) {
                 // Energy-conserving incoherent two-interface sheet: collapse the unseen back face.
                 F = 2.0 * F / (1.0 + F);
             }
-            float3 transmittedDir = thinPane ? rd : refract(rd, n, etaI / etaT);
+            float3 transmittedDir = thinPane ? rd : refract(rd, interfaceNormal, etaI / etaT);
             if (dot(transmittedDir, transmittedDir) <= 0.0) {
                 F = 1.0;
             } else {
@@ -1455,14 +1458,14 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 break;
             }
             if (rndf(sampler) < F) {
-                rd = reflect(rd, n);
+                rd = reflect(rd, interfaceNormal);
                 ro = offsetRayOrigin(hitPos, geometricNormal, rd);
             } else {
                 if (thinPane) {
                     throughput *= glassTint;
                 }
                 rd = transmittedDir;
-                ro = hitPos - n * GLASS_TRANSMIT_BIAS; // cross to the far side without overshooting a close neighbour
+                ro = hitPos - interfaceNormal * GLASS_TRANSMIT_BIAS; // cross to the far side without overshooting a close neighbour
             }
             ++opticalInterfaceDepth;
             showCelestial = true;                  // specular interface: the continuation ray may see the disc
