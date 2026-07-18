@@ -331,12 +331,10 @@ public final class RtDeviceBringup {
     }
 
     private static boolean ommRequested() {
-        // Terrain OMM is a transparent acceleration representation, not a visual-quality mode. Prefer it
-        // automatically whenever the driver exposes VK_EXT_opacity_micromap: the classifier preserves the
-        // authored alpha test and conservatively leaves uncertain micro-triangles on the any-hit path.
-        // Keeping this behind a persisted scene setting made identical builds silently fall back to the
-        // divergent foliage shader, which is exactly the workload OMM exists to remove.
-        return true;
+        // OMM is an optional acceleration representation with a complete any-hit fallback. Keep the
+        // persisted device-creation gate authoritative so a faulting driver/workload can disable the
+        // extension before Vulkan device creation rather than merely skipping its later classifier.
+        return CausticaConfig.Rt.Omm.ENABLED.value();
     }
 
     /** Query the raw {@code VkPhysicalDeviceFeatures} for {@code wideLines} support — no wrapper on
