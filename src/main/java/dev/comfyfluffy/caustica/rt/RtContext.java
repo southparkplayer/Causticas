@@ -66,9 +66,10 @@ public final class RtContext {
         this.vk = device.vkDevice();
         this.vma = vma;
         this.graphicsQueue = device.graphicsQueue();
-        this.computeQueue = RtDeviceBringup.computeQueueReserved()
-                ? new VulkanQueue(device, RtDeviceBringup.computeQueueFamilyIndex(), RtDeviceBringup.computeQueueIndex())
-                : device.computeQueue();
+        // Use Blaze3D's initialized compute queue wrapper. RtGpuExecutor serializes submissions with the
+        // device queue host lock; the separately reserved raw queue has produced repeatable AS-build device
+        // faults on the current NVIDIA driver despite valid command pools and build inputs.
+        this.computeQueue = device.computeQueue();
         this.shaderGroupHandleSize = handleSize;
         this.shaderGroupBaseAlignment = baseAlign;
         this.accelerationStructureScratchAlignment = scratchAlign;
