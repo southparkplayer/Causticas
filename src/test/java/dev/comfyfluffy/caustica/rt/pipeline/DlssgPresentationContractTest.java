@@ -46,6 +46,14 @@ class DlssgPresentationContractTest {
     }
 
     @Test
+    void queuePolicyOverrideIsConfigurableForMeasuredDiagnostics() throws Exception {
+        String config = source("src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java");
+        String fg = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtDlssFg.java");
+        assertTrue(config.contains("case \"safe\", \"no-client-queues\""));
+        assertTrue(fg.contains("CausticaConfig.Rt.Fg.QUEUE_PARALLELISM.value()"));
+    }
+
+    @Test
     void reportKeepsApplicationAndProxyCountsDistinct() throws Exception {
         String report = source("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/StreamlineAcceptanceReport.java");
         assertTrue(report.contains("\\\"applicationImageCount\\\""));

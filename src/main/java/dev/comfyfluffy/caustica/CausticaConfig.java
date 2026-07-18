@@ -915,7 +915,10 @@ public final class CausticaConfig {
                     "caustica.rt.fg.showOnlyInterpolated", "frame-generation.show-only-interpolated", false);
             public static final StringSetting QUEUE_PARALLELISM = string(
                     "caustica.rt.fg.queueParallelism", "frame-generation.queue-parallelism", "auto",
-                    value -> "auto");
+                    value -> switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+                        case "safe", "no-client-queues" -> value.trim().toLowerCase(java.util.Locale.ROOT);
+                        default -> "auto";
+                    });
 
             private Fg() {
             }
