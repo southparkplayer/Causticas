@@ -67,6 +67,9 @@ public final class RtEntityCapture implements VertexConsumer {
     private final float[] qnx = new float[4], qny = new float[4], qnz = new float[4];
     private final int[] qcol = new int[4];
     private final Vector3f scratch = new Vector3f(); // baked-quad position transform scratch
+    private boolean colorCacheValid;
+    private int cachedColor;
+    private float cachedTr, cachedTg, cachedTb;
 
     /** Clear all accumulators for a fresh entity capture. */
     public void reset() {
@@ -90,6 +93,7 @@ public final class RtEntityCapture implements VertexConsumer {
         currentPrimFlags = 0;
         currentOrder = 0;
         uvRemap = false;
+        colorCacheValid = false;
     }
 
     private void ensureVertexCapacity(int vertexCount) {
@@ -392,10 +396,23 @@ public final class RtEntityCapture implements VertexConsumer {
         idx.add(base + 2);
         idx.add(base + 3);
         // Vertex colour as a flat per-prim tint (ARGB → rgb). White (-1) for most models → grey when lit.
-        int c = color;
-        float tr = ((c >> 16) & 0xFF) * (1f / 255f);
-        float tg = ((c >> 8) & 0xFF) * (1f / 255f);
-        float tb = (c & 0xFF) * (1f / 255f);
+        float tr;
+        float tg;
+        float tb;
+        if (colorCacheValid && cachedColor == color) {
+            tr = cachedTr;
+            tg = cachedTg;
+            tb = cachedTb;
+        } else {
+            tr = ((color >> 16) & 0xFF) * (1f / 255f);
+            tg = ((color >> 8) & 0xFF) * (1f / 255f);
+            tb = (color & 0xFF) * (1f / 255f);
+            colorCacheValid = true;
+            cachedColor = color;
+            cachedTr = tr;
+            cachedTg = tg;
+            cachedTb = tb;
+        }
         for (int t = 0; t < 2; t++) { // one {normal+emission, tint, mat} record per triangle
             prim.add(nx);
             prim.add(ny);
