@@ -110,13 +110,17 @@ public final class RtGpuExecutor {
         if (waitValue != 0L) {
             encoder.waitSemaphore(buildTimeline, waitValue, TERRAIN_READ_STAGES);
         }
-        return nextGraphicsValue.incrementAndGet();
+        long graphicsValue = nextGraphicsValue.incrementAndGet();
+        // Publish the reservation before any terrain-referencing command is enqueued. Retirement must
+        // include a command buffer that has begun recording even though its completion signal is appended
+        // later, after the final overlay consumer.
+        latestGraphicsUseValue.accumulateAndGet(graphicsValue, Math::max);
+        return graphicsValue;
     }
 
     /** Signal completion after the final terrain/TLAS consumer and commit the value for retirement. */
     public void endGraphicsTerrainUse(VulkanCommandEncoder encoder, long graphicsValue) {
         encoder.signalSemaphore(graphicsTimeline, graphicsValue, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR);
-        latestGraphicsUseValue.accumulateAndGet(graphicsValue, Math::max);
         if (hasPendingDestroys()) {
             jobs.offer(WAKE);
         }
@@ -124,6 +128,14 @@ public final class RtGpuExecutor {
 
     public long completedGraphicsValue() {
         return queryTimeline(graphicsTimeline);
+    }
+
+    /** Wait for a graphics-use reservation before reusing completion-owned frame resources. */
+    public void waitForGraphicsValue(long graphicsValue) {
+        checkExecutorFailure();
+        if (graphicsValue != 0L) {
+            waitTimeline(graphicsTimeline, graphicsValue);
+        }
     }
 
     /** Latest recorded graphics submission that can reference the currently published terrain state. */

@@ -1471,6 +1471,9 @@ public final class RtComposite {
     private void recordFrame(RtContext ctx, RtPipeline active, GpuTexture nativeColor) {
         long dstImage = vkImage(nativeColor);
         var encoder = (VulkanCommandEncoder) ((CommandEncoderAccessor) RenderSystem.getDevice().createCommandEncoder()).caustica$getBackend();
+        RtGpuExecutor gpuExecutor = ctx.gpuExecutor();
+        long graphicsUse = gpuExecutor.beginGraphicsTerrainUse(encoder);
+        pendingTerrainGraphicsUse = graphicsUse;
         VkCommandBuffer cmd = encoder.allocateAndBeginTransientCommandBuffer();
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_COMMAND_BUFFER, cmd.address(), "composite command buffer");
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
@@ -1730,9 +1733,11 @@ public final class RtComposite {
             RtAccel.PreparedTlas frameTlas = offlineGroundTruth ? offlineTlas : null;
             if (frameTlas == null) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
-                    frameTlas = RtAccel.prepareTlas(ctx, fe.baseInstances(), fe.dynamicInstances(), tlasRing);
+                    frameTlas = RtAccel.prepareTlas(ctx, fe.baseInstances(), fe.dynamicInstances(), tlasRing,
+                            graphicsUse);
                 }
             }
+            RtAccel.markTlasUsed(frameTlas, graphicsUse);
             for (RtPipeline pipeline : worldPipelines()) if (pipeline != null) pipeline.setTlas(frameTlas.accel.handle);
             currentTlasHandle = frameTlas.accel.handle;
             if (offlineGroundTruth) {
@@ -1924,10 +1929,7 @@ public final class RtComposite {
         if (VK10.vkEndCommandBuffer(cmd) != VK10.VK_SUCCESS) {
             throw new IllegalStateException("vkEndCommandBuffer(rt composite) failed");
         }
-        RtGpuExecutor gpuExecutor = ctx.gpuExecutor();
-        long graphicsUse = gpuExecutor.beginGraphicsTerrainUse(encoder);
         encoder.execute(cmd); // deferred into the frame's submission — correct for per-frame work
-        pendingTerrainGraphicsUse = graphicsUse;
     }
 
     private void clearOfflineAccumulation(VkCommandBuffer cmd, MemoryStack stack) {
