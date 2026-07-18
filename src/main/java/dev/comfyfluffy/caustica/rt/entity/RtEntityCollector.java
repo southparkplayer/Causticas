@@ -22,7 +22,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.font.TextRenderable;
 import net.minecraft.client.model.Model;
+import net.minecraft.client.model.HumanoidModel;
 import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.model.object.skull.SkullModelBase;
+import net.minecraft.client.model.player.PlayerCapeModel;
+import net.minecraft.client.model.player.PlayerEarsModel;
+import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.renderer.OrderedSubmitNodeCollector;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.color.block.BlockTintSource;
@@ -75,6 +80,12 @@ import java.util.function.Predicate;
  * EntityRenderDispatcher.submit} fans out into {@code submitModel} here. Reused across entities.
  */
 public final class RtEntityCollector implements SubmitNodeCollector {
+    public enum CaptureMode {
+        FULL,
+        FIRST_PERSON_BODY,
+        FIRST_PERSON_HEAD
+    }
+
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final Predicate<Direction> NEVER_CULL = direction -> false;
     // Vanilla leash constants (LeashFeatureRenderer.LEASH_RENDER_STEPS / LEASH_WIDTH).
@@ -85,6 +96,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
 
     private RtEntityCapture capture;
     private boolean profileDynamicEntity;
+    private CaptureMode captureMode = CaptureMode.FULL;
     private final RtEntityCapture parityCapture = new RtEntityCapture();
     private final RtCuboidEmitter cuboidEmitter = new RtCuboidEmitter();
     // Lazy FRAPI emitter used for contained and moving block models. Its callback reads the synchronous
@@ -118,8 +130,13 @@ public final class RtEntityCollector implements SubmitNodeCollector {
      * call must NOT reset it — {@link RtEntities} reads {@link #outlineColor()} after that detach.
      */
     public void begin(RtEntityCapture capture, boolean profileDynamicEntity) {
+        begin(capture, profileDynamicEntity, CaptureMode.FULL);
+    }
+
+    public void begin(RtEntityCapture capture, boolean profileDynamicEntity, CaptureMode captureMode) {
         this.capture = capture;
         this.profileDynamicEntity = capture != null && profileDynamicEntity;
+        this.captureMode = capture != null ? captureMode : CaptureMode.FULL;
         if (capture != null) {
             this.outlineColor = 0;
             this.pendingOrder = 0;
@@ -142,6 +159,9 @@ public final class RtEntityCollector implements SubmitNodeCollector {
                                 int lightCoords, int overlayCoords, int tintedColor, TextureAtlasSprite sprite,
                                 int outlineColor, ModelFeatureRenderer.CrumblingOverlay crumblingOverlay) {
         if (capture == null) {
+            return;
+        }
+        if (!capturesModel(model)) {
             return;
         }
         if (outlineColor != 0) {
@@ -210,12 +230,15 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         int idxStart = capture.idx.size();
         int uvStart = capture.uvList.size();
         int primStart = capture.prim.size();
-        RtCuboidEmitter.ModelTemplate directTemplate = cuboidEmitter.prepare(model);
+        RtCuboidEmitter.ModelTemplate directTemplate = captureMode == CaptureMode.FULL
+                ? cuboidEmitter.prepare(model) : null;
         long directCubeCounts = 0L;
         long drawStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
         try {
             if (directTemplate != null) {
                 directCubeCounts = cuboidEmitter.emit(directTemplate, poseStack, capture, color);
+            } else if (captureMode != CaptureMode.FULL && model instanceof HumanoidModel<?> humanoid) {
+                renderFilteredHumanoid(model, humanoid, poseStack, capture, lightCoords, overlayCoords, color);
             } else {
                 model.renderToBuffer(poseStack, capture, lightCoords, overlayCoords, color);
             }
@@ -239,7 +262,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
             }
         }
 
-        if (CausticaConfig.Rt.Entities.CAPTURE_PARITY.value()) {
+        if (captureMode == CaptureMode.FULL && CausticaConfig.Rt.Entities.CAPTURE_PARITY.value()) {
             parityCapture.reset(addedVertices);
             capture.copySubmissionStateTo(parityCapture);
             long parityStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
@@ -254,6 +277,75 @@ public final class RtEntityCollector implements SubmitNodeCollector {
                 RtFrameStats.FRAME.endStage("entity.capture.submit.parity", parityStart);
             }
         }
+    }
+
+    private <S> void renderFilteredHumanoid(Model<? super S> model, HumanoidModel<?> humanoid,
+                                             PoseStack poseStack, RtEntityCapture target,
+                                             int lightCoords, int overlayCoords, int color) {
+        boolean head = humanoid.head.visible;
+        boolean hat = humanoid.hat.visible;
+        boolean body = humanoid.body.visible;
+        boolean rightArm = humanoid.rightArm.visible;
+        boolean leftArm = humanoid.leftArm.visible;
+        boolean rightLeg = humanoid.rightLeg.visible;
+        boolean leftLeg = humanoid.leftLeg.visible;
+        PlayerModel player = humanoid instanceof PlayerModel playerModel ? playerModel : null;
+        boolean jacket = player != null && player.jacket.visible;
+        boolean rightSleeve = player != null && player.rightSleeve.visible;
+        boolean leftSleeve = player != null && player.leftSleeve.visible;
+        boolean rightPants = player != null && player.rightPants.visible;
+        boolean leftPants = player != null && player.leftPants.visible;
+        try {
+            if (captureMode == CaptureMode.FIRST_PERSON_BODY) {
+                humanoid.head.visible = false;
+                humanoid.hat.visible = false;
+            } else {
+                humanoid.body.visible = false;
+                humanoid.rightArm.visible = false;
+                humanoid.leftArm.visible = false;
+                humanoid.rightLeg.visible = false;
+                humanoid.leftLeg.visible = false;
+                if (player != null) {
+                    player.jacket.visible = false;
+                    player.rightSleeve.visible = false;
+                    player.leftSleeve.visible = false;
+                    player.rightPants.visible = false;
+                    player.leftPants.visible = false;
+                }
+            }
+            model.renderToBuffer(poseStack, target, lightCoords, overlayCoords, color);
+        } finally {
+            humanoid.head.visible = head;
+            humanoid.hat.visible = hat;
+            humanoid.body.visible = body;
+            humanoid.rightArm.visible = rightArm;
+            humanoid.leftArm.visible = leftArm;
+            humanoid.rightLeg.visible = rightLeg;
+            humanoid.leftLeg.visible = leftLeg;
+            if (player != null) {
+                player.jacket.visible = jacket;
+                player.rightSleeve.visible = rightSleeve;
+                player.leftSleeve.visible = leftSleeve;
+                player.rightPants.visible = rightPants;
+                player.leftPants.visible = leftPants;
+            }
+        }
+    }
+
+    private boolean capturesModel(Model<?> model) {
+        if (captureMode == CaptureMode.FULL) {
+            return true;
+        }
+        if (model instanceof PlayerEarsModel || model instanceof SkullModelBase) {
+            return captureMode == CaptureMode.FIRST_PERSON_HEAD;
+        }
+        if (model instanceof PlayerCapeModel) {
+            return captureMode == CaptureMode.FIRST_PERSON_BODY;
+        }
+        if (model instanceof HumanoidModel<?>) {
+            return true;
+        }
+        return captureMode == CaptureMode.FIRST_PERSON_BODY;
     }
 
     private static int countVisibleCuboids(ModelPart part) {
@@ -407,7 +499,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
 
     /** Re-mesh a contained block-model display through FRAPI so model wrappers remain effective. */
     public void captureBlockState(BlockState blockState, Matrix4fc transform, PoseStack poseStack) {
-        if (capture == null || blockState.isAir()) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD || blockState.isAir()) {
             return;
         }
         BlockStateModel model = Minecraft.getInstance().getModelManager().getBlockStateModelSet().get(blockState);
@@ -445,7 +537,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     @Override
     public void submitText(PoseStack poseStack, float x, float y, FormattedCharSequence string, boolean dropShadow,
                            Font.DisplayMode displayMode, int lightCoords, int color, int backgroundColor, int outlineColor) {
-        if (capture == null) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD) {
             return;
         }
         Matrix4f pose = poseStack.last().pose();
@@ -564,7 +656,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     // the white bindless slot with the leash colour as per-prim tint. Light coords are path-traced away.
     @Override
     public void submitLeash(PoseStack poseStack, EntityRenderState.LeashState leashState) {
-        if (capture == null) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD) {
             return;
         }
         capture.clearUvRemap();
@@ -639,7 +731,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     // emissive overlays, and custom model geometry survive outside the ordinary chunk renderer.
     @Override
     public void submitMovingBlock(PoseStack poseStack, MovingBlockRenderState state, int outlineColor) {
-        if (capture == null) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD) {
             return;
         }
         Minecraft mc = Minecraft.getInstance();
@@ -705,7 +797,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     @Override
     public void submitBlockModel(PoseStack poseStack, RenderType renderType, List<BlockStateModelPart> parts,
                                  int[] tintLayers, int lightCoords, int overlayCoords, int outlineColor) {
-        if (capture == null) {
+        if (capture == null || captureMode == CaptureMode.FIRST_PERSON_HEAD) {
             return;
         }
         Matrix4f pose = poseStack.last().pose();
@@ -745,7 +837,10 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords,
                            int overlayCoords, int outlineColor, int[] tintLayers, List<BakedQuad> quads,
                            MeshView mesh, ItemStackRenderState.FoilType foilType) {
-        if (capture == null) {
+        boolean headItem = displayContext == ItemDisplayContext.HEAD;
+        if (capture == null
+                || captureMode == CaptureMode.FIRST_PERSON_HEAD && !headItem
+                || captureMode == CaptureMode.FIRST_PERSON_BODY && headItem) {
             return;
         }
         addQuads(poseStack.last().pose(), quads, tintLayers);
@@ -837,7 +932,10 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     @Override
     public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords, int overlayCoords,
                            int outlineColor, int[] tintLayers, List<BakedQuad> quads, ItemStackRenderState.FoilType foilType) {
-        if (capture == null) {
+        boolean headItem = displayContext == ItemDisplayContext.HEAD;
+        if (capture == null
+                || captureMode == CaptureMode.FIRST_PERSON_HEAD && !headItem
+                || captureMode == CaptureMode.FIRST_PERSON_BODY && headItem) {
             return;
         }
         addQuads(poseStack.last().pose(), quads, tintLayers);

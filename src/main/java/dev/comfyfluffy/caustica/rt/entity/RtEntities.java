@@ -16,12 +16,14 @@ import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -42,6 +44,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -175,6 +178,9 @@ public final class RtEntities {
     // translate/yaw instance transform because their geometry is captured around the entity anchor.
     private static final float[] IDENTITY = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     private static final Motion NO_MOTION = new Motion(0L, 0f, 0f, 0f);
+    private static final int CAPTURE_FULL = 0;
+    private static final int CAPTURE_BODY = 1;
+    private static final int CAPTURE_HEAD = 2;
 
     // Reusable capture pipeline (single-threaded on the render thread).
     private final RtEntityCollector collector = new RtEntityCollector();
@@ -217,8 +223,11 @@ public final class RtEntities {
     // Previous frame's captured entity-local vertex positions + its interpolated world anchor, keyed by
     // entity id. Maps are swapped/reused each frame: entries not seen this frame fall out, while visible
     // entities keep their float[] backing to avoid steady-state allocation churn.
-    private Int2ObjectOpenHashMap<EntityPrev> prevVerts = new Int2ObjectOpenHashMap<>(entityMapCapacity());
-    private Int2ObjectOpenHashMap<EntityPrev> curVerts = new Int2ObjectOpenHashMap<>(entityMapCapacity());
+    private Long2ObjectOpenHashMap<EntityPrev> prevVerts = new Long2ObjectOpenHashMap<>(entityMapCapacity());
+    private Long2ObjectOpenHashMap<EntityPrev> curVerts = new Long2ObjectOpenHashMap<>(entityMapCapacity());
+    private IdentityHashMap<Entity, Long> prevEntityTokens = new IdentityHashMap<>();
+    private IdentityHashMap<Entity, Long> curEntityTokens = new IdentityHashMap<>();
+    private long nextEntityToken = 1L;
 
     // This frame's glowing entities (see GlowEntity) + the camera-relative offset (camera pos - rebase
     // origin) their positions are captured against, for RtGlowOutlineFeature's raster pass. Rebuilt every frame.
@@ -271,7 +280,7 @@ public final class RtEntities {
     private long retainedGeometryBytes;
 
     // Persistent per-entity acceleration structures, keyed by entity id, for refit.
-    private final Int2ObjectOpenHashMap<EntityAccel> entityAccels = new Int2ObjectOpenHashMap<>(entityMapCapacity());
+    private final Long2ObjectOpenHashMap<EntityAccel> entityAccels = new Long2ObjectOpenHashMap<>(entityMapCapacity());
 
     // Persistent per-block-entity geometry, keyed by BlockPos.asLong(). Built once and reused every frame.
     private final Map<Long, BeEntry> beCache = new HashMap<>();
@@ -632,11 +641,9 @@ public final class RtEntities {
     private void captureEntities(RtContext ctx, FrameBuild build, Minecraft mc, ClientLevel level, float partial, int rbx, int rby, int rbz) {
         EntityRenderDispatcher dispatcher = mc.getEntityRenderDispatcher();
         Entity cameraEntity = mc.getCameraEntity();
-        // In first person the camera owner's own body must not block the primary camera ray, but it should
-        // still appear in reflections / shadows / GI (so the player sees themselves in water as others would).
-        // In F5 third person it renders fully, like any other entity.
         boolean firstPerson = mc.options.getCameraType().isFirstPerson();
         curVerts.clear();
+        curEntityTokens.clear();
         glowBatches.clear();
         nameTagBatches.clear();
         boolean glow = glowEnabled();
@@ -655,12 +662,13 @@ public final class RtEntities {
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
             int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
+            long entityToken = entityToken(entity);
+            long key = captureKey(entityToken, CAPTURE_FULL);
+            EntityPrev prev = prevVerts.get(key);
+            capture.reset(prev != null ? prev.size / 3 : 0);
             float ix;
             float iy;
             float iz;
-            int id = entity.getId();
-            EntityPrev prev = prevVerts.get(id);
-            capture.reset(prev != null ? prev.size / 3 : 0);
             try {
                 EntityRenderState state;
                 long extractStart = RtFrameStats.FRAME.startStage();
@@ -685,7 +693,25 @@ public final class RtEntities {
                 if (nameTags && !firstPersonSelf && state.nameTag != null) {
                     captureNameTag(level, state, ix, iy, iz, rbx, rby, rbz);
                 }
-                collector.begin(capture, true);
+                if (RtFirstPersonPose.active(mc, entity) && state instanceof AvatarRenderState avatar) {
+                    if (build.logicalCount + 2 > maxEntities()) {
+                        RtFrameStats.FRAME.count("firstPersonPairDropped", 1);
+                        continue;
+                    }
+                    Vec3 offset = RtFirstPersonPose.offset((Player) entity, avatar, partial, cameraState.pos);
+                    float px = ix + (float) offset.x;
+                    float py = iy + (float) offset.y;
+                    float pz = iz + (float) offset.z;
+                    captureEntityPass(ctx, build, dispatcher, state, px, py, pz, rbx, rby, rbz,
+                            captureKey(entityToken, CAPTURE_BODY), MASK_PRIMARY | MASK_SECONDARY,
+                            RtEntityCollector.CaptureMode.FIRST_PERSON_BODY);
+                    captureEntityPass(ctx, build, dispatcher, state, px, py, pz, rbx, rby, rbz,
+                            captureKey(entityToken, CAPTURE_HEAD), MASK_SECONDARY,
+                            RtEntityCollector.CaptureMode.FIRST_PERSON_HEAD);
+                    capturedThisFrame++;
+                    continue;
+                }
+                collector.begin(capture, true, RtEntityCollector.CaptureMode.FULL);
                 resetPoseStack(entityPoseStack);
                 // Capture around the entity anchor. Per-frame placement moves into the TLAS instance,
                 // so ordinary world translation no longer changes the mesh or its float precision.
@@ -727,27 +753,77 @@ public final class RtEntities {
             } finally {
                 RtFrameStats.FRAME.endStage("entity.capture.motion", motionStart);
             }
-            curVerts.put(id, storeEntityPrev(prev, capture.verts, ix, iy, iz));
+            curVerts.put(key, storeEntityPrev(prev, capture.verts, ix, iy, iz));
             // Rigid reuse first: a pose that is a rigid transform of the entity's last-built mesh
             // re-references that AS through the instance transform — no upload, no refit.
             boolean reused;
             long reuseStart = RtFrameStats.FRAME.startStage();
             try {
-                reused = appendRigidReuse(ctx, build, motion, id, mask, ix - rbx, iy - rby, iz - rbz);
+                reused = appendRigidReuse(ctx, build, motion, key, mask, ix - rbx, iy - rby, iz - rbz);
             } finally {
                 RtFrameStats.FRAME.endStage("entity.capture.rigidReuse", reuseStart);
             }
             if (!reused) {
-                appendCapture(ctx, build, motion, id, ENTITY_BIT, mask,
+                appendCapture(ctx, build, motion, key, ENTITY_BIT, mask,
                         translationTransform(ix - rbx, iy - rby, iz - rbz));
             }
             build.logicalCount++;
             RtFrameStats.FRAME.count("entitiesCaptured", 1);
             capturedThisFrame++;
         }
-        Int2ObjectOpenHashMap<EntityPrev> oldPrev = prevVerts;
+        Long2ObjectOpenHashMap<EntityPrev> oldPrev = prevVerts;
         prevVerts = curVerts;
         curVerts = oldPrev;
+        IdentityHashMap<Entity, Long> oldTokens = prevEntityTokens;
+        prevEntityTokens = curEntityTokens;
+        curEntityTokens = oldTokens;
+        curEntityTokens.clear();
+    }
+
+    private void captureEntityPass(RtContext ctx, FrameBuild build, EntityRenderDispatcher dispatcher,
+                                   EntityRenderState state, float x, float y, float z,
+                                   int rbx, int rby, int rbz, long key, int mask,
+                                   RtEntityCollector.CaptureMode mode) {
+        EntityPrev prev = prevVerts.get(key);
+        capture.reset(prev != null ? prev.size / 3 : 0);
+        collector.begin(capture, true, mode);
+        resetPoseStack(entityPoseStack);
+        long submitStart = RtFrameStats.FRAME.startStage();
+        try {
+            dispatcher.submit(state, cameraState, 0.0, 0.0, 0.0, entityPoseStack, collector);
+        } finally {
+            RtFrameStats.FRAME.endStage("entity.capture.submit", submitStart);
+            collector.begin(null, false);
+            resetPoseStack(entityPoseStack);
+        }
+        if (capture.isEmpty()) {
+            return;
+        }
+        Motion motion = uploadVertexMotion(ctx, build, capture.verts, prev, x, y, z);
+        curVerts.put(key, storeEntityPrev(prev, capture.verts, x, y, z));
+        boolean reused = appendRigidReuse(ctx, build, motion, key, mask, x - rbx, y - rby, z - rbz);
+        if (!reused) {
+            appendCapture(ctx, build, motion, key, ENTITY_BIT, mask,
+                    translationTransform(x - rbx, y - rby, z - rbz));
+        }
+        build.logicalCount++;
+        RtFrameStats.FRAME.count("entitiesCaptured", 1);
+    }
+
+    private long entityToken(Entity entity) {
+        Long token = curEntityTokens.get(entity);
+        if (token == null) {
+            token = prevEntityTokens.get(entity);
+        }
+        if (token == null) {
+            token = nextEntityToken++;
+        }
+        curEntityTokens.put(entity, token);
+        return token;
+    }
+
+    private static long captureKey(long entityToken, int part) {
+        return (entityToken << 2) | (part & 3L);
     }
 
     private static void resetPoseStack(PoseStack poseStack) {
@@ -1301,7 +1377,7 @@ public final class RtEntities {
      * Returns false (caller takes the full path) when there is no reusable AS, the topology changed, the
      * pose is non-rigid (animation), or the shading data changed under identical topology.
      */
-    private boolean appendRigidReuse(RtContext ctx, FrameBuild build, Motion motion, int entityId, int mask,
+    private boolean appendRigidReuse(RtContext ctx, FrameBuild build, Motion motion, long entityId, int mask,
                                      float placeX, float placeY, float placeZ) {
         EntityAccel ea = entityAccels.get(entityId);
         if (ea == null || ea.refAccel == null
@@ -1458,13 +1534,13 @@ public final class RtEntities {
      * {@code entityId} ≥ 0 → refit path (persistent updatable AS keyed by id); {@code < 0} (refit disabled)
      * → transient one-shot full BUILD. Used by the animated-entity pass; block entities use {@link #buildBe}.
      */
-    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, int entityId, int instanceBit, int mask) {
+    private void appendCapture(RtContext ctx, FrameBuild build, float[] disp, long entityId, int instanceBit, int mask) {
         beginBuildIfNeeded(ctx, build);
         appendCapture(ctx, build, new Motion(uploadDisp(ctx, build, disp), 0f, 0f, 0f),
                 entityId, instanceBit, mask, IDENTITY);
     }
 
-    private void appendCapture(RtContext ctx, FrameBuild build, Motion motion, int entityId, int instanceBit, int mask,
+    private void appendCapture(RtContext ctx, FrameBuild build, Motion motion, long entityId, int instanceBit, int mask,
                                float[] instanceTransform) {
         beginBuildIfNeeded(ctx, build);
         if (entityId >= 0) {
@@ -1511,7 +1587,7 @@ public final class RtEntities {
     }
 
     /** Pack one changed entity's four logical geometry regions into its retired ring slot's backing. */
-    private void appendPackedEntity(RtContext ctx, FrameBuild build, Motion motion, int entityId,
+    private void appendPackedEntity(RtContext ctx, FrameBuild build, Motion motion, long entityId,
                                     int instanceBit, int mask, float[] instanceTransform) {
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -1665,7 +1741,7 @@ public final class RtEntities {
      * Select the next per-entity slot. One entity contributes at most one changed capture per frame, so a
      * wrapped slot is at least {@link #REFIT_RING} frames old and off all queues.
      */
-    private EntitySlot selectEntityBuildSlot(int entityId) {
+    private EntitySlot selectEntityBuildSlot(long entityId) {
         EntityAccel ea = entityAccels.get(entityId);
         if (ea == null) {
             ea = new EntityAccel();
