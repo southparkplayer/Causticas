@@ -132,6 +132,11 @@ same-frame hits during RT capture (about 128-135 fallbacks per frame), proving t
 states are available at this seam. Consuming the previous frame's state would add animation latency, so that
 visually lossy fallback was not attempted.
 
+An exact unit-normal branch in the entity quad sink was likewise removed. It skipped `sqrt(1)` and
+division by one for roughly 20% of model quads and passed strict capture parity, but an interleaved repeat
+did not reproduce the first small gain: normalized fallback cost measured 122.93 then 126.24 ns/quad,
+versus 125.27 ns/quad for the control. The result is noise-level and not an accepted optimization.
+
 ## 2026-07-17 additional 25% village pass
 
 The second optimization goal used the same SHaRC-off 3840x2160-output / 1920x1080-internal scene at
