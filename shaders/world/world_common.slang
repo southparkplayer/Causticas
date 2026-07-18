@@ -101,7 +101,7 @@ public struct WorldPush {
     [vk::offset(608)] public float4 skyLighting;
     [vk::offset(624)] public float4 borderFogColor;
     [vk::offset(640)] public float4 borderFogParams; // start distance, end distance, reserved, reserved
-    [vk::offset(656)] public float4 chunkFade; // clock seconds, vanilla fade duration, reserved, reserved
+    [vk::offset(656)] public float4 chunkFade; // current clock, duration, previous clock, reserved
     [vk::offset(672)] public float4 nrdSettings; // hit distance A/B/C, denoiser family (0 REBLUR, 1 RELAX)
 };
 
@@ -118,8 +118,13 @@ public struct Payload {
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
     public uint   rayCone;     // packHalf2x16(width, spread)
     public float3 geometricNormal;
-    public float chunkFade;
+    public float chunkFade; // CHUNK_FADE_STATE_* for the primary terrain hit
 };
+
+public static const float CHUNK_FADE_STATE_HIDDEN = 0.0;
+public static const float CHUNK_FADE_STATE_STABLE = 1.0;
+public static const float CHUNK_FADE_STATE_REVEALED = 2.0;
+public static const float CHUNK_FADE_STATE_SETTLED = 3.0;
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
 // Set by world.rchit on a dielectric hit: true when the incoming ray travels against the prim's

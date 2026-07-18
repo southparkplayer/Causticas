@@ -15,6 +15,7 @@ final class BorderFogContractTest {
         String common = read("shaders/world/world_common.slang");
         String skyLut = read("shaders/world/world_sky_lut.slang");
         String raygen = read("shaders/world/world.rgen.slang");
+        String closestHit = read("shaders/world/world.rchit.slang");
         String miss = read("shaders/world/world.rmiss.slang");
         String composite = read("src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java");
         String pipeline = read("src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtPipeline.java");
@@ -37,17 +38,23 @@ final class BorderFogContractTest {
         assertTrue(composite.contains("EnvironmentAttributes.FOG_COLOR"));
         assertTrue(composite.contains("mc.options.getEffectiveRenderDistance()"));
         assertTrue(composite.contains("(renderDistanceChunks - 3.5f) * 16.0f"));
-        assertTrue(raygen.contains("float chunkFadeThreshold = frac"));
-        assertFalse(raygen.contains("chunkFadeThreshold = frac(float(pc.frameIndex"));
-        assertTrue(raygen.contains("if (gv_primaryChunkFade <= chunkFadeThreshold)"));
+        assertFalse(raygen.contains("chunkFadeThreshold"));
+        assertTrue(raygen.contains("gv_primaryChunkFade == CHUNK_FADE_STATE_REVEALED"));
+        assertTrue(raygen.contains("gv_primaryChunkFade == CHUNK_FADE_STATE_HIDDEN"));
         assertTrue(raygen.contains("frameRadiance = atmosphericBoundaryFog(dir, pc)"));
         assertTrue(raygen.contains("gv_hitCamRel = dir * 1.0e6"));
         assertTrue(raygen.contains("gv_animatedGuide = 1.0"));
         assertTrue(raygen.contains("gv_albedo = SKY_DIFF_ALBEDO"));
         assertTrue(raygen.contains("gv_specAlb = SKY_SPEC_ALBEDO"));
         assertFalse(raygen.contains("lerp(atmosphericBoundaryFog(rd, pc), L, primaryChunkFade)"));
-        assertTrue(read("shaders/world/world.rchit.slang")
-                .contains("world.chunkFade.x - sec.publishedTime"));
+        assertTrue(closestHit.contains("float chunkRevealThreshold"));
+        assertTrue(closestHit.contains("ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent()"));
+        assertTrue(closestHit.contains("world.sampleSequenceAddr"));
+        assertTrue(closestHit.contains("world.chunkFade.x - sec.publishedTime"));
+        assertTrue(closestHit.contains("world.chunkFade.z"));
+        assertTrue(closestHit.contains("if (previousAge < fadeDuration)"));
+        assertTrue(closestHit.contains("CHUNK_FADE_STATE_REVEALED"));
+        assertTrue(composite.contains("previousChunkFadeClockSeconds"));
     }
 
     private static String read(String path) throws Exception {

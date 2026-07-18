@@ -346,7 +346,7 @@ void payloadSetTraceState(bool showCelestial, bool filterSky, bool primaryRay,
             | (filterSky ? PAYLOAD_FILTER_SKY : 0u)
             | (primaryRay ? PAYLOAD_PRIMARY_RAY : 0u);
     payload.rayCone = packHalf2(float2(rayConeWidth, rayConeSpread));
-    payload.chunkFade = 1.0;
+    payload.chunkFade = CHUNK_FADE_STATE_SETTLED;
 }
 
 static const float PI = 3.14159265359;
@@ -2799,18 +2799,13 @@ void main() {
     nrdSpecularRadiance /= float(pathCount);
 #endif
 
-    // A section arrival is a visibility transition, not a change in transported radiance. The former
-    // continuous fog blend made one DLSS-D pixel describe fog-colored radiance with terrain depth, normal,
-    // albedo and motion, which highlighted the entire arriving section. Use binary, stable coverage
-    // instead. A hidden cell becomes a complete atmosphere/sky pixel; a revealed cell remains a complete
-    // terrain pixel. Both states reject history until the section is fully resident.
-    // Stable screen-space coverage is monotonic for a stationary view. Deliberately omit frameIndex:
-    // rotating the threshold would sparkle and repeatedly invalidate reconstruction history.
-    float chunkFadeThreshold = frac(float(pix.x + pix.y * 3) * 0.61803398875);
-    if (gv_primaryChunkFade < 1.0) {
+    // Closest-hit classifies surface-anchored reveal coverage using the existing live blue-noise sequence.
+    // Only the one frame where a cell changes from fog to terrain rejects DLSS-D history; stable hidden and
+    // stable visible cells can accumulate normally.
+    if (gv_primaryChunkFade == CHUNK_FADE_STATE_REVEALED) {
         gv_animatedGuide = 1.0;
     }
-    if (gv_primaryChunkFade <= chunkFadeThreshold) {
+    if (gv_primaryChunkFade == CHUNK_FADE_STATE_HIDDEN) {
         frameRadiance = atmosphericBoundaryFog(dir, pc);
         gv_normal = float3(0.0, 0.0, 0.0);
         gv_albedo = SKY_DIFF_ALBEDO;

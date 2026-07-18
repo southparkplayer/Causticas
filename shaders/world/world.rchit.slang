@@ -41,6 +41,28 @@ static const float RAY_CONE_MIN_WIDTH = 1.0e-5;
 static const float RAY_CONE_MIN_TEXEL_FOOTPRINT = 1.0e-4;
 static const float RAY_CONE_MAX_LOD = 12.0;
 
+uint chunkRevealHash(int3 cell, uint instanceId, uint primitiveId) {
+    uint value = asuint(cell.x) * 0x8da6b343u
+            ^ asuint(cell.y) * 0xd8163841u
+            ^ asuint(cell.z) * 0xcb1ab31fu
+            ^ instanceId * 0x9e3779b9u
+            ^ primitiveId * 0x85ebca6bu;
+    value ^= value >> 16u;
+    value *= 0x21f0aaadu;
+    value ^= value >> 15u;
+    value *= 0xf35a2d97u;
+    return value ^ (value >> 15u);
+}
+
+float chunkRevealThreshold(WorldPush world, uint primitiveId) {
+    // Terrain instances translate but do not scale. Object space is section-local and therefore remains
+    // fixed across camera-driven TLAS rebases while the section's reveal is still in progress.
+    float3 hit = ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent();
+    uint sample = chunkRevealHash(int3(floor(hit * 8.0)), InstanceID(), primitiveId) & 4095u;
+    ConstPtr<uint> sequence = ConstPtr<uint>(world.sampleSequenceAddr);
+    return float(sequence[(sample << 3u) + 7u] >> 8u) * (1.0 / 16777216.0);
+}
+
 float2 texSizePx(Sampler2D t) {
     uint w, h;
     t.GetDimensions(w, h);
@@ -339,17 +361,32 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     }
 
     Section sec = ConstPtr<Section>(pc.tableAddr)[InstanceID()];
-    if ((payload.flags & PAYLOAD_PRIMARY_RAY) != 0u) {
-        WorldPush world = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-        float fadeDuration = world.chunkFade.y;
-        payload.chunkFade = fadeDuration <= 0.0 ? 1.0
-                : smoothstep(0.0, fadeDuration, max(world.chunkFade.x - sec.publishedTime, 0.0));
-    }
     // Any-hit/SBT opt: the section BLAS has one fixed geometry per material bucket (solid / cutout /
     // translucent / water). PrimitiveIndex() restarts at 0 per geometry, so re-add this geometry's
     // triangle base to land in the section's packed prim/uv arrays (concatenated in BUCKET order).
     // Water prims keep tint.w == 1, converted to the packed material enum below.
     uint pid = PrimitiveIndex() + sec.triBase[GeometryIndex()];
+    if ((payload.flags & PAYLOAD_PRIMARY_RAY) != 0u) {
+        WorldPush world = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+        float fadeDuration = world.chunkFade.y;
+        if (fadeDuration > 0.0 && (world.flags & (1u << 7u)) == 0u) {
+            float currentAge = max(world.chunkFade.x - sec.publishedTime, 0.0);
+            float previousAge = max(min(world.chunkFade.z, world.chunkFade.x) - sec.publishedTime, 0.0);
+            // Once the section was already settled last frame, retain the initialized settled state and
+            // avoid the sequence-buffer load and hash entirely on the permanent primary-hit hot path.
+            if (previousAge < fadeDuration) {
+                float currentProgress = smoothstep(0.0, fadeDuration, currentAge);
+                float previousProgress = smoothstep(0.0, fadeDuration, previousAge);
+                float threshold = chunkRevealThreshold(world, pid);
+                bool visible = currentProgress >= 1.0 || currentProgress > threshold;
+                bool previouslyVisible = previousProgress >= 1.0 || previousProgress > threshold;
+                payload.chunkFade = !visible ? CHUNK_FADE_STATE_HIDDEN
+                        : !previouslyVisible ? CHUNK_FADE_STATE_REVEALED
+                        : currentProgress < 1.0 ? CHUNK_FADE_STATE_STABLE
+                        : CHUNK_FADE_STATE_SETTLED;
+            }
+        }
+    }
     TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[pid];
     MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
     float3 n = normalize(pr.normal.xyz);

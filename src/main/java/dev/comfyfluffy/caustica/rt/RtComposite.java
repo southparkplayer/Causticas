@@ -331,6 +331,7 @@ public final class RtComposite {
     private final long waterWaveEpochNanos = System.nanoTime();
     private float previousWaterWaveTime;
     private boolean previousWaterWaveTimeValid;
+    private float previousChunkFadeClockSeconds = Float.NaN;
     // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
     // specular albedo, and reflection motion.
     private RtImage gNormal;
@@ -1923,6 +1924,9 @@ public final class RtComposite {
                 offlineSkyPush = null;
                 sky = liveSky;
             }
+            float chunkFadeClock = RtTerrain.fadeClockSeconds();
+            float previousChunkFadeClock = Float.isFinite(previousChunkFadeClockSeconds)
+                    ? previousChunkFadeClockSeconds : chunkFadeClock;
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1958,14 +1962,15 @@ public final class RtComposite {
                     sky.skyLighting(),
                     sky.borderFogColor(),
                     sky.borderFogParams(),
-                    new Float4(RtTerrain.fadeClockSeconds(),
+                    new Float4(chunkFadeClock,
                             Minecraft.getInstance().options.chunkSectionFadeInTime().get().floatValue(),
-                            0.0f, 0.0f),
+                            previousChunkFadeClock, 0.0f),
                     new Float4(CausticaConfig.Rt.Nrd.HIT_DISTANCE_A.value(),
                             CausticaConfig.Rt.Nrd.HIT_DISTANCE_B.value(),
                             CausticaConfig.Rt.Nrd.HIT_DISTANCE_C.value(),
                             "relax".equals(CausticaConfig.Rt.Nrd.DENOISER.get()) ? 1.0f : 0.0f)
             ).write(push);
+            previousChunkFadeClockSeconds = chunkFadeClock;
             if (skyViewPipeline != null && skyViewLut != null) {
                 if (!skyTransmittanceReady) {
                     skyViewPipeline.dispatchTransmittance(cmd,
