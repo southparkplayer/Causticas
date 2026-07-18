@@ -26,11 +26,11 @@ import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-/** Produces DLSSD disocclusion and current-color-bias masks from depth history and motion. */
+/** Produces DLSSD disocclusion and current-color-bias masks from depth and temporal-guide history. */
 public final class RtDlssdDisocclusionPipeline {
     private static final String SHADER = "/caustica/rt/dlssd_disocclusion.comp.spv";
     private static final int SET_COUNT = 2;
-    private static final int IMAGE_BINDINGS = 7;
+    private static final int IMAGE_BINDINGS = 9;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -111,7 +111,8 @@ public final class RtDlssdDisocclusionPipeline {
     }
 
     public void setImages(long depth, long motion, long historyA, long historyB,
-            long disocclusion, long biasCurrent, long animatedGuide) {
+            long disocclusion, long biasCurrent, long animatedGuide,
+            long temporalGuideHistoryA, long temporalGuideHistoryB) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer infos = VkDescriptorImageInfo.calloc(IMAGE_BINDINGS * SET_COUNT, stack);
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(IMAGE_BINDINGS * SET_COUNT, stack);
@@ -119,8 +120,10 @@ public final class RtDlssdDisocclusionPipeline {
             for (int parity = 0; parity < SET_COUNT; parity++) {
                 long previousHistory = parity == 0 ? historyA : historyB;
                 long currentHistory = parity == 0 ? historyB : historyA;
+                long previousTemporalGuide = parity == 0 ? temporalGuideHistoryA : temporalGuideHistoryB;
+                long currentTemporalGuide = parity == 0 ? temporalGuideHistoryB : temporalGuideHistoryA;
                 long[] images = {depth, motion, previousHistory, currentHistory, disocclusion, biasCurrent,
-                        animatedGuide};
+                        animatedGuide, previousTemporalGuide, currentTemporalGuide};
                 for (int binding = 0; binding < IMAGE_BINDINGS; binding++) {
                     infos.get(write).imageView(images[binding]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                     writes.get(write).sType$Default().dstSet(descriptorSets[parity]).dstBinding(binding)

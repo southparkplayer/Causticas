@@ -26,6 +26,7 @@ final class CausticaPersonalDefaultsTest {
     @Test
     void nvidiaSpecificDefaultsRemainVendorNeutral() {
         assertEquals(0, CausticaConfig.Rt.DlssRr.QUALITY.defaultValue());
+        assertFalse(CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.defaultValue());
         assertFalse(CausticaConfig.Rt.Fg.ENABLED.defaultValue());
         assertEquals("off", CausticaConfig.Rt.Fg.MODE.defaultValue());
         assertEquals(1, CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.defaultValue());

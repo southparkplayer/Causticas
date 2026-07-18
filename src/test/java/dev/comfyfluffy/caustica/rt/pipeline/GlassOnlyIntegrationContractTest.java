@@ -71,9 +71,12 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(raygen.contains("eta = entering ? (1.0 / WATER_IOR) : WATER_IOR"));
         assertTrue(raygen.contains("Crossing-budget exhaustion means no trustworthy diffuse destination"));
         assertTrue(raygen.contains("gv_hitCamRel = destinationHitCamRel"));
-        assertTrue(raygen.contains("if (!glassGuide)"));
-        assertTrue(raygen.contains("gv_normal = destinationNormal"));
-        assertTrue(raygen.contains("gv_rough = destinationRoughness"));
+        assertTrue(raygen.contains("if (glassGuide)"));
+        int destination = raygen.indexOf("if (destinationValid) {");
+        int failure = raygen.indexOf("} else {", destination);
+        String validPath = raygen.substring(destination, failure);
+        assertFalse(validPath.contains("gv_normal = destinationNormal"));
+        assertFalse(validPath.contains("gv_rough = destinationRoughness"));
         assertTrue(raygen.contains("gv_albedo = destinationDiffuseAlbedo"));
         assertTrue(raygen.contains("float3 specSurfaceCamRel = gv_hitCamRel"));
         assertTrue(raygen.contains("specSurfaceAlbedo, dir, jndc, size"));
@@ -84,7 +87,7 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(closestHit.contains("float3 albedo709 = texAlbedo * tintLinear"));
         assertTrue(closestHit.contains("payload.albedo = bt709ToBt2020(albedo709)"));
         assertFalse(closestHit.contains("payload.albedo = (pr.tint.w > 0.5) ? tint"));
-        assertEquals(2, occurrences(raygen, "opticalGuideHit(")); // definition plus one shared call site
+        assertEquals(3, occurrences(raygen, "opticalGuideHit(")); // definition, baseline call, HQ-only previous probe
         assertFalse(raygen.contains("world_dlssd_guides"));
         assertFalse(closestHit.contains("PAYLOAD_SHADOW_QUERY"));
     }

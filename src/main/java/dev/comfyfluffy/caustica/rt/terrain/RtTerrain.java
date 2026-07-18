@@ -173,6 +173,9 @@ public final class RtTerrain {
     // render-distance change, F3+A). Consumed in tick(), where the RT context is available.
     private volatile boolean fullClearRequested;
     private volatile boolean dirtyPending;
+    // Resource reloads replace the model/material epoch asynchronously. Quiescing drains the old epoch,
+    // while this gate prevents the next client tick or render frame from immediately starting it again.
+    private volatile boolean resourceReloadPaused;
     private boolean noWorldClearApplied;
     // Rebase origin (player block at the last TLAS rebuild) for the instance transforms + ray camOffset.
     public int blockX;
@@ -235,6 +238,7 @@ public final class RtTerrain {
 
     /** Per-tick residency update: window sync + dirty drain (plus the streaming fallback, see {@link #frame}). */
     public static void update(RtContext ctx) {
+        if (INSTANCE.resourceReloadPaused) return;
         INSTANCE.tick(ctx);
     }
 
@@ -243,11 +247,37 @@ public final class RtTerrain {
      * and dispatch immutable snapshots to workers, bounded by configured per-pass counts.
      */
     public static void frame(RtContext ctx) {
-        if (RtMaterialRegistry.INSTANCE.isReady()) INSTANCE.frameStream(ctx);
+        if (!INSTANCE.resourceReloadPaused && RtMaterialRegistry.INSTANCE.isReady()) INSTANCE.frameStream(ctx);
     }
 
     public static void shutdown(RtContext ctx) {
         INSTANCE.clear(ctx, true);
+        INSTANCE.resourceReloadPaused = false;
+    }
+
+    /**
+     * Stop and join every terrain worker/build before a resource reload destroys descriptor-owned images,
+     * SHARC buffers, or ray pipelines. A bare {@code vkDeviceWaitIdle} is not a submission barrier: the
+     * executor thread can submit immediately after it returns. The blocking clear advances the terrain
+     * epoch, joins CPU work, drains accepted compute jobs, waits the device, and frees the old residency;
+     * the same sections must be re-extracted for the new material atlas anyway.
+     */
+    public static void pauseForResourceReload() {
+        INSTANCE.resourceReloadPaused = true;
+    }
+
+    public static void quiesceForResourceReload(RtContext ctx) {
+        INSTANCE.resourceReloadPaused = true;
+        INSTANCE.clear(ctx, true);
+    }
+
+    /** Resume streaming only after the replacement material registry and atlas descriptors are bound. */
+    public static void resumeAfterResourceReload() {
+        INSTANCE.resourceReloadPaused = false;
+    }
+
+    static boolean isResourceReloadPaused() {
+        return INSTANCE.resourceReloadPaused;
     }
 
     /**

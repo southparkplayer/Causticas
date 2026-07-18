@@ -77,7 +77,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.FirstPerson.ENABLED,
             Rt.FirstPerson.DISABLE_VANILLA_MODEL, Rt.EntityTextures.MAX_TEXTURES,
-            Rt.DlssRr.ENABLED, Rt.DlssRr.DIFFUSE_PATH_GUIDE,
+            Rt.DlssRr.ENABLED, Rt.DlssRr.DIFFUSE_PATH_GUIDE, Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY,
             Rt.Fg.ENABLED, Rt.Fg.MODE, Rt.Fg.MULTI_FRAME_COUNT, Rt.Fg.DYNAMIC_TARGET_FPS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Sharc.ENABLED, Rt.Sharc.PRIMARY_DIFFUSE_REUSE, Rt.Sharc.CACHE_EXPONENT, Rt.Sharc.UPDATE_TILE_SIZE,
@@ -890,6 +890,9 @@ public final class CausticaConfig {
             public static final BooleanSetting ENABLED = bool("caustica.rt.dlssRr", "dlss-rr.enabled", true);
             public static final BooleanSetting DIFFUSE_PATH_GUIDE = bool(
                     "caustica.rt.dlssRr.diffusePathGuide", "dlss-rr.diffuse-path-guide", false);
+            public static final BooleanSetting HIGH_QUALITY_TRANSPARENCY = bool(
+                    "caustica.rt.dlssRr.highQualityTransparency",
+                    "dlss-rr.high-quality-transparency", false);
             public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 0);
             public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0);
 

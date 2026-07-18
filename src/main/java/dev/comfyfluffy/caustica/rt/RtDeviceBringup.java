@@ -147,7 +147,7 @@ public final class RtDeviceBringup {
     }
 
     public static String worldRaygenShader() {
-        return serBackend.worldRaygenShader;
+        return highQualityTransparencyShader(serBackend.worldRaygenShader);
     }
 
     public static String offlineWorldRaygenShader() {
@@ -155,17 +155,18 @@ public final class RtDeviceBringup {
     }
 
     public static String sharcQueryRaygenShader() {
-        return serBackend == SerBackend.NV ? "world_sharc_nv.rgen.spv" : "world_sharc.rgen.spv";
+        return highQualityTransparencyShader(
+                serBackend == SerBackend.NV ? "world_sharc_nv.rgen.spv" : "world_sharc.rgen.spv");
     }
 
     public static String sharcDiffuseQueryRaygenShader() {
-        return serBackend == SerBackend.NV ? "world_sharc_diffuse_nv.rgen.spv"
-                : "world_sharc_diffuse.rgen.spv";
+        return highQualityTransparencyShader(serBackend == SerBackend.NV ? "world_sharc_diffuse_nv.rgen.spv"
+                : "world_sharc_diffuse.rgen.spv");
     }
 
     public static String sharcPrimaryQueryRaygenShader() {
-        return serBackend == SerBackend.NV ? "world_sharc_primary_nv.rgen.spv"
-                : "world_sharc_primary.rgen.spv";
+        return highQualityTransparencyShader(serBackend == SerBackend.NV ? "world_sharc_primary_nv.rgen.spv"
+                : "world_sharc_primary.rgen.spv");
     }
 
     public static String sharcUpdateRaygenShader() {
@@ -173,12 +174,20 @@ public final class RtDeviceBringup {
     }
 
     public static String sharcDiagnosticQueryRaygenShader() {
-        return serBackend == SerBackend.NV ? "world_sharc_diagnostic_nv.rgen.spv" : "world_sharc_diagnostic.rgen.spv";
+        return highQualityTransparencyShader(serBackend == SerBackend.NV
+                ? "world_sharc_diagnostic_nv.rgen.spv" : "world_sharc_diagnostic.rgen.spv");
     }
 
     public static String sharcPrimaryDiagnosticQueryRaygenShader() {
-        return serBackend == SerBackend.NV ? "world_sharc_primary_diagnostic_nv.rgen.spv"
-                : "world_sharc_primary_diagnostic.rgen.spv";
+        return highQualityTransparencyShader(serBackend == SerBackend.NV
+                ? "world_sharc_primary_diagnostic_nv.rgen.spv" : "world_sharc_primary_diagnostic.rgen.spv");
+    }
+
+    private static String highQualityTransparencyShader(String shader) {
+        if (!CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.value()) return shader;
+        int suffix = shader.indexOf(".rgen.spv");
+        if (suffix < 0) throw new IllegalArgumentException("not a raygen shader: " + shader);
+        return shader.substring(0, suffix) + "_hq" + shader.substring(suffix);
     }
 
     public static String sharcDiagnosticUpdateRaygenShader() {

@@ -242,11 +242,17 @@ abstract class CompileShaders extends DefaultTask {
 				// Build both hit-object encodings from one source; RtDeviceBringup selects the supported backend.
 				// Live rendering omits invocation reordering. Offline is an independent throughput specialization.
 				compileOneSlang(src, spv, base == "world.rgen"
-						? ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-O2", "-fp-mode", "precise",
+						? ["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise",
 						   "-capability", "spvShaderInvocationReorderEXT"] : [])
 				if (base == "world.rgen") {
 					compileOneSlang(src, new File(scratchDir, "world_nv.rgen.spv"),
-							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-O2", "-fp-mode", "precise",
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_TRANSPARENCY_HQ=0", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderNV"])
+					compileOneSlang(src, new File(scratchDir, "world_hq.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_TRANSPARENCY_HQ=1", "-O2", "-fp-mode", "precise",
+							 "-capability", "spvShaderInvocationReorderEXT"])
+					compileOneSlang(src, new File(scratchDir, "world_nv_hq.rgen.spv"),
+							["-DCAUSTICA_OFFLINE=0", "-DCAUSTICA_SER=0", "-DCAUSTICA_TRANSPARENCY_HQ=1", "-O2", "-fp-mode", "precise",
 							 "-capability", "spvShaderInvocationReorderNV"])
 					// Offline uses the same transport/material source but a separate entrypoint binary and sampler.
 					compileOneSlang(src, new File(scratchDir, "world_offline.rgen.spv"),
@@ -313,6 +319,22 @@ abstract class CompileShaders extends DefaultTask {
 					diagnosticUpdateDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderEXT"])
 			compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, "world_sharc_update_diagnostic_nv.rgen.spv"),
 					diagnosticUpdateDefines + sharcInclude + ["-capability", "spvShaderInvocationReorderNV"])
+			def transparencyHq = ["-DCAUSTICA_TRANSPARENCY_HQ=1"]
+			[
+					["world_sharc_hq.rgen.spv", queryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_nv_hq.rgen.spv", queryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_diffuse_hq.rgen.spv", diffuseQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_diffuse_nv_hq.rgen.spv", diffuseQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_primary_hq.rgen.spv", primaryQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_primary_nv_hq.rgen.spv", primaryQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_diagnostic_hq.rgen.spv", diagnosticQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_diagnostic_nv_hq.rgen.spv", diagnosticQueryDefines, "spvShaderInvocationReorderNV"],
+					["world_sharc_primary_diagnostic_hq.rgen.spv", primaryDiagnosticQueryDefines, "spvShaderInvocationReorderEXT"],
+					["world_sharc_primary_diagnostic_nv_hq.rgen.spv", primaryDiagnosticQueryDefines, "spvShaderInvocationReorderNV"]
+			].each { variant ->
+				compileOneSlang(new File(world, "world.rgen.slang"), new File(scratchDir, variant[0]),
+						variant[1] + transparencyHq + sharcInclude + ["-capability", variant[2]])
+			}
 			[
 					"world.rchit.slang": "world_sharc.rchit.spv",
 					"world.rahit.slang": "world_sharc.rahit.spv",

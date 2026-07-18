@@ -437,10 +437,14 @@ public class CausticaSettingsScreen extends Screen {
                 CausticaConfig.Rt.DlssRr.QUALITY::configuredValue, CausticaConfig.Rt.DlssRr.QUALITY::set,
                 value -> Component.translatable("caustica.options.rt.dlssQuality." + value), null)
                 .activeWhen(CausticaConfig.Rt.DlssRr.ENABLED::configuredValue));
+        controls.add(toggle(Component.translatable("caustica.options.rt.highQualityTransparency"),
+                CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY)
+                .tooltip(Component.translatable("caustica.options.rt.highQualityTransparency.tooltip"))
+                .activeWhen(CausticaConfig.Rt.DlssRr.ENABLED::configuredValue));
         addBundle("Ray reconstruction", "Enablement and output quality");
         addGrid(List.of(controls.get(0), controls.get(2)));
         addBundle("Guide inputs", "Scene-linear signals that stabilize reconstructed lighting");
-        addGrid(List.of(controls.get(1)));
+        addGrid(List.of(controls.get(1), controls.get(3)));
     }
 
     private void addLighting() {
