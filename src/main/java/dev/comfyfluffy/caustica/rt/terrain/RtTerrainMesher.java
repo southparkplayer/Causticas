@@ -696,33 +696,11 @@ final class RtTerrainMesher {
             // opaque emitter → opaque bucket (no any-hit at all).
             Geom g = water ? cur.water() : cur.opaque();
             FloatArrayList verts = g.verts;
-            IntArrayList idx = g.idx;
             int base = verts.size() / 3;
             for (int i = 0; i < 4; i++) {
                 verts.add(qx[i]);
                 verts.add(qy[i]);
                 verts.add(qz[i]);
-            }
-            idx.add(base);
-            idx.add(base + 1);
-            idx.add(base + 2);
-            idx.add(base);
-            idx.add(base + 2);
-            idx.add(base + 3);
-            // Per-triangle corner UVs (primitive order: 0,1,2 then 0,2,3), matching the two triangles above.
-            addTriUv(g, qu[0], qv[0], qu[1], qv[1], qu[2], qv[2]);
-            addTriUv(g, qu[0], qv[0], qu[2], qv[2], qu[3], qv[3]);
-
-            float ex1 = qx[1] - qx[0], ey1 = qy[1] - qy[0], ez1 = qz[1] - qz[0];
-            float ex2 = qx[2] - qx[0], ey2 = qy[2] - qy[0], ez2 = qz[2] - qz[0];
-            float nx = ey1 * ez2 - ez1 * ey2;
-            float ny = ez1 * ex2 - ex1 * ez2;
-            float nz = ex1 * ey2 - ey1 * ex2;
-            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-            if (len > 1.0e-6f) {
-                nx /= len;
-                ny /= len;
-                nz /= len;
             }
             int materialId = water ? materials.waterId() : materials.lavaId();
             // Biome water tint: vanilla's FluidRenderer bakes BiomeColors.getAverageWaterColor into the
@@ -741,22 +719,46 @@ final class RtTerrainMesher {
                 tg = sg / 1020f;
                 tb = sb / 1020f;
             }
-            FloatArrayList prim = g.prim;
-            for (int t = 0; t < 2; t++) { // one {normal+emission, tint, mat} record per triangle
-                prim.add(nx);
-                prim.add(ny);
-                prim.add(nz);
-                prim.add(emission);
-                prim.add(tr);
-                prim.add(tg);
-                prim.add(tb);
-                prim.add(0f);
-                prim.add(Float.intBitsToFloat(materialId));
-                prim.add(0f);
-                prim.add(0f);
-                prim.add(0f);
-                g.ommSprites.add(null);
+            // Flowing-fluid top quads can be non-planar, so each BLAS triangle needs its own normal.
+            // Sharing triangle 0's normal with triangle 1 can invert the latter's medium classification.
+            emitTriangle(g, base, 0, 1, 2, materialId, tr, tg, tb);
+            emitTriangle(g, base, 0, 2, 3, materialId, tr, tg, tb);
+        }
+
+        private void emitTriangle(Geom g, int base, int a, int b, int c,
+                                  int materialId, float tr, float tg, float tb) {
+            float ex1 = qx[b] - qx[a], ey1 = qy[b] - qy[a], ez1 = qz[b] - qz[a];
+            float ex2 = qx[c] - qx[a], ey2 = qy[c] - qy[a], ez2 = qz[c] - qz[a];
+            float nx = ey1 * ez2 - ez1 * ey2;
+            float ny = ez1 * ex2 - ex1 * ez2;
+            float nz = ex1 * ey2 - ey1 * ex2;
+            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (len <= 1.0e-6f) {
+                return;
             }
+            nx /= len;
+            ny /= len;
+            nz /= len;
+
+            g.idx.add(base + a);
+            g.idx.add(base + b);
+            g.idx.add(base + c);
+            addTriUv(g, qu[a], qv[a], qu[b], qv[b], qu[c], qv[c]);
+
+            FloatArrayList prim = g.prim;
+            prim.add(nx);
+            prim.add(ny);
+            prim.add(nz);
+            prim.add(emission);
+            prim.add(tr);
+            prim.add(tg);
+            prim.add(tb);
+            prim.add(0f);
+            prim.add(Float.intBitsToFloat(materialId));
+            prim.add(0f);
+            prim.add(0f);
+            prim.add(0f);
+            g.ommSprites.add(null);
         }
 
         // Unused VertexConsumer surface — FluidRenderer only calls the bulk addVertex above.
