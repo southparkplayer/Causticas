@@ -1280,7 +1280,6 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // would be a double-counted firefly. Reset true on every specular/water bounce, false on a diffuse one.
     bool showCelestial = true;
     float primaryHitDistance = -1.0;
-    float primaryChunkFade = 1.0;
     int maxPathSegments = maxBounces + maxMirrorDepth + MAX_OPTICAL_INTERFACE_DEPTH + 1;
     for (int segment = 0; segment < maxPathSegments; segment++) {
         beginBounce(sampler, uint(segment));
@@ -1306,7 +1305,6 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 
         if (segment == 0 && payload.hitT >= 0.0) {
             primaryHitDistance = payload.hitT;
-            primaryChunkFade = payload.chunkFade;
         }
 
         // The direction is captured when the first scattering vertex spawns its diffuse continuation.
@@ -1978,11 +1976,8 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // Border fog is a camera-space presentation boundary, not participating media in path transport.
     // Apply it once to the completed camera path so secondary rays retain their physical contribution,
     // while the visible surface converges into the light-conditioned atmosphere before RT residency ends.
-    // Vanilla's chunk-section fade applies to the newly published section itself. Reveal it from the
-    // same physical atmosphere that conceals the residency boundary, without changing secondary rays.
-    if (primaryHitDistance >= 0.0 && primaryChunkFade < 1.0) {
-        L = lerp(atmosphericBoundaryFog(rd, pc), L, primaryChunkFade);
-    }
+    // A published RT section is complete and traceable. Present it immediately; applying vanilla's
+    // raster mesh fade here made completed terrain look unavailable and prolonged the startup curtain.
     float fogStart = pc.borderFogParams.x;
     if (primaryHitDistance > fogStart) {
         float fogEnd = max(pc.borderFogParams.y, fogStart + 1.0);
