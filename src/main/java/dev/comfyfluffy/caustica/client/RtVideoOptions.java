@@ -45,10 +45,43 @@ public final class RtVideoOptions {
     }
 
     public static OptionInstance<?>[] exposureOptions() {
-        return new OptionInstance<?>[] {
-            exposureMode(),
-            manualEv(),
+        java.util.ArrayList<OptionInstance<?>> options = new java.util.ArrayList<>();
+        options.add(exposureMode());
+        options.add(manualEv());
+        options.add(exposureCompensation());
+        for (TonemapControl control : exposureControls()) options.add(control.option());
+        return options.toArray(OptionInstance<?>[]::new);
+    }
+
+    public static TonemapControl[] exposureControls() {
+        return new TonemapControl[] {
+            scaledFloat("caustica.options.rt.exposureKey", CausticaConfig.Rt.Exposure.KEY, 100, 5, 50, 2),
+            percent("caustica.options.rt.exposureLowPercentile", CausticaConfig.Rt.Exposure.LOW_PERCENTILE, 0, 50),
+            percent("caustica.options.rt.exposureHighPercentile", CausticaConfig.Rt.Exposure.HIGH_PERCENTILE, 50, 100),
+            scaledFloat("caustica.options.rt.exposureHighlightPercentile",
+                    CausticaConfig.Rt.Exposure.HIGHLIGHT_PERCENTILE, 1000, 950, 1000, 3),
+            scaledFloat("caustica.options.rt.exposureHighlightHeadroom",
+                    CausticaConfig.Rt.Exposure.HIGHLIGHT_HEADROOM, 10, 10, 320, 1),
+            scaledFloat("caustica.options.rt.exposureDarkAdapt", CausticaConfig.Rt.Exposure.ADAPT_UP, 10, 1, 100, 1),
+            scaledFloat("caustica.options.rt.exposureBrightAdapt", CausticaConfig.Rt.Exposure.ADAPT_DOWN, 10, 1, 100, 1),
+            scaledFloat("caustica.options.rt.exposureMinEv", CausticaConfig.Rt.Exposure.MIN_EV, 1, -24, 0, 0),
+            scaledFloat("caustica.options.rt.exposureMaxEv", CausticaConfig.Rt.Exposure.MAX_EV, 1, 0, 12, 0),
+            scaledFloat("caustica.options.rt.exposureCenterWeight",
+                    CausticaConfig.Rt.Exposure.CENTER_WEIGHT, 10, 0, 80, 1),
+            scaledFloat("caustica.options.rt.exposureLogMin", CausticaConfig.Rt.Exposure.LOG_MIN, 1, -32, 8, 0),
+            scaledFloat("caustica.options.rt.exposureLogMax", CausticaConfig.Rt.Exposure.LOG_MAX, 1, -8, 32, 0),
         };
+    }
+
+    public static TonemapControl[] exposureWorkstationControls() {
+        TonemapControl[] expert = exposureControls();
+        TonemapControl[] controls = new TonemapControl[expert.length + 3];
+        controls[0] = control(exposureMode(), CausticaConfig.Rt.Exposure.MODE.defaultValue());
+        controls[1] = control(manualEv(), Math.round(CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV.defaultValue() * 10.0f));
+        controls[2] = control(exposureCompensation(),
+                Math.round(CausticaConfig.Rt.Exposure.COMPENSATION_EV.defaultValue() * 10.0f));
+        System.arraycopy(expert, 0, controls, 3, expert.length);
+        return controls;
     }
 
     public static Button tonemappingButton(Screen parent) {
@@ -148,7 +181,14 @@ public final class RtVideoOptions {
         return new OptionInstance<?>[] {
             spp(),
             maxBounces(),
+            astronomicalLatitude(),
+            dayOfYearOffset(),
             sunSize(),
+            moonSize(),
+            sunlightIntensity(),
+            moonlightIntensity(),
+            ambientLight(),
+            nightAirglow(),
             entities(),
             particles(),
             waterWaves(),
@@ -252,7 +292,7 @@ public final class RtVideoOptions {
         };
     }
 
-    /** PsychoV23 controls: SDR has its own peak; compression and gamut stages are shared across outputs. */
+    /** PsychoV24 controls: SDR has its own peak; compression and gamut stages are shared across outputs. */
     public static TonemapControl[] sdrPsychoV23Options() {
         return new TonemapControl[] {
             scaledFloat("caustica.options.rt.sdrPsychoV23Peak", CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,
@@ -264,7 +304,7 @@ public final class RtVideoOptions {
         };
     }
 
-    /** Controls shared by the legacy PsychoV and PsychoV23 maps on both output paths. */
+    /** Controls shared by the legacy PsychoV and PsychoV24 maps on both output paths. */
     public static TonemapControl[] psychoOptions() {
         return new TonemapControl[] {
             percent("caustica.options.rt.hdrPsychoHighlights", CausticaConfig.Rt.Hdr.PSYCHO_HIGHLIGHTS, 0, 300),
@@ -288,12 +328,11 @@ public final class RtVideoOptions {
     }
 
     public static OptionInstance<?>[] generalOptions() {
-        return new OptionInstance<?>[] {
-            bool("caustica.options.enabled", CausticaConfig.Rt.ENABLED),
-            bool("caustica.options.frameStats", CausticaConfig.Rt.FrameStats.ENABLED),
-            exposureMode(),
-            manualEv(),
-        };
+        java.util.ArrayList<OptionInstance<?>> options = new java.util.ArrayList<>();
+        options.add(bool("caustica.options.enabled", CausticaConfig.Rt.ENABLED));
+        options.add(bool("caustica.options.frameStats", CausticaConfig.Rt.FrameStats.ENABLED));
+        options.addAll(java.util.Arrays.asList(exposureOptions()));
+        return options.toArray(OptionInstance<?>[]::new);
     }
 
     public static Button causticaButton(Screen parent, Runnable beforeOpen) {
@@ -327,7 +366,7 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> manualEv() {
-        FloatSetting setting = CausticaConfig.Rt.Exposure.MANUAL_EV;
+        FloatSetting setting = CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV;
         return new OptionInstance<>(
             "caustica.options.rt.manualEv",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.manualEv.tooltip")),
@@ -337,9 +376,14 @@ public final class RtVideoOptions {
                 return Options.genericValueLabel(caption,
                         Component.literal(sign + String.format(Locale.ROOT, "%.1f EV", ev)));
             },
-            new OptionInstance.IntRange(-50, 50),
-            Math.clamp(Math.round(setting.configuredValue() * 10.0f), -50, 50),
+            new OptionInstance.IntRange(-120, 120),
+            Math.clamp(Math.round(setting.configuredValue() * 10.0f), -120, 120),
             tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> exposureCompensation() {
+        return evOption("caustica.options.rt.exposureCompensation",
+                CausticaConfig.Rt.Exposure.COMPENSATION_EV, -40, 40);
     }
 
     private static TonemapControl sdrTonemap() {
@@ -400,6 +444,78 @@ public final class RtVideoOptions {
             tenths -> setting.set(tenths / 10.0f));
     }
 
+    private static OptionInstance<Integer> astronomicalLatitude() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.ASTRONOMICAL_LATITUDE_DEG;
+        int initialTenths = Math.clamp(Math.round(setting.configuredValue() * 10.0f), -900, 900);
+        return new OptionInstance<>(
+            "caustica.options.rt.astronomicalLatitude",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "caustica.options.rt.astronomicalLatitude.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption, Component.literal(String.format(Locale.ROOT,
+                    "%.1f deg %s", Math.abs(tenths) / 10.0f, tenths >= 0 ? "N" : "S"))),
+            new OptionInstance.IntRange(-900, 900),
+            initialTenths,
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> dayOfYearOffset() {
+        IntSetting setting = CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET;
+        return new OptionInstance<>(
+            "caustica.options.rt.dayOfYearOffset",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "caustica.options.rt.dayOfYearOffset.tooltip")),
+            (caption, day) -> Options.genericValueLabel(caption, Component.literal("day " + (day + 1))),
+            new OptionInstance.IntRange(0, 364),
+            Math.clamp(setting.configuredValue(), 0, 364),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> moonSize() {
+        FloatSetting setting = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS;
+        int initialTenths = Math.clamp(
+                Math.round((float) Math.toDegrees(setting.configuredValue()) * 10.0f), 1, 50);
+        return new OptionInstance<>(
+            "caustica.options.rt.moonSize",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.moonSize.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f deg", tenths / 10.0f))),
+            new OptionInstance.IntRange(1, 50),
+            initialTenths,
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> ambientLight() {
+        return evOption("caustica.options.rt.ambientLight",
+                CausticaConfig.Rt.Composite.AMBIENT_LIGHT_EV, -80, 80);
+    }
+
+    private static OptionInstance<Integer> sunlightIntensity() {
+        return evOption("caustica.options.rt.sunlightIntensity",
+                CausticaConfig.Rt.Composite.SUNLIGHT_INTENSITY_EV, -40, 40);
+    }
+
+    private static OptionInstance<Integer> moonlightIntensity() {
+        return evOption("caustica.options.rt.moonlightIntensity",
+                CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV, -40, 80);
+    }
+
+    private static OptionInstance<Integer> nightAirglow() {
+        return evOption("caustica.options.rt.nightAirglow",
+                CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV, -80, 80);
+    }
+
+    private static OptionInstance<Integer> evOption(String translationKey, FloatSetting setting,
+                                                     int minTenths, int maxTenths) {
+        return new OptionInstance<>(
+            translationKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(translationKey + ".tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.1f EV", tenths / 10.0f))),
+            new OptionInstance.IntRange(minTenths, maxTenths),
+            Math.clamp(Math.round(setting.configuredValue() * 10.0f), minTenths, maxTenths),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
     private static OptionInstance<Boolean> entities() {
         return bool("caustica.options.rt.entities", CausticaConfig.Rt.Entities.ENABLED);
     }
@@ -417,7 +533,8 @@ public final class RtVideoOptions {
         return new OptionInstance<>(
             "caustica.options.rt.torchIntensity",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.torchIntensity.tooltip")),
-            (caption, level) -> Options.genericValueLabel(caption, level),
+            (caption, level) -> Options.genericValueLabel(caption, Component.literal(level == 0
+                    ? "Off" : String.format(Locale.ROOT, "%.0f cd/m²", torchMultiplierFromSlider(level) * 2000.0f))),
             new OptionInstance.IntRange(0, 100),
             torchSliderFromMultiplier(setting.configuredValue()),
             level -> setting.set(torchMultiplierFromSlider(level)));

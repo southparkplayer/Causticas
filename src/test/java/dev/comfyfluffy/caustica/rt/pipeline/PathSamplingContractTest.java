@@ -9,6 +9,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class PathSamplingContractTest {
@@ -29,6 +30,7 @@ final class PathSamplingContractTest {
         assertTrue(raygen.contains("(sampler.blueIndex << 3u) + (salt << 1u)"));
         assertTrue(raygen.contains("sampler.sampleIndex * 32u + sampler.bounce"));
         assertTrue(raygen.contains("float2 rnd2(inout PathSampler sampler, uint salt)"));
+        assertTrue(raygen.contains("float3 sampleCelestialSquare"));
         assertTrue(raygen.contains("float2 sampleUv = rnd2(sampler, 2u)"));
         assertTrue(build.contains("-DCAUSTICA_OFFLINE=0"));
         assertTrue(build.contains("-DCAUSTICA_OFFLINE=0\", \"-DCAUSTICA_SER=0"));
@@ -53,15 +55,16 @@ final class PathSamplingContractTest {
         int emissive = raygen.indexOf("All emissive materials retain the legacy base radiance");
         int nee = raygen.indexOf("NEE: direct light from the dominant celestial body");
         int lobeSampling = raygen.indexOf("Indirect continuation: importance-sample");
+        assertTrue(roulette >= 0);
         assertTrue(emissive > roulette);
         assertTrue(nee > roulette);
-        assertTrue(roulette >= 0);
         assertTrue(lobeSampling > roulette);
         assertTrue(raygen.contains("int rrStart = 1;"));
         assertTrue(raygen.contains("#if !CAUSTICA_SHARC_UPDATE && !CAUSTICA_SHARC_QUERY"));
         assertTrue(raygen.substring(roulette, lobeSampling).contains("throughput /= q;"));
         assertTrue(raygen.substring(roulette, lobeSampling).contains("if (rndf(sampler) > q)"));
     }
+
     @Test
     void liveOwenSobolPairOccupiesEverySixteenBySixteenCell() {
         for (int pair = 0; pair < RtBlueNoiseSequence.DIMENSIONS / 2; pair++) {
@@ -74,6 +77,18 @@ final class PathSamplingContractTest {
             assertEquals(256, cells.size(), "pair " + pair);
         }
         assertEquals(4096, RtBlueNoiseSequence.SAMPLE_COUNT);
+    }
+
+    @Test
+    void liveSpatialAssignmentIsBijectiveAndNotRawScanlineOrder() {
+        Set<Integer> assigned = new HashSet<>();
+        for (int pixelIndex = 0; pixelIndex < RtBlueNoiseSequence.SAMPLE_COUNT; pixelIndex++) {
+            assigned.add(RtBlueNoiseSequence.spatialSampleIndex(pixelIndex));
+        }
+        assertEquals(RtBlueNoiseSequence.SAMPLE_COUNT, assigned.size());
+        assertNotEquals(0, RtBlueNoiseSequence.spatialSampleIndex(0));
+        assertNotEquals(1, RtBlueNoiseSequence.spatialSampleIndex(1));
+        assertNotEquals(64, RtBlueNoiseSequence.spatialSampleIndex(64));
     }
 
     @Test

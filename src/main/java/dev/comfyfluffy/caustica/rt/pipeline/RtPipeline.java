@@ -95,10 +95,12 @@ public final class RtPipeline {
     private final int specAtlasBinding;
     private final int normalAtlasBinding;
     private final int skyAtlasBinding;
+    private final int skyLutBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
-                       long bindlessLayout, long bindlessPool, long bindlessSet, int specAtlasBinding, int normalAtlasBinding, int skyAtlasBinding) {
+                       long bindlessLayout, long bindlessPool, long bindlessSet, int specAtlasBinding,
+                       int normalAtlasBinding, int skyAtlasBinding, int skyLutBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -119,6 +121,7 @@ public final class RtPipeline {
         this.specAtlasBinding = specAtlasBinding;
         this.normalAtlasBinding = normalAtlasBinding;
         this.skyAtlasBinding = skyAtlasBinding;
+        this.skyLutBinding = skyLutBinding;
     }
 
     /**
@@ -143,8 +146,10 @@ public final class RtPipeline {
             // Sky rewrite: the vanilla celestials atlas (sun + moon phases), sampled by world.rmiss to
             // draw the sun/moon discs. One combined image sampler after the material atlases.
             int skyBinding = skyAtlas ? materialBase + materialSamplers : -1;
+            int skyLutBinding = skyAtlas ? skyBinding + 1 : -1;
             int skySamplers = skyAtlas ? 1 : 0;
-            int bindingCount = firstExtraBinding + extraStorageImages + materialSamplers + skySamplers;
+            int skyStorageImages = skyAtlas ? 1 : 0;
+            int bindingCount = firstExtraBinding + extraStorageImages + materialSamplers + skySamplers + skyStorageImages;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -168,6 +173,8 @@ public final class RtPipeline {
             if (skyAtlas) {
                 binds.get(skyBinding).binding(skyBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                binds.get(skyLutBinding).binding(skyLutBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -180,7 +187,8 @@ public final class RtPipeline {
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
             // output image (binding 1) + the extra guide images share the storage-image type.
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(RING * (1 + extraStorageImages));
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(RING * (1 + extraStorageImages + skyStorageImages));
             if (combinedSamplers > 0) {
                 poolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(RING * combinedSamplers);
             }
@@ -338,7 +346,7 @@ public final class RtPipeline {
                 MemoryUtil.memCopy(MemoryUtil.memAddress(handles) + (long) g * handleSize, sbt.mapped + g * stride, handleSize);
             }
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
-                    bindlessLayout, bindlessPool, bindlessSet, specBinding, normalBinding, skyBinding);
+                    bindlessLayout, bindlessPool, bindlessSet, specBinding, normalBinding, skyBinding, skyLutBinding);
         }
     }
 
@@ -444,6 +452,21 @@ public final class RtPipeline {
 
     public boolean hasSkyAtlas() {
         return skyAtlasBinding >= 0;
+    }
+
+    /** Bind the pre-integrated spectral sky-view LUT read by the miss shader. */
+    public void setSkyViewLut(long imageView) {
+        if (skyLutBinding < 0) return;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
+            info.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(RING, stack);
+            for (int i = 0; i < RING; i++) {
+                writes.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(skyLutBinding)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(info);
+            }
+            VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
+        }
     }
 
     public boolean hasBlockMaterialAtlases() {

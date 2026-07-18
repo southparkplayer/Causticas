@@ -1,0 +1,65 @@
+package dev.comfyfluffy.caustica.rt.pipeline;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+final class RtHueTransportTest {
+    @Test
+    void blackHasNoVisibilityFloor() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.0, 0.0, 0.0}, 0.5);
+        assertArrayEquals(new double[] {0.0, 0.0, 0.0}, op.apply(new double[] {10.0, 4.0, 1.0}), 0.0);
+    }
+
+    @Test
+    void neutralReflectanceAtFullSatRateIsTheSpecifiedScalarContraction() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.37, 0.37, 0.37}, 1.0);
+        assertEquals(0.95, op.a(), 1.0e-12);
+        assertEquals(op.a(), op.b(), 1.0e-12);
+        assertArrayEquals(new double[] {1.9, 0.475, 2.85},
+                op.apply(new double[] {2.0, 0.5, 3.0}), 1.0e-12);
+    }
+
+    @Test
+    void derivationPeakNormalizesAndUsesTheSpecifiedFloor() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.79, 0.53, 0.06}, 0.5);
+        assertEquals(0.95, op.a(), 1.0e-12);
+        assertEquals((0.06 / 0.79) * 0.5 * 0.95, op.b(), 1.0e-12);
+    }
+
+    @Test
+    void closedFormPowerMatchesIteration() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.79, 0.53, 0.06}, 0.5);
+        double[] incident = {0.2, 1.0, 0.4};
+        double[] iterated = incident;
+        for (int i = 0; i < 7; i++) {
+            iterated = op.apply(iterated);
+        }
+        assertArrayEquals(iterated, op.applyN(incident, 7), 1.0e-12);
+    }
+
+    @Test
+    void dominantEigenvalueKeepsTheSpecifiedFeedbackMargin() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.79, 0.53, 0.06}, 0.5);
+        assertEquals(0.95, op.a(), 1.0e-12);
+        assertTrue(op.b() >= 0.0 && op.b() <= op.a());
+    }
+
+    @Test
+    void infiniteFromSecondMatchesLongSameMaterialSeries() {
+        RtHueTransport.Op op = RtHueTransport.derive(new double[] {0.79, 0.53, 0.06}, 0.5);
+        double[] incident = {0.2, 1.0, 0.4};
+        double exit = 0.37;
+        double[] term = op.apply(op.apply(incident));
+        double[] sum = {0.0, 0.0, 0.0};
+        double repeat = 1.0;
+        for (int bounce = 2; bounce < 256; bounce++) {
+            for (int channel = 0; channel < 3; channel++) sum[channel] += exit * repeat * term[channel];
+            term = op.apply(term);
+            repeat *= 1.0 - exit;
+        }
+        assertArrayEquals(sum, op.applyInfiniteFromSecond(incident, exit), 1.0e-12);
+    }
+}

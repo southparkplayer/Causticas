@@ -26,6 +26,9 @@ param(
     [bool]$OpenSharcSettings,
     [bool]$CloseScreen,
     [bool]$Screenshot,
+    [string]$GameCommand,
+    [double]$CameraYaw,
+    [double]$CameraPitch,
     [int]$Seconds = 20
 )
 
@@ -84,6 +87,9 @@ if ($PSBoundParameters.ContainsKey('CausticaCategory')) { $lines += "causticaCat
 if ($PSBoundParameters.ContainsKey('OpenSharcSettings')) { $lines += "openSharcSettings=$($OpenSharcSettings.ToString().ToLowerInvariant())" }
 if ($PSBoundParameters.ContainsKey('CloseScreen')) { $lines += "closeScreen=$($CloseScreen.ToString().ToLowerInvariant())" }
 if ($PSBoundParameters.ContainsKey('Screenshot')) { $lines += "screenshot=$($Screenshot.ToString().ToLowerInvariant())" }
+if ($PSBoundParameters.ContainsKey('GameCommand')) { $lines += "gameCommand=$GameCommand" }
+if ($PSBoundParameters.ContainsKey('CameraYaw')) { $lines += "cameraYaw=$($CameraYaw.ToString([Globalization.CultureInfo]::InvariantCulture))" }
+if ($PSBoundParameters.ContainsKey('CameraPitch')) { $lines += "cameraPitch=$($CameraPitch.ToString([Globalization.CultureInfo]::InvariantCulture))" }
 if ($Action -eq 'reset') { $lines += 'resetCache=true' }
 if ($Action -eq 'shutdown') { $lines += 'shutdown=true' }
 $temporary = "$command.tmp"

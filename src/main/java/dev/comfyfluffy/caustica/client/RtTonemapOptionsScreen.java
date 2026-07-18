@@ -246,6 +246,7 @@ public final class RtTonemapOptionsScreen extends Screen {
 
     private static List<Section> visibleSections() {
         List<Section> sections = new ArrayList<>();
+        sections.add(wideSection("exposure", RtVideoOptions.exposureWorkstationControls()));
         RtVideoOptions.TonemapControl[] output = RtVideoOptions.tonemapOutputOptions();
         sections.add(section("output", controls(output[0], output[1])));
 

@@ -28,9 +28,10 @@ import org.slf4j.LoggerFactory;
 public final class CausticaConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
+    static final int CONFIG_SCHEMA_VERSION = 6;
 
     private static final Path CONFIG_PATH = resolveConfigPath();
-    private static final CommentedFileConfig FILE = loadFile(CONFIG_PATH);
+    private static final CommentedFileConfig FILE = loadAndMigrateFile(CONFIG_PATH);
 
     private CausticaConfig() {
     }
@@ -118,6 +119,10 @@ public final class CausticaConfig {
         FILE.remove("offline-renderer.absolute-error");
         FILE.remove("offline-renderer.save-exr");
         FILE.remove("offline-renderer.save-png");
+        // Vanilla's environment timeline is the sole celestial transform. The retired tilt key is
+        // deliberately discarded so an old profile can never skew the sun, moon, stars, and shadows.
+        FILE.remove("composite.sun-noon-south-tilt-deg");
+        FILE.set("config-version", CONFIG_SCHEMA_VERSION);
         writeComments();
         for (RuntimeSetting<?> setting : SETTINGS) {
             setting.writeToFile(FILE);
@@ -126,6 +131,8 @@ public final class CausticaConfig {
     }
 
     private static void writeComments() {
+        FILE.setComment("config-version",
+                " Internal migration level. Caustica only changes values that exactly match obsolete defaults.");
         FILE.setComment("enabled",
                 " Caustica RT renderer configuration.\n"
                         + " A matching -Dcaustica.* system property overrides the value below.");
@@ -169,7 +176,7 @@ public final class CausticaConfig {
         }
     }
 
-    private static CommentedFileConfig loadFile(Path path) {
+    private static CommentedFileConfig loadAndMigrateFile(Path path) {
         CommentedFileConfig config = CommentedFileConfig.builder(path, TomlFormat.instance())
                 .onFileNotFound(FileNotFoundAction.CREATE_EMPTY)
                 .preserveInsertionOrder()
@@ -180,7 +187,71 @@ public final class CausticaConfig {
         } catch (Exception e) {
             LOGGER.warn("Failed to read Caustica config {}: {}", path, e.toString());
         }
+        if (migrateLegacySceneConfig(config)) {
+            try {
+                config.save();
+                LOGGER.info("Migrated obsolete physical-scene defaults in {} to schema {}",
+                        path, CONFIG_SCHEMA_VERSION);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to save migrated Caustica config {}: {}", path, e.toString());
+            }
+        }
         return config;
+    }
+
+    /**
+     * One-time, conservative migration for the pre-physical-exposure defaults. User-authored values are
+     * preserved: a field changes only when it still equals the exact obsolete default. Package-private
+     * so the migration contract can be tested without touching the real config file.
+     */
+    static boolean migrateLegacySceneConfig(CommentedConfig config) {
+        Number versionNumber = config.get("config-version");
+        int version = versionNumber == null ? 0 : versionNumber.intValue();
+        if (version >= CONFIG_SCHEMA_VERSION) {
+            return false;
+        }
+        if (version < 2) {
+            migrateExactNumber(config, "exposure.min-ev", -1.5, -20.0);
+            migrateExactNumber(config, "exposure.max-ev", 2.0, 16.0);
+            migrateExactNumber(config, "exposure.adapt-up", 0.12, 3.0);
+            migrateExactNumber(config, "exposure.adapt-down", 0.35, 2.0);
+        }
+        if (version < 3) {
+            // Schema 2's +20 EV default could amplify a signal-free cave by 1,048,576x. Retain enough
+            // range for real full-moon illumination while the shader's reliability gate owns black scenes.
+            migrateExactNumber(config, "exposure.max-ev", 20.0, 16.0);
+        }
+        if (version < 4) {
+            config.remove("composite.sun-noon-south-tilt-deg");
+        }
+        if (version < 5) {
+            Object legacyManual = config.get("exposure.manual-ev");
+            if (legacyManual instanceof Number number) {
+                Object modeValue = config.get("exposure.mode");
+                String mode = modeValue == null ? "auto" : modeValue.toString();
+                String destination = "manual".equalsIgnoreCase(mode)
+                        ? "exposure.manual-exposure-ev" : "exposure.compensation-ev";
+                if (!config.contains(destination)) {
+                    config.set(destination, number.doubleValue());
+                }
+            }
+            config.remove("exposure.manual-ev");
+            migrateExactNumber(config, "exposure.max-ev", 16.0, 12.0);
+        }
+        if (version < 6) {
+            // The full-moon base radiance is already calibrated from 0.25 lux. Schema 5's +3 EV
+            // default multiplied both direct moonlight and the visible moon by eight.
+            migrateExactNumber(config, "composite.moonlight-intensity-ev", 3.0, 0.0);
+        }
+        config.set("config-version", CONFIG_SCHEMA_VERSION);
+        return true;
+    }
+
+    private static void migrateExactNumber(CommentedConfig config, String path, double obsolete, double replacement) {
+        Object value = config.get(path);
+        if (value instanceof Number number && Math.abs(number.doubleValue() - obsolete) <= 1.0e-6) {
+            config.set(path, replacement);
+        }
     }
 
     private static Boolean fileBoolean(String tomlPath) {
@@ -652,14 +723,25 @@ public final class CausticaConfig {
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting TORCH_EMISSION_MULTIPLIER = clampedFloat(
                     "caustica.rt.torchEmissionMultiplier", "composite.torch-emission-multiplier", 1.0f, 0.0f, 1.0f);
+            public static final FloatSetting AMBIENT_LIGHT_EV = clampedFloat(
+                    "caustica.rt.ambientLightEv", "composite.ambient-light-ev", 0.0f, -8.0f, 8.0f);
+            public static final FloatSetting SUNLIGHT_INTENSITY_EV = clampedFloat(
+                    "caustica.rt.sunlightIntensityEv", "composite.sunlight-intensity-ev", 0.0f, -4.0f, 4.0f);
+            public static final FloatSetting MOONLIGHT_INTENSITY_EV = clampedFloat(
+                    "caustica.rt.moonlightIntensityEv", "composite.moonlight-intensity-ev", 0.0f, -4.0f, 8.0f);
+            public static final FloatSetting NIGHT_AIRGLOW_EV = clampedFloat(
+                    "caustica.rt.nightAirglowEv", "composite.night-airglow-ev", 0.0f, -8.0f, 8.0f);
+            public static final FloatSetting ASTRONOMICAL_LATITUDE_DEG = clampedFloat(
+                    "caustica.rt.astronomicalLatitudeDeg", "composite.astronomical-latitude-deg",
+                    40.0f, -90.0f, 90.0f);
+            public static final IntSetting DAY_OF_YEAR_OFFSET = clampedInt(
+                    "caustica.rt.dayOfYearOffset", "composite.day-of-year-offset", 79, 0, 364);
             public static final IntSetting PSR_MAX_MIRRORS = clampedInt(
                     "caustica.rt.psrMaxMirrors", "composite.psr-max-mirrors", 3, 1, 32);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
-                    radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
+                    radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.2666f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =
-                    radians("caustica.rt.moonAngularRadius", "composite.moon-angular-radius-deg", 1.5f);
-            public static final FloatSetting SUN_NOON_SOUTH_TILT =
-                    radians("caustica.rt.sunNoonSouthDeg", "composite.sun-noon-south-tilt-deg", 30.0f);
+                    radians("caustica.rt.moonAngularRadius", "composite.moon-angular-radius-deg", 0.2727f);
             public static final FloatSetting JITTER_SIGN_X =
                     finiteFloat("caustica.rt.jitterSignX", "composite.jitter-sign-x", 1.0f);
             public static final FloatSetting JITTER_SIGN_Y =
@@ -884,17 +966,33 @@ public final class CausticaConfig {
         public static final class Exposure {
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
-            public static final FloatSetting MANUAL_EV =
-                    finiteFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev", 0.0f);
+            public static final FloatSetting MANUAL_EXPOSURE_EV =
+                    finiteFloat("caustica.rt.exposure.manualExposureEv", "exposure.manual-exposure-ev", 0.0f);
+            public static final FloatSetting COMPENSATION_EV = clampedFloat(
+                    "caustica.rt.exposure.compensationEv", "exposure.compensation-ev", 0.0f, -4.0f, 4.0f);
             public static final FloatSetting KEY = exposureScale("caustica.rt.exposure.key", "exposure.key", 0.18f);
             public static final FloatSetting MIN_EV =
-                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -1.5f);
+                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -20.0f);
             public static final FloatSetting MAX_EV =
-                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 2.0f);
+                    clampedFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 12.0f, 0.0f, 12.0f);
             public static final FloatSetting ADAPT_UP =
-                    exposureScale("caustica.rt.exposure.adaptUp", "exposure.adapt-up", 0.12f);
+                    clampedFloat("caustica.rt.exposure.adaptUp", "exposure.adapt-up", 3.0f, 0.05f, 20.0f);
             public static final FloatSetting ADAPT_DOWN =
-                    exposureScale("caustica.rt.exposure.adaptDown", "exposure.adapt-down", 0.35f);
+                    clampedFloat("caustica.rt.exposure.adaptDown", "exposure.adapt-down", 2.0f, 0.05f, 20.0f);
+            public static final FloatSetting LOW_PERCENTILE = clampedFloat(
+                    "caustica.rt.exposure.lowPercentile", "exposure.low-percentile", 0.10f, 0.0f, 0.95f);
+            public static final FloatSetting HIGH_PERCENTILE = clampedFloat(
+                    "caustica.rt.exposure.highPercentile", "exposure.high-percentile", 0.80f, 0.05f, 1.0f);
+            public static final FloatSetting HIGHLIGHT_PERCENTILE = clampedFloat(
+                    "caustica.rt.exposure.highlightPercentile", "exposure.highlight-percentile", 0.998f, 0.5f, 1.0f);
+            public static final FloatSetting HIGHLIGHT_HEADROOM = clampedFloat(
+                    "caustica.rt.exposure.highlightHeadroom", "exposure.highlight-headroom", 8.0f, 0.18f, 64.0f);
+            public static final FloatSetting CENTER_WEIGHT = clampedFloat(
+                    "caustica.rt.exposure.centerWeight", "exposure.center-weight", 3.0f, 0.0f, 8.0f);
+            public static final FloatSetting LOG_MIN = clampedFloat(
+                    "caustica.rt.exposure.logMin", "exposure.histogram-min-ev", -20.0f, -32.0f, 8.0f);
+            public static final FloatSetting LOG_MAX = clampedFloat(
+                    "caustica.rt.exposure.logMax", "exposure.histogram-max-ev", 30.0f, -8.0f, 32.0f);
 
             private Exposure() {
             }
@@ -907,8 +1005,28 @@ public final class CausticaConfig {
                 return Math.max(MIN_EV.value(), MAX_EV.value());
             }
 
+            public static float lowPercentile() {
+                return Math.min(LOW_PERCENTILE.value(), HIGH_PERCENTILE.value() - 0.01f);
+            }
+
+            public static float highPercentile() {
+                return Math.max(HIGH_PERCENTILE.value(), LOW_PERCENTILE.value() + 0.01f);
+            }
+
+            public static float highlightPercentile() {
+                return Math.max(HIGHLIGHT_PERCENTILE.value(), highPercentile());
+            }
+
+            public static float logMin() {
+                return Math.min(LOG_MIN.value(), LOG_MAX.value() - 1.0f);
+            }
+
+            public static float logMax() {
+                return Math.max(LOG_MAX.value(), LOG_MIN.value() + 1.0f);
+            }
+
             public static float clampScale(float value) {
-                return Math.clamp(value, 1.0e-4f, 1.0e4f);
+                return Math.clamp(value, 1.0e-8f, 1.0e8f);
             }
 
             private static String sanitizeMode(String value) {

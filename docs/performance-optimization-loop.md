@@ -95,3 +95,59 @@ debug bridge reported the exact artifact hash, and Minecraft was closed immediat
 Each accepted optimization gets its own commit containing source, tests, and the corresponding updated
 runtime evidence. Diagnostic instrumentation stays separately switchable and may be removed without
 changing the render path.
+
+## 2026-07-17 village SHaRC-off pass
+
+The fixed 3840x2160-output / 1920x1080-internal village view is saved at
+`-386.36, 93.15973, 1382.44`, yaw `-133.7`, pitch `21.6`, solar angle `1.142182`. The clean SHaRC-off
+control artifact `03AF6AE9...` measured 75.5 mean / 76 median FPS and 8.9826 ms mean trace time.
+
+Two code-level changes are accepted in artifact
+`A32D35E5D9BD0C68D31D1399B9CDA7CADC07660B1B9448DE6189FE7FD3294AA2`:
+
+- supported devices now select the existing conservative terrain opacity-micromap representation
+  automatically, removing most authored foliage alpha tests from the divergent any-hit path;
+- exposure resolve distributes the integer tile-persistence scan across its 256-lane workgroup, then
+  retains the original lane-zero percentile/exposure calculation. No exposure equation or setting changes.
+
+At the restored original camera and solar angle, two settled five-second runs measured 102.25 mean /
+103 median FPS and 101.8333 mean / 102 median FPS. These are 35.43% and 34.88% above the 75.5 FPS
+control. Exposure fell to 0.0443/0.0435 ms mean; trace fell to 6.5801/6.4336 ms mean. Raw and summary
+artifacts are `build/performance-loops/20260717-201519-village-original-sun-final-run1-a32d.*` and
+`build/performance-loops/20260717-201527-village-original-sun-final-run2-a32d.*`.
+
+Rejected variants were a packed geometric-normal payload, normal-view raygen specialization, hardware
+linear sampling of the spectral sky LUT, redundant miss-direction normalization removal, and an early-return
+version of the exposure reduction. Each either regressed the fixed scene or failed its visual/state gate.
+
+## 2026-07-17 additional 25% village pass
+
+The second optimization goal used the same SHaRC-off 3840x2160-output / 1920x1080-internal scene at
+`-386.36, 93.15973, 1382.44`, yaw `-133.7`, pitch `21.6`, solar angle `1.142182`. The conservative
+reference is the preceding accepted pair's 102.04165 FPS mean (102.25 and 101.8333 FPS), making the
+strict additional-25% gate 127.5521 FPS.
+
+Artifact `F485100E04A5C6F10D64319D097FC33F775E8C07B20C6411552368B0361BCBC6` moves unbiased
+continuation Russian roulette ahead of EON/GGX lobe construction and starts it at the first indirect
+vertex. Emission and next-event lighting at the current vertex are accumulated before the gate. Surviving
+future transport is divided by its exact survival probability, the configured eight-bounce ceiling remains
+unchanged, and no renderer setting, BRDF, light, material, ray depth, or reconstruction input is reduced.
+SHaRC variants retain their later roulette placement so their throughput-transition contract is unchanged.
+
+Four settled five-second proof runs measured:
+
+- 130.125 FPS / 4.2603 ms trace, +27.521%;
+- 131.25 FPS / 4.1286 ms trace, +28.624%;
+- 130.625 FPS / 4.1754 ms trace, +28.011%;
+- 129.75 FPS / 4.0277 ms trace, +27.154%.
+
+The raw/summary pairs are `build/performance-loops/20260717-205508-goal25-final-clean-run1-f485.*`
+through `20260717-205532-goal25-final-clean-run4-f485.*`. The daylight visual smoke frame is
+`2026-07-17_20.52.09.png` in the instance screenshot directory. It shows the restored saved view without
+an obvious transport or reconstruction defect; the estimator remains unbiased, although its stochastic
+continuation sequence is intentionally redistributed.
+
+Rejected second-pass probes were all-tonemapper display specialization (display stayed about 0.65 ms),
+reflection-guide removal (only about 0.35 ms upper bound), shadow removal (only 8-10% upper bound),
+fixed-mode megakernel specialization, radiance-only guide removal, shared GGX energy intermediates, and
+OMM-on invocation reordering (regressed to 95.875-96.875 FPS). All diagnostic switches were removed.

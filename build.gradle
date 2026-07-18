@@ -343,10 +343,9 @@ abstract class CompileShaders extends DefaultTask {
 				}
 			}
 		}
-		// The live raygen must stay independent of offline convergence and its Sobol sequence. Both mode
-		// binaries are compiled from one reviewed transport/material source and held to the same ceiling.
-		// Never permit the multi-hundred-KB
-		// expansion that halved all-scene performance in the rejected hybrid integration.
+		// Keep the live raygen below the last-known-clean 124 KB ceiling. Front-face lighting and mutually
+		// exclusive thin-surface backlighting share one visibility traversal; robust geometric-normal origins
+		// therefore do not justify raising the accepted complexity budget.
 		["world.rgen.spv", "world_nv.rgen.spv"].each { name ->
 			def raygen = new File(scratchDir, name)
 			if (!raygen.isFile() || raygen.length() > 124_000L) {
@@ -373,9 +372,9 @@ abstract class CompileShaders extends DefaultTask {
 		}
 		["world_offline.rgen.spv", "world_offline_nv.rgen.spv"].each { name ->
 			def raygen = new File(scratchDir, name)
-			if (!raygen.isFile() || raygen.length() > 142_000L) {
+			if (!raygen.isFile() || raygen.length() > 124_000L) {
 				throw new GradleException("Offline world raygen complexity budget exceeded: ${name} is "
-						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 142000)")
+						+ "${raygen.isFile() ? raygen.length() : 'missing'} bytes (limit 124000)")
 			}
 			def disassembly = new File(temporaryDir, "${name}.spvasm")
 			execOps.exec {

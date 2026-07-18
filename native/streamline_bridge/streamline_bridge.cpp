@@ -280,6 +280,8 @@ sl::DLSSDOptions makeDlssdOptions(uint32_t mode, uint32_t outputWidth, uint32_t 
     options.outputWidth = outputWidth;
     options.outputHeight = outputHeight;
     options.sharpness = 0.0f;
+    // Caustica submits calibrated scene-linear radiance directly. Exposure is a post-reconstruction
+    // display operation, so DLSS-D must retain the proven neutral exposure contract.
     options.preExposure = 1.0f;
     options.exposureScale = 1.0f;
     options.colorBuffersHDR = sl::Boolean::eTrue;

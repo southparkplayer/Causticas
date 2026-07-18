@@ -1,67 +1,130 @@
 #version 460
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-
-layout(std430, binding = 0, set = 0) readonly buffer Histogram {
-    uint bins[256];
-} hist;
-layout(binding = 1, set = 0, r32f) uniform image2D exposureImage;
-layout(std430, binding = 2, set = 0) buffer ExposureState {
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0, set = 0) readonly buffer Histogram { uint bins[]; } hist;
+layout(binding = 1, set = 0, r32f) uniform writeonly image2D exposureImage;
+layout(std430, binding = 2, set = 0) buffer State {
     float previous;
     uint initialized;
+    float targetEv;
+    float confidence;
+    float trustedCoverage;
+    float activeCeilingEv;
+    float averageLogLuminance;
+    uint reliableFrames;
 } stateBuf;
+layout(std430, binding = 3, set = 0) readonly buffer TileHistory { uint persistence[]; } tileHistory;
 
 layout(push_constant) uniform Push {
-    uint pixelCount;
-    float key;
-    float minEv;
-    float maxEv;
-    float adaptUp;
-    float adaptDown;
-    float frameTimeSeconds;
-    float evBias;
+    float key; float minEv; float maxEv; float adaptUp; float adaptDown; float deltaTime;
+    float evBias; float lowPercentile; float highPercentile; float highlightPercentile;
+    float highlightHeadroom; float logMin; float logMax; float sampledPixelCount;
+    uint tileGridWidth; uint tileGridHeight;
 } pc;
 
-const float LOG_MIN = -12.0;
-const float LOG_MAX = 12.0;
-const float LOG_STEP = (LOG_MAX - LOG_MIN) / 256.0;
+const uint TRUSTED_TILE_COUNT = 256u;
+const uint TOTAL_TILE_COUNT = 257u;
+const float UNRELIABLE_MAX_EV = 4.0;
+const float COHERENT_MAX_EV = 12.0;
+const uint PERSISTENCE_FRAMES = 8u;
+const uint TILE_HISTORY_STRIDE = 20u;
+
+shared uint persistentTileCount;
+shared uint connectedPersistentSignal;
 
 float binCenter(uint bin) {
-    return LOG_MIN + (float(bin) + 0.5) * LOG_STEP;
+    float lo = min(pc.logMin, pc.logMax - 1.0);
+    float hi = max(pc.logMax, pc.logMin + 1.0);
+    return lo + (float(bin) + 0.5) / 256.0 * (hi - lo);
 }
 
 void main() {
-    uint total = max(pc.pixelCount, 1u);
-    uint lowCount = uint(floor(float(total) * 0.50));
-    uint highCount = max(lowCount + 1u, uint(ceil(float(total) * 0.95)));
+    uint lane = gl_LocalInvocationIndex;
+    if (lane == 0u) {
+        persistentTileCount = 0u;
+        connectedPersistentSignal = 0u;
+    }
+    barrier();
+    uint tileCount = pc.tileGridWidth * pc.tileGridHeight;
+    for (uint index = lane; index < tileCount; index += 256u) {
+        uint x = index % pc.tileGridWidth;
+        uint y = index / pc.tileGridWidth;
+        uint base = index * TILE_HISTORY_STRIDE;
+        bool persistent = tileHistory.persistence[base] >= PERSISTENCE_FRAMES;
+        if (persistent) atomicAdd(persistentTileCount, 1u);
+        if (persistent && x + 1u < pc.tileGridWidth && y + 1u < pc.tileGridHeight) {
+            uint right = index + 1u;
+            uint down = index + pc.tileGridWidth;
+            if (tileHistory.persistence[right * TILE_HISTORY_STRIDE] >= PERSISTENCE_FRAMES
+                    && tileHistory.persistence[down * TILE_HISTORY_STRIDE] >= PERSISTENCE_FRAMES
+                    && tileHistory.persistence[(down + 1u) * TILE_HISTORY_STRIDE] >= PERSISTENCE_FRAMES) {
+                atomicOr(connectedPersistentSignal, 1u);
+            }
+        }
+    }
+    barrier();
+    if (lane == 0u) {
+    uint total = 0u;
+    for (uint i = 0u; i < 256u; ++i) total += hist.bins[i];
 
+    uint lowCount = uint(float(total) * clamp(pc.lowPercentile, 0.0, 1.0));
+    uint highCount = uint(float(total) * clamp(pc.highPercentile, 0.0, 1.0));
+    uint highlightCount = uint(float(total) * clamp(pc.highlightPercentile, 0.0, 1.0));
     uint cumulative = 0u;
-    float weightedLogLum = 0.0;
     uint weightedCount = 0u;
+    float weightedLogLum = 0.0;
+    float highlightLogLum = pc.logMax;
     for (uint i = 0u; i < 256u; ++i) {
         uint count = hist.bins[i];
         uint start = cumulative;
         uint end = cumulative + count;
-        uint takeStart = max(start, lowCount);
-        uint takeEnd = min(end, highCount);
-        if (takeEnd > takeStart) {
-            uint take = takeEnd - takeStart;
-            weightedLogLum += binCenter(i) * float(take);
-            weightedCount += take;
-        }
         cumulative = end;
+        uint acceptedStart = max(start, lowCount);
+        uint acceptedEnd = min(end, max(highCount, lowCount + 1u));
+        if (acceptedEnd > acceptedStart) {
+            uint accepted = acceptedEnd - acceptedStart;
+            weightedCount += accepted;
+            weightedLogLum += float(accepted) * binCenter(i);
+        }
+        if (start <= highlightCount && end > highlightCount) highlightLogLum = binCenter(i);
     }
 
-    float avgLogLum = weightedCount > 0u ? weightedLogLum / float(weightedCount) : 0.0;
-    float target = pc.key * exp2(pc.evBias - avgLogLum);
-    target = clamp(target, exp2(pc.minEv), exp2(pc.maxEv));
+    float previous = max(stateBuf.previous, 1.0e-8);
+    uint trustedTiles = hist.bins[TRUSTED_TILE_COUNT];
+    uint totalTiles = max(hist.bins[TOTAL_TILE_COUNT], 1u);
+    float coverage = float(trustedTiles) / float(totalTiles);
+    bool coherentFrame = trustedTiles >= 2u && coverage >= 0.02 && weightedCount >= 16u;
+    uint persistentTiles = persistentTileCount;
+    bool connectedPersistentSignalFound = connectedPersistentSignal != 0u;
+    float persistentCoverage = float(persistentTiles) / float(totalTiles);
+    bool persistentSignal = coherentFrame && connectedPersistentSignalFound && persistentCoverage >= 0.005;
+    uint persistent = persistentSignal ? PERSISTENCE_FRAMES : 0u;
+    float ceilingEv = min(pc.maxEv, persistentSignal ? COHERENT_MAX_EV : UNRELIABLE_MAX_EV);
 
-    float prev = stateBuf.initialized == 0u ? target : max(stateBuf.previous, 1.0e-4);
-    float rate = target > prev ? pc.adaptUp : pc.adaptDown;
-    float alpha = stateBuf.initialized == 0u ? 1.0 : 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4));
-    float exposure = mix(prev, target, clamp(alpha, 0.0, 1.0));
+    float avgLogLum = weightedCount > 0u ? weightedLogLum / float(weightedCount) : -pc.evBias;
+    float target = weightedCount > 0u ? pc.key * exp2(pc.evBias - avgLogLum) : previous;
+    float highlightCap = max(pc.highlightHeadroom, pc.key) * exp2(pc.evBias - highlightLogLum);
+    if (weightedCount > 0u) target = min(target, highlightCap);
+    target = clamp(target, exp2(pc.minEv), exp2(ceilingEv));
 
-    stateBuf.previous = exposure;
+    float prev = stateBuf.initialized == 0u ? target : previous;
+    // UI values are T90 times. Convert to an exponential time constant before integration.
+    float t90 = target > prev ? max(pc.adaptUp, 0.01) : max(pc.adaptDown, 0.01);
+    float tau = t90 / 2.302585093;
+    float alpha = 1.0 - exp(-max(pc.deltaTime, 0.0) / tau);
+    float adapted = mix(prev, target, clamp(alpha, 0.0, 1.0));
+    // The safety ceiling constrains the actual state, not only its slowly adapting target.
+    adapted = min(adapted, exp2(ceilingEv));
+    if (isnan(adapted) || isinf(adapted)) adapted = 1.0;
+
+    stateBuf.previous = adapted;
     stateBuf.initialized = 1u;
-    imageStore(exposureImage, ivec2(0), vec4(exposure, 0.0, 0.0, 0.0));
+    stateBuf.targetEv = log2(max(target, 1.0e-8));
+    stateBuf.confidence = clamp(coverage * 4.0, 0.0, 1.0) * float(persistent) / float(PERSISTENCE_FRAMES);
+    stateBuf.trustedCoverage = coverage;
+    stateBuf.activeCeilingEv = ceilingEv;
+    stateBuf.averageLogLuminance = avgLogLum;
+    stateBuf.reliableFrames = persistent;
+    imageStore(exposureImage, ivec2(0), vec4(adapted, 0.0, 0.0, 0.0));
+    }
 }

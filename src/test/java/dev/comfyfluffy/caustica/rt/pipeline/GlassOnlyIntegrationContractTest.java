@@ -59,7 +59,8 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(raygen.contains("Favg * Favg * Eavg"));
         assertTrue(closestHit.contains("float3 texAlbedo = srgbToLinear(blockAtlas.SampleLevel(uv, blockLod).rgb)"));
         assertTrue(closestHit.contains("float3 tintLinear = srgbToLinear(tint)"));
-        assertTrue(closestHit.contains("payload.albedo = texAlbedo * tintLinear"));
+        assertTrue(closestHit.contains("albedo709 = texAlbedo * tintLinear"));
+        assertTrue(closestHit.contains("payload.albedo = bt709ToBt2020(albedo709)"));
         assertFalse(closestHit.contains("payload.albedo = (pr.tint.w > 0.5) ? tint"));
         assertEquals(2, occurrences(raygen, "opticalGuideHit(")); // definition plus one shared call site
         assertFalse(raygen.contains("world_dlssd_guides"));

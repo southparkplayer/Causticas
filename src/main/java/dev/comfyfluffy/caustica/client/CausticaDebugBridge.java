@@ -56,6 +56,12 @@ final class CausticaDebugBridge {
             setBoolean(command, "diffusePathGuide", CausticaConfig.Rt.DlssRr.DIFFUSE_PATH_GUIDE);
             setBoolean(command, "frameStats", CausticaConfig.Rt.FrameStats.ENABLED);
             setInt(command, "debugView", CausticaConfig.Rt.Composite.DEBUG_VIEW);
+            setFloat(command, "ambientLightEv", CausticaConfig.Rt.Composite.AMBIENT_LIGHT_EV);
+            setFloat(command, "sunlightIntensityEv", CausticaConfig.Rt.Composite.SUNLIGHT_INTENSITY_EV);
+            setFloat(command, "moonlightIntensityEv", CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV);
+            setFloat(command, "nightAirglowEv", CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV);
+            setFloat(command, "astronomicalLatitudeDeg", CausticaConfig.Rt.Composite.ASTRONOMICAL_LATITUDE_DEG);
+            setInt(command, "dayOfYearOffset", CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET);
             setFloat(command, "sceneScale", CausticaConfig.Rt.Sharc.SCENE_SCALE);
             setFloat(command, "radianceScale", CausticaConfig.Rt.Sharc.RADIANCE_SCALE);
             setInt(command, "accumulationFrames", CausticaConfig.Rt.Sharc.ACCUMULATION_FRAMES);
@@ -85,6 +91,22 @@ final class CausticaDebugBridge {
             if (Boolean.parseBoolean(command.getProperty("resetCache", "false"))) {
                 RtComposite.INSTANCE.requestSharcReset("debug bridge reset");
             }
+            String gameCommand = command.getProperty("gameCommand", "").trim();
+            if (!gameCommand.isEmpty()) {
+                if (client.player == null || client.player.connection == null) {
+                    throw new IllegalStateException("gameCommand requires an active world");
+                }
+                client.player.connection.sendCommand(gameCommand);
+            }
+            String cameraYaw = command.getProperty("cameraYaw");
+            String cameraPitch = command.getProperty("cameraPitch");
+            if (cameraYaw != null || cameraPitch != null) {
+                if (client.player == null) {
+                    throw new IllegalStateException("camera orientation requires an active world");
+                }
+                if (cameraYaw != null) client.player.setYRot(Float.parseFloat(cameraYaw));
+                if (cameraPitch != null) client.player.setXRot(Float.parseFloat(cameraPitch));
+            }
             String fullscreen = command.getProperty("fullscreen");
             if (fullscreen != null && Boolean.parseBoolean(fullscreen) != client.getWindow().isFullscreen()) {
                 client.getWindow().toggleFullScreen();
@@ -110,6 +132,13 @@ final class CausticaDebugBridge {
         var screen = client.gui.screen();
         state.setProperty("screen", screen == null ? "none" : screen.getClass().getSimpleName());
         state.setProperty("inWorld", Boolean.toString(client.level != null));
+        if (client.player != null) {
+            state.setProperty("playerX", Double.toString(client.player.getX()));
+            state.setProperty("playerY", Double.toString(client.player.getY()));
+            state.setProperty("playerZ", Double.toString(client.player.getZ()));
+            state.setProperty("playerYaw", Float.toString(client.player.getYRot()));
+            state.setProperty("playerPitch", Float.toString(client.player.getXRot()));
+        }
         state.setProperty("fullscreen", Boolean.toString(client.getWindow().isFullscreen()));
         state.setProperty("windowWidth", Integer.toString(client.getWindow().getWidth()));
         state.setProperty("windowHeight", Integer.toString(client.getWindow().getHeight()));
@@ -151,6 +180,34 @@ final class CausticaDebugBridge {
         state.setProperty("artifactSha256", RtRuntimeStatus.artifactSha256());
         state.setProperty("frameStats", Boolean.toString(CausticaConfig.Rt.FrameStats.ENABLED.value()));
         state.setProperty("debugView", Integer.toString(CausticaConfig.Rt.Composite.DEBUG_VIEW.value()));
+        state.setProperty("ambientLightEv", Float.toString(RtComposite.INSTANCE.skyAmbientEv()));
+        state.setProperty("sunAngleRadians", Float.toString(RtComposite.INSTANCE.skySunAngle()));
+        state.setProperty("moonAngleRadians", Float.toString(RtComposite.INSTANCE.skyMoonAngle()));
+        state.setProperty("sunDirection", RtComposite.INSTANCE.skySunX() + ","
+                + RtComposite.INSTANCE.skySunY() + "," + RtComposite.INSTANCE.skySunZ());
+        state.setProperty("moonDirection", RtComposite.INSTANCE.skyMoonX() + ","
+                + RtComposite.INSTANCE.skyMoonY() + "," + RtComposite.INSTANCE.skyMoonZ());
+        state.setProperty("dayFactor", Float.toString(RtComposite.INSTANCE.skyDayFactor()));
+        state.setProperty("twilightFactor", Float.toString(RtComposite.INSTANCE.skyTwilightFactor()));
+        state.setProperty("exposureMode", CausticaConfig.Rt.Exposure.MODE.get());
+        state.setProperty("exposureMeteringSource", "pre-reconstruction-scene-linear");
+        state.setProperty("exposureManualEv", Float.toString(CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV.value()));
+        state.setProperty("exposureCompensationEv", Float.toString(CausticaConfig.Rt.Exposure.COMPENSATION_EV.value()));
+        state.setProperty("exposureMinEv", Float.toString(CausticaConfig.Rt.Exposure.MIN_EV.value()));
+        state.setProperty("exposureMaxEv", Float.toString(CausticaConfig.Rt.Exposure.MAX_EV.value()));
+        state.setProperty("exposureActualEv", Float.toString(RtComposite.INSTANCE.exposureActualEv()));
+        state.setProperty("exposureTargetEv", Float.toString(RtComposite.INSTANCE.exposureTargetEv()));
+        state.setProperty("exposureConfidence", Float.toString(RtComposite.INSTANCE.exposureConfidence()));
+        state.setProperty("exposureTrustedCoverage", Float.toString(RtComposite.INSTANCE.exposureTrustedCoverage()));
+        state.setProperty("exposureActiveCeilingEv", Float.toString(RtComposite.INSTANCE.exposureActiveCeilingEv()));
+        state.setProperty("exposureAverageLogLuminance", Float.toString(RtComposite.INSTANCE.exposureAverageLogLuminance()));
+        state.setProperty("sunlightIntensityEv", Float.toString(CausticaConfig.Rt.Composite.SUNLIGHT_INTENSITY_EV.value()));
+        state.setProperty("moonlightIntensityEv", Float.toString(CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV.value()));
+        state.setProperty("nightAirglowEv", Float.toString(CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV.value()));
+        state.setProperty("astronomicalLatitudeDeg",
+                Float.toString(CausticaConfig.Rt.Composite.ASTRONOMICAL_LATITUDE_DEG.value()));
+        state.setProperty("dayOfYearOffset",
+                Integer.toString(CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET.value()));
         state.setProperty("sceneScale", Float.toString(CausticaConfig.Rt.Sharc.SCENE_SCALE.value()));
         state.setProperty("radianceScale", Float.toString(CausticaConfig.Rt.Sharc.RADIANCE_SCALE.value()));
         state.setProperty("accumulationFrames", Integer.toString(CausticaConfig.Rt.Sharc.ACCUMULATION_FRAMES.value()));

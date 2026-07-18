@@ -8,19 +8,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
-/** Source-level guard for the optional PsychoV23 comparison path. */
+/** Source-level guard for the optional PsychoV24 comparison path. */
 final class DisplayShaderContractTest {
     @Test
-    void psychoV23ComparisonIsComputedOnlyForTheComparisonView() throws IOException {
+    void psychoV24ComparisonIsComputedOnlyForTheComparisonView() throws IOException {
         String source = shader();
         int selected = source.indexOf("vec3 selectedLdr = tonemapSdr");
         int comparison = source.indexOf("if (pc.debugView == DISPLAY_DEBUG_TONEMAP_COMPARISON)");
-        int psycho = source.indexOf("vec3 psychoV23Ldr =", comparison);
+        int psycho = source.indexOf("vec3 psychoV24Ldr =", comparison);
 
         assertTrue(selected >= 0);
         assertTrue(comparison > selected);
         assertTrue(psycho > comparison);
-        assertFalse(source.substring(selected, comparison).contains("psychoV23Ldr"));
+        assertFalse(source.substring(selected, comparison).contains("psychoV24Ldr"));
     }
 
     @Test
@@ -30,12 +30,12 @@ final class DisplayShaderContractTest {
         int comparisonEnd = source.indexOf("imageStore(outputImage", comparison);
         String comparisonPath = source.substring(comparison, comparisonEnd);
 
-        assertTrue(comparisonPath.contains("ldr = pix.x < split ? selectedLdr : psychoV23Ldr;"));
+        assertTrue(comparisonPath.contains("ldr = pix.x < split ? selectedLdr : psychoV24Ldr;"));
         assertFalse(comparisonPath.contains("pix.x == split"));
     }
 
     @Test
-    void psychoV23ComparisonRemainsSelectableInVideoOptions() throws IOException {
+    void psychoV24ComparisonRemainsSelectableInVideoOptions() throws IOException {
         String source = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java"));
         assertTrue(source.contains("CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON, 9, 10, 11, 12"));
@@ -43,7 +43,7 @@ final class DisplayShaderContractTest {
     }
 
     @Test
-    void psychoV23SdrPeakUsesReferenceDefaultAndExpandedRange() throws IOException {
+    void psychoV24SdrPeakUsesReferenceDefaultAndExpandedRange() throws IOException {
         String config = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java"));
         String options = Files.readString(Path.of(
@@ -51,6 +51,16 @@ final class DisplayShaderContractTest {
 
         assertTrue(config.contains("1000.0f / 203.0f, 0.5f, 64.0f"));
         assertTrue(options.contains("CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,\n                    10, 5, 640, 1"));
+    }
+
+    @Test
+    void psychoV24UsesTheAuthoredAdaptiveMbHueInterpolation() throws IOException {
+        String source = shader();
+
+        assertTrue(source.contains("const int PSYCHO24_MANUAL_HUE_COUNT = 23;"));
+        assertTrue(source.contains("psycho24SampleManualHueLinearity(sourceHuePhase)"));
+        assertTrue(source.contains("vec3 hueRestoredLms = psycho24ApplyManualHueDirection("));
+        assertFalse(source.contains("psycho23ApplySignedOpponentRetention"));
     }
 
     private static String shader() throws IOException {

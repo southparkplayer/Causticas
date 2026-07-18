@@ -6,8 +6,10 @@ Caustica uses one reviewed material and path-transport implementation with mode-
 binaries. Material, ray-cone, glass, water, emissive, EON/GGX, and SHaRC estimator improvements therefore
 remain shared. Latency-only resources and convergence-only resources do not coexist in one hot shader.
 
-Opacity micromaps are outside this stack. Live foliage continues to use the authored cutout alpha test in
-the any-hit shader; no OMM build, runtime, or tuning work is required by this architecture.
+Opacity micromaps are an automatic acceleration representation on devices exposing
+`VK_EXT_opacity_micromap`. Their conservative classifier preserves the authored cutout alpha test for
+uncertain micro-triangles while traversal resolves provably opaque/transparent regions without invoking
+the any-hit shader. Unsupported devices retain the unchanged any-hit path.
 
 ## Mode matrix
 

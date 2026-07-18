@@ -3,38 +3,121 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(binding = 0, set = 0, rgba16f) uniform readonly image2D colorImage;
-layout(std430, binding = 1, set = 0) buffer Histogram {
-    uint bins[256];
-} hist;
+layout(std430, binding = 1, set = 0) buffer Histogram { uint bins[]; } hist;
+layout(binding = 2, set = 0, r32f) uniform readonly image2D depthImage;
+layout(std430, binding = 3, set = 0) buffer TileHistory { uint persistence[]; } tileHistory;
 
-const float LOG_MIN = -12.0;
-const float LOG_MAX = 12.0;
-const float INV_LOG_RANGE = 1.0 / (LOG_MAX - LOG_MIN);
+layout(push_constant) uniform Push {
+    float logMin;
+    float logMax;
+    float centerWeight;
+} pc;
 
-// One 16x16 workgroup == 256 threads == 256 bins, so each thread owns exactly one bin for the
-// zero-init and the final flush. Per-pixel atomics land in shared memory (one SM, fast) instead of
-// the global buffer (contended across the whole dispatch — sky pixels alias to the same few bins),
-// then only the non-empty bins pay a single global atomicAdd each.
+const int SAMPLE_STRIDE = 2;
+const uint TRUSTED_TILE_COUNT = 256u;
+const uint TOTAL_TILE_COUNT = 257u;
+const uint TRUSTED_HIT_SAMPLE_COUNT = 258u;
+const uint TRUSTED_SIGNAL_SAMPLE_COUNT = 259u;
+const uint TILE_HISTORY_STRIDE = 20u;
+const uint INVALID_BIN = 0xffffffffu;
+const uint PROBE_COUNT = 16u;
+
 shared uint localBins[256];
+shared uint sampleBins[256];
+shared uint sampleHits[256];
+shared uint signalCount;
+shared uint hitCount;
+shared uint weightedBinSum;
+shared uint tileTrusted;
 
 void main() {
     uint localIdx = gl_LocalInvocationIndex;
     localBins[localIdx] = 0u;
+    sampleBins[localIdx] = INVALID_BIN;
+    sampleHits[localIdx] = 0u;
+    if (localIdx == 0u) { signalCount = 0u; hitCount = 0u; weightedBinSum = 0u; tileTrusted = 0u; }
     barrier();
 
-    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy) * SAMPLE_STRIDE
+        + ivec2((gl_WorkGroupID.y + gl_WorkGroupID.x) & 1u,
+                (gl_WorkGroupID.x ^ gl_WorkGroupID.y) & 1u);
     ivec2 size = imageSize(colorImage);
+    bool validSignal = false;
+    bool surfaceHit = false;
     if (pix.x < size.x && pix.y < size.y) {
         vec3 rgb = max(imageLoad(colorImage, pix).rgb, vec3(0.0));
-        float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-        float logLum = clamp(log2(max(lum, 1.0e-5)), LOG_MIN, LOG_MAX);
-        uint bin = min(uint(floor((logLum - LOG_MIN) * INV_LOG_RANGE * 256.0)), 255u);
-        atomicAdd(localBins[bin], 1u);
+        float lum = dot(rgb, vec3(0.2627, 0.6780, 0.0593));
+        // Physical +3 EV full-moon diffuse values are below 2^-12 in calibrated scene units.
+        float signalFloor = exp2(max(pc.logMin, -20.0));
+        validSignal = lum >= signalFloor && !isnan(lum) && !isinf(lum);
+
+        ivec2 depthSize = imageSize(depthImage);
+        ivec2 depthPix = clamp(ivec2((vec2(pix) + 0.5) * vec2(depthSize) / vec2(size)),
+                ivec2(0), depthSize - 1);
+        surfaceHit = imageLoad(depthImage, depthPix).r > 0.0;
+        if (validSignal) {
+            atomicAdd(signalCount, 1u);
+            if (surfaceHit) atomicAdd(hitCount, 1u);
+            float lo = min(pc.logMin, pc.logMax - 1.0);
+            float hi = max(pc.logMax, pc.logMin + 1.0);
+            float logLum = clamp(log2(lum), lo, hi);
+            uint bin = min(uint(floor((logLum - lo) / (hi - lo) * 256.0)), 255u);
+            sampleBins[localIdx] = bin;
+            sampleHits[localIdx] = surfaceHit ? 1u : 0u;
+            atomicAdd(weightedBinSum, bin);
+            vec2 ndc = (vec2(pix) + 0.5) / vec2(size) * 2.0 - 1.0;
+            float center = exp(-1.5 * dot(ndc, ndc));
+            uint weight = 1u + uint(round(center * clamp(pc.centerWeight, 0.0, 8.0)));
+            atomicAdd(localBins[bin], weight);
+        }
     }
 
     barrier();
-    uint count = localBins[localIdx];
-    if (count > 0u) {
-        atomicAdd(hist.bins[localIdx], count);
+    // A candidate needs spatial coverage. It becomes trusted only when representative samples, hit
+    // topology, and mean luminance remain stable over time; dense stochastic cave noise no longer earns
+    // the coherent +12 EV ceiling merely by filling pixels.
+    bool candidate = signalCount >= 32u && (hitCount >= 16u || signalCount >= 160u);
+    if (localIdx == 0u) {
+        uint tileIndex = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        uint base = tileIndex * TILE_HISTORY_STRIDE;
+        uint previousPersistence = tileHistory.persistence[base];
+        uint previousMean = tileHistory.persistence[base + 1u];
+        uint previousHits = tileHistory.persistence[base + 2u];
+        uint comparable = 0u;
+        uint stable = 0u;
+        for (uint i = 0u; i < PROBE_COUNT; ++i) {
+            uint current = sampleBins[i * 17u];
+            uint previous = tileHistory.persistence[base + 4u + i];
+            if (current != INVALID_BIN && previous != INVALID_BIN) {
+                comparable++;
+                uint delta = current > previous ? current - previous : previous - current;
+                if (delta <= 6u) stable++;
+            }
+            tileHistory.persistence[base + 4u + i] = current;
+        }
+        uint mean = signalCount > 0u ? weightedBinSum / signalCount : INVALID_BIN;
+        uint meanDelta = previousMean == INVALID_BIN || mean == INVALID_BIN ? 0xffffffffu
+                : (mean > previousMean ? mean - previousMean : previousMean - mean);
+        uint hitDelta = hitCount > previousHits ? hitCount - previousHits : previousHits - hitCount;
+        bool temporalStable = previousPersistence == 0u
+                || (comparable >= 8u && stable * 4u >= comparable * 3u
+                    && meanDelta <= 6u && hitDelta <= 32u);
+        bool trusted = candidate && temporalStable;
+        tileHistory.persistence[base] = trusted ? min(previousPersistence + 1u, 8u) : 0u;
+        tileHistory.persistence[base + 1u] = mean;
+        tileHistory.persistence[base + 2u] = hitCount;
+        tileHistory.persistence[base + 3u] = signalCount;
+        tileTrusted = trusted ? 1u : 0u;
+        atomicAdd(hist.bins[TOTAL_TILE_COUNT], 1u);
+        if (trusted) {
+            atomicAdd(hist.bins[TRUSTED_TILE_COUNT], 1u);
+            atomicAdd(hist.bins[TRUSTED_HIT_SAMPLE_COUNT], hitCount);
+            atomicAdd(hist.bins[TRUSTED_SIGNAL_SAMPLE_COUNT], signalCount);
+        }
+    }
+    barrier();
+    if (tileTrusted != 0u) {
+        uint count = localBins[localIdx];
+        if (count > 0u) atomicAdd(hist.bins[localIdx], count);
     }
 }

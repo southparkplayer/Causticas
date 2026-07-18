@@ -74,10 +74,10 @@ public struct WorldPush {
     public uint     spp;
     public float2   jitter;
     public uint64_t entityTableAddr;  // entity geometry table
-    public uint     flags;            // bit0 camera submerged, bit1 PBR BRDF, bit4 water waves
+    public uint     flags;            // bit0 submerged, bit1 PBR, bit4 waves, bit10 Earth atmosphere
     public uint     maxBounces;
-    [vk::offset(208)] public float4   sunDir;        // xyz true sun direction, w dayFactor 0..1
-    [vk::offset(224)] public float4   lightDir;      // xyz active NEE light dir, w square half-angle (rad)
+    [vk::offset(208)] public float4   sunDir;        // xyz true sun direction, w vanilla rain brightness
+    [vk::offset(224)] public float4   lightDir;      // xyz active NEE light dir, w circular half-angle (rad)
     [vk::offset(240)] public float4   lightRadiance; // xyz HDR light radiance, w star brightness
     [vk::offset(256)] public float4   moonDir;       // xyz moon direction, w moonPhase (0 full .. 4 new)
     [vk::offset(272)] public float4   celestial;     // xyz celestial rotation axis, w star angle (rad)
@@ -91,12 +91,15 @@ public struct WorldPush {
     [vk::offset(424)] public uint     psrMaxMirrors; // live exact-mirror recursion limit (1..32)
     [vk::offset(432)] public BreakEntry breaking[8]; // generated Java capacity/serialization
     [vk::offset(560)] public uint64_t sampleSequenceAddr; // interleaved 8D Sobol values, 1048576 samples
+    [vk::offset(576)] public float4 environmentSky; // xyz dimension sky linear BT.2020; w reserved
+    [vk::offset(592)] public float4 skyState; // x physical daylight, y civil twilight, z ambient, w solar envelope
+    [vk::offset(608)] public float4 skyLighting; // x sun multiplier, y moon multiplier, z airglow, w lunar lit fraction
 };
 
 // Radiance-ray payload (location 0). Member order and types are a cross-stage ABI.
 public struct Payload {
     public float3 albedo;      // hit: block albedo. miss: sky radiance.
-    public float3 normal;      // hit: geometric normal, viewer-oriented.
+    public float3 normal;      // hit: shading normal, viewer-oriented.
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public float3 motionPrev;  // per-vertex world displacement since last frame.
     public float3 f0;          // specular F0.
@@ -104,11 +107,9 @@ public struct Payload {
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   rayCone;     // packHalf2x16(width, spread)
-#if CAUSTICA_SHARC
-    // Compiled only into the SHaRC pipeline family. Cache keys use the unperturbed geometric normal;
-    // the existing `normal` member remains the shading normal used by BRDF evaluation.
+    // Always present: all ray families need the unperturbed geometric normal for robust ray spawning.
+    // The ordinary `normal` member remains the shading normal used by BRDF evaluation.
     public float3 geometricNormal;
-#endif
 };
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
@@ -124,6 +125,9 @@ public static const uint PAYLOAD_OPTICAL_CLASS_MASK = 0xfu << PAYLOAD_OPTICAL_CL
 public static const uint PAYLOAD_SHARC_DYNAMIC = 1u << 8u;
 #endif
 public static const uint PAYLOAD_TORCH_EMITTER = 1u << 9u;
+// Trace-state bit consumed only by world.rmiss. Exact mirrors expose the sky-view LUT's cell boundaries,
+// so their continuation misses request the C2 reconstruction instead of the four-tap bilinear path.
+public static const uint PAYLOAD_FILTER_SKY = 1u << 10u;
 
 // Terrain per-triangle record (48 B, stride must match RtTerrain's upload).
 // mat = {roughness, metalness, hasS, hasN} for solid/cutout; TRANSLUCENT-bucket prims repurpose it as
@@ -180,4 +184,29 @@ public float3 srgbToLinear(float3 c) {
     float3 hi = pow((c + 0.055) / 1.055, float3(2.4, 2.4, 2.4));
     float3 isHi = step(float3(0.04045, 0.04045, 0.04045), c);
     return lerp(lo, hi, isHi);
+}
+
+
+// Scene transport uses linear BT.2020. Minecraft assets are authored for an sRGB/BT.709 display,
+// so color textures cross this boundary once after decoding. Keeping one wide-gamut transport basis
+// through accumulation avoids mixing primary systems in temporal history. These component forms avoid
+// row/column-major ambiguity.
+public float3 bt709ToBt2020(float3 c) {
+    return float3(
+        0.6274039 * c.x + 0.3292830 * c.y + 0.0433131 * c.z,
+        0.0690973 * c.x + 0.9195406 * c.y + 0.0113612 * c.z,
+        0.0163916 * c.x + 0.0880132 * c.y + 0.8955953 * c.z);
+}
+
+public float3 bt2020ToBt709(float3 c) {
+    return float3(
+         1.6604910 * c.x - 0.5876411 * c.y - 0.0728499 * c.z,
+        -0.1245505 * c.x + 1.1328999 * c.y - 0.0083494 * c.z,
+        -0.0181508 * c.x - 0.1005789 * c.y + 1.1187297 * c.z);
+}
+
+public static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
+
+public float transportLuminance(float3 c) {
+    return dot(c, BT2020_LUMA);
 }

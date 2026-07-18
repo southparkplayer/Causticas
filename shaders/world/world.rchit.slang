@@ -68,7 +68,8 @@ static const float3 METAL_K[8] = {
 float3 metalF0(int idx) {
     float3 n = METAL_N[idx];
     float3 k = METAL_K[idx];
-    return ((n - 1.0) * (n - 1.0) + k * k) / ((n + 1.0) * (n + 1.0) + k * k);
+    float3 f0 = ((n - 1.0) * (n - 1.0) + k * k) / ((n + 1.0) * (n + 1.0) + k * k);
+    return bt709ToBt2020(f0);
 }
 
 // Strength of the LabPBR _n ambient-occlusion (blue) applied to albedo. Kept mild because the path
@@ -169,11 +170,11 @@ float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float
 // whichever axis pair the normal is most aligned with (same idea as vanilla's
 // SheetedDecalTextureGenerator) and multiply-blends the matching destroy-stage crack texture in,
 // mirroring vanilla's crumbling blend (DST_COLOR*SRC_COLOR, doubled).
-float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDir, float hitT, float3 n) {
+float3 applyBreaking(float3 albedo709, uint rayCone, float3 rayOrigin, float3 rayDir, float hitT, float3 n) {
     ConstPtr<WorldPush> pcRef = ConstPtr<WorldPush>(pcAddr.worldPushAddr);
     uint breakCount = pcRef[0].breakCount;
     if (breakCount == 0u) {
-        return albedo;
+        return albedo709;
     }
     float3 hitPos = rayOrigin + rayDir * hitT;
     int3 blockPos = int3(floor(hitPos - n * 0.01));
@@ -186,11 +187,15 @@ float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDi
                            : (an.y >= an.z) ? local.xz
                            : local.xy;
             float decalLod = rayConeUnitUvLod(rayCone, texSizePx(entityTex[NonUniformResourceIndex(ps.w)]));
-            float3 crack = srgbToLinear(entityTex[NonUniformResourceIndex(ps.w)].SampleLevel(decalUv, decalLod).rgb);
-            return clamp(crack * albedo, 0.0, 1.0);
+            float3 crack709 = srgbToLinear(
+                    entityTex[NonUniformResourceIndex(ps.w)].SampleLevel(decalUv, decalLod).rgb);
+            // Reflectance modulation belongs in the texture-authored primary basis. A 3x3 primary
+            // transform does not commute with component-wise multiplication, so converting the two
+            // textures separately before this blend changes their colors.
+            return clamp(crack709 * albedo709, 0.0, 1.0);
         }
     }
-    return albedo;
+    return albedo709;
 }
 
 [shader("closesthit")]
@@ -223,11 +228,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (dot(pn, WorldRayDirection()) > 0.0) {
             pn = -pn;
         }
-        payload.albedo = srgbToLinear(entityTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb) * pr.tint.rgb;
+        payload.albedo = bt709ToBt2020(
+                srgbToLinear(entityTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb)
+                * srgbToLinear(pr.tint.rgb));
         payload.normal = pn;
-#if CAUSTICA_SHARC
         payload.geometricNormal = pn;
-#endif
         payload.hitT = RayTCurrent();
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across
         // the billboard's verts) with the same indices/barycentrics as the UV. dispAddr == 0 falls back
@@ -263,9 +268,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (dot(n, vdir) < 0.0) {
             n = -n;
         }
-#if CAUSTICA_SHARC
         float3 geometricNormal = n;
-#endif
         // Interpolate the captured entity-texture UV (same scheme as terrain) and sample the bindless
         // per-type texture; tint.rgb is the model colour multiplier (white for most, tinted for sheep/…).
         ConstPtr<uint> eidxBuf = ConstPtr<uint>(g.idxAddr);
@@ -287,7 +290,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                     ep0, ep1, ep2, euv[e0], euv[e1], euv[e2]);
         }
 
-        float3 albedo = srgbToLinear(entityTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod).rgb) * pr.tint.rgb;
+        float3 albedo = bt709ToBt2020(
+                srgbToLinear(entityTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod).rgb)
+                * srgbToLinear(pr.tint.rgb));
         float rough = pr.mat.x;          // heuristic material default
         float metal = pr.mat.y;
         float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metal);
@@ -312,9 +317,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
         payload.albedo = albedo * ao;
         payload.normal = n;
-#if CAUSTICA_SHARC
         payload.geometricNormal = geometricNormal;
-#endif
         payload.hitT = RayTCurrent();
         // Per-vertex motion vector: interpolate the captured per-vertex displacement with the same
         // indices/barycentrics used for the UV above. Rotation and skeletal/lid animation use a
@@ -358,16 +361,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (dot(n, vdir) < 0.0) {
             n = -n;
         }
-        payload.albedo = tint;
+        payload.albedo = bt709ToBt2020(srgbToLinear(tint));
         payload.normal = n;
-#if CAUSTICA_SHARC
         payload.geometricNormal = n;
-#endif
         payload.hitT = RayTCurrent();
         payload.motionPrev = float3(0.0, 0.0, 0.0);
         float rough = pr.mat.x;
         float metal = pr.mat.y;
-        payload.f0 = lerp(float3(0.04, 0.04, 0.04), tint, metal);
+        payload.f0 = lerp(float3(0.04, 0.04, 0.04), payload.albedo, metal);
         float ew = pr.normal.w;
         float emission = ew >= 1.5 ? ew - 2.0 : ew;
         payloadSetPacked(payload, MATERIAL_WATER, rough, metal, emission, 0.0);
@@ -400,9 +401,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     if (dot(n, vdir) < 0.0) {
         n = -n;
     }
-#if CAUSTICA_SHARC
     float3 geometricNormal = n;
-#endif
 
     // LabPBR normal map (_n), gated by mat.w — shared decode (TBN from position-fetch + UVs).
     float ao = 1.0;
@@ -419,15 +418,13 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 gtexRgb = srgbToLinear(gtex.rgb);
         bool dielectric = opticalClass == OPTICAL_THIN_GLASS
                 || opticalClass == OPTICAL_SOLID_GLASS || opticalClass == OPTICAL_SOLID_ICE;
-        float3 opticalColor = dielectric
-                ? lerp(float3(1.0, 1.0, 1.0), gtexRgb * tint * ao, gtex.a)
-                : gtexRgb * tint * ao;
-        payload.albedo = applyBreaking(opticalColor, rayCone, WorldRayOrigin(), WorldRayDirection(),
-                RayTCurrent(), n);
+        float3 opticalColor709 = dielectric
+                ? lerp(float3(1.0, 1.0, 1.0), gtexRgb * srgbToLinear(tint) * ao, gtex.a)
+                : gtexRgb * srgbToLinear(tint) * ao;
+        payload.albedo = bt709ToBt2020(applyBreaking(opticalColor709, rayCone, WorldRayOrigin(),
+                WorldRayDirection(), RayTCurrent(), n));
         payload.normal = n;
-#if CAUSTICA_SHARC
         payload.geometricNormal = geometricNormal;
-#endif
         payload.hitT = RayTCurrent();
         payload.motionPrev = float3(0.0, 0.0, 0.0);
         payload.f0 = dielectric ? float3(0.04, 0.04, 0.04) : float3(0.02, 0.02, 0.02);
@@ -449,17 +446,16 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // shades the surface as a clear dielectric and only needs the tint to derive the per-channel
     // Beer–Lambert absorption. Opaque terrain uses linear-light atlas color and biome tint. AO is
     // visibility, not base color, so it must not contaminate payload.albedo or the DLSSD albedo guide.
+    float3 albedo709;
     if (pr.tint.w > 0.5) {
-        payload.albedo = tint;
+        albedo709 = srgbToLinear(tint);
     } else {
         float3 texAlbedo = srgbToLinear(blockAtlas.SampleLevel(uv, blockLod).rgb);
         float3 tintLinear = srgbToLinear(tint);
-        payload.albedo = texAlbedo * tintLinear;
+        albedo709 = texAlbedo * tintLinear;
     }
     payload.normal = n;
-#if CAUSTICA_SHARC
     payload.geometricNormal = geometricNormal;
-#endif
     payload.hitT = RayTCurrent();
     payload.motionPrev = float3(0.0, 0.0, 0.0); // static terrain: camera-only motion vector
     uint material = pr.tint.w > 0.5 ? MATERIAL_WATER : MATERIAL_OPAQUE;
@@ -468,8 +464,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // breakCount==0 short-circuits it anyway; translucent glass/ice is handled at its own early-return
     // above, reusing the gtex it already sampled instead of re-fetching blockAtlas here).
     if (pr.tint.w < 0.5) {
-        payload.albedo = applyBreaking(payload.albedo, rayCone, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), n);
+        albedo709 = applyBreaking(albedo709, rayCone, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), n);
     }
+    payload.albedo = bt709ToBt2020(albedo709);
 
     // Heuristic defaults, overridden per-texel by LabPBR _s when present (flagged in mat.z).
     float rough = pr.mat.x;

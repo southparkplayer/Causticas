@@ -48,7 +48,7 @@ final class CausticaConfigOverridePersistenceTest {
 
     @Test
     void floatOverrideNeverBecomesConfiguredToml() {
-        CausticaConfig.FloatSetting setting = CausticaConfig.Rt.Exposure.MANUAL_EV;
+        CausticaConfig.FloatSetting setting = CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV;
         Float original = setting.configuredValue();
         String property = System.getProperty(setting.key());
         try {

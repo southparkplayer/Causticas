@@ -20,9 +20,9 @@ final class FluidTriangleNormalContractTest {
         assertTrue(terrain.contains("float ex1 = qx[b] - qx[a]"));
         assertTrue(terrain.contains("if (len <= 1.0e-6f)"));
         assertFalse(terrain.contains("float ex1 = qx[1] - qx[0]"));
-        assertTrue(raygen.contains("float3 surfaceWaterGeometricNormal = n;"));
-        assertTrue(raygen.contains("hitPos + surfaceWaterGeometricNormal * SURF_BIAS"));
-        assertTrue(raygen.contains("hitPos - surfaceWaterGeometricNormal * SURF_BIAS"));
+        assertTrue(raygen.contains("float3 surfaceWaterGeometricNormal = geometricNormal;"));
+        assertTrue(raygen.contains("offsetRayOrigin(hitPos, surfaceWaterGeometricNormal, rd)"));
+        assertFalse(raygen.contains("static const float SURF_BIAS"));
     }
 
     private static String source(String relative) throws IOException {

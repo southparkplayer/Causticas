@@ -33,6 +33,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.Level;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
@@ -69,6 +70,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtPathSampleSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBlueNoiseSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSharcResolvePipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtSkyViewPipeline;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -139,6 +141,23 @@ public final class RtComposite {
     public long copyGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.copyNanos(); }
     public int renderWidth() { return renderW; }
     public int renderHeight() { return renderH; }
+    public float skySunAngle() { return publishedSunAngle; }
+    public float skyMoonAngle() { return publishedMoonAngle; }
+    public float skyDayFactor() { return publishedDayFactor; }
+    public float skyTwilightFactor() { return publishedTwilightFactor; }
+    public float skyAmbientEv() { return publishedAmbientEv; }
+    public float skySunX() { return publishedSunX; }
+    public float skySunY() { return publishedSunY; }
+    public float skySunZ() { return publishedSunZ; }
+    public float skyMoonX() { return publishedMoonX; }
+    public float skyMoonY() { return publishedMoonY; }
+    public float skyMoonZ() { return publishedMoonZ; }
+    public float exposureActualEv() { return exposure.actualEv(); }
+    public float exposureTargetEv() { return exposure.targetEv(); }
+    public float exposureConfidence() { return exposure.confidence(); }
+    public float exposureTrustedCoverage() { return exposure.trustedCoverage(); }
+    public float exposureActiveCeilingEv() { return exposure.activeCeilingEv(); }
+    public float exposureAverageLogLuminance() { return exposure.averageLogLuminance(); }
 
     // WorldPushData and its serializer are generated from Slang's reflected Std430DataLayout. Java never
     // owns or calculates a shader byte offset, struct size, array stride, or fixed-array capacity.
@@ -152,6 +171,8 @@ public final class RtComposite {
     private static final int FRAME_FLAG_OFFLINE_GROUND_TRUTH = 1 << 7;
     private static final int FRAME_FLAG_OFFLINE_CALIBRATING = 1 << 8;
     private static final int FRAME_FLAG_DIFFUSE_PATH_GUIDE = 1 << 9;
+    private static final int FRAME_FLAG_EARTH_ATMOSPHERE = 1 << 10;
+    private static final int FRAME_FLAG_EXPOSURE_DEPTH = 1 << 11;
     private static final double TEMPORAL_TELEPORT_DISTANCE_SQ = 64.0 * 64.0;
     private static final long TEMPORAL_GAP_NANOS = 500_000_000L;
     // Frames a retired per-frame TLAS must outlive before it's freed (> frames-in-flight); matches
@@ -184,13 +205,11 @@ public final class RtComposite {
     }
 
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
-    // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
+    // penumbrae). The defaults use the real sun/moon angular radii of approximately 0.27 degrees.
     private static final int WATER_ANCHOR_MASK = 4095;
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
-    // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
-    // tilted by SUN_NOON_SOUTH_TILT. Pushed so the sky shader can build the sun/moon square's tangent
-    // frame (right = travel direction) and wheel the starfield. = normalize(noonDir x sunriseDir).
+    // The physical sky supplies the local north celestial pole; atlas-body tangent frames and stars share it.
     // Sign of the sub-pixel jitter as reported to DLSS-RR + applied to the primary ray, mirroring the
     // validated DLSS-SR convention (Vulkan flipped clip space wants Y negated).
     private static float jitterSignX() {
@@ -199,26 +218,6 @@ public final class RtComposite {
 
     private static float jitterSignY() {
         return CausticaConfig.Rt.Composite.JITTER_SIGN_Y.value();
-    }
-
-    private static float sunNoonTilt() {
-        return CausticaConfig.Rt.Composite.SUN_NOON_SOUTH_TILT.value();
-    }
-
-    private static float sunNoonY() {
-        return Mth.cos(sunNoonTilt());
-    }
-
-    private static float sunNoonZ() {
-        return Mth.sin(sunNoonTilt());
-    }
-
-    private static float celestialAxisY() {
-        return -sunNoonZ();
-    }
-
-    private static float celestialAxisZ() {
-        return sunNoonY();
     }
 
     // Monotonic per-composite frame counter, used by RtTerrain to time frames-in-flight-safe frees.
@@ -244,6 +243,7 @@ public final class RtComposite {
     private int sharcTerrainY = Integer.MIN_VALUE;
     private int sharcTerrainZ = Integer.MIN_VALUE;
     private float sharcSceneScale = Float.NaN;
+    private float sharcRadianceScale = Float.NaN;
     private String sharcCreationResetReason = "enabled";
     private Object sharcWorldIdentity;
     private boolean sharcPrimaryModeKnown;
@@ -256,6 +256,7 @@ public final class RtComposite {
     private volatile boolean reloadRebindRequested;
     // The block-atlas view handle currently bound into the world pipeline (set by bindWorldTextures).
     private long boundAtlasHandle;
+    private long boundCelestialAtlasHandle;
     private int bindlessTextureCapacity;
     // True after the LabPBR atlases have been resolved/bound for the currently alive world pipeline.
     private boolean materialBindingsReady;
@@ -268,6 +269,14 @@ public final class RtComposite {
     private RtPathSampleSequence pathSampleSequence;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
+    private RtSkyViewPipeline skyViewPipeline;
+    private RtImage skyViewLut;
+    private RtImage skyTransmittanceLut;
+    private boolean skyTransmittanceReady;
+    private boolean skyViewStateValid;
+    private float lastSkyViewSunX, lastSkyViewSunY, lastSkyViewSunZ, lastSkyViewSunSource;
+    private float lastSkyViewMoonX, lastSkyViewMoonY, lastSkyViewMoonZ, lastSkyViewMoonSource;
+    private boolean lastSkyViewEnabled;
     private RtImage output;
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
@@ -337,11 +346,25 @@ public final class RtComposite {
     private boolean renderSizeRrEnabled;
     private int renderSizeRrQuality = Integer.MIN_VALUE;
     private boolean renderSizeFgGuides;
+    private boolean renderSizeExposureDepth;
     private boolean renderSizeHdrEnabled;
     private boolean renderSizeGroundTruth;
     private boolean rrProducedPreviousFrame;
     private int lastDebugView = Integer.MIN_VALUE;
     private float lastEmissiveIntensity = Float.NaN;
+    private float lastSkySunX = Float.NaN, lastSkySunY = Float.NaN, lastSkySunZ = Float.NaN;
+    private long lastPacketDayTime = Long.MIN_VALUE;
+    private long lastPacketGameTime = Long.MIN_VALUE;
+    private volatile boolean commandTimeResetRequested;
+    private float lastSkyAmbientEv = Float.NaN;
+    private float lastSunlightEv = Float.NaN;
+    private float lastMoonlightEv = Float.NaN;
+    private float lastAirglowEv = Float.NaN;
+    private float lastSunAngularRadius = Float.NaN;
+    private float lastMoonAngularRadius = Float.NaN;
+    private volatile float publishedSunAngle, publishedMoonAngle, publishedDayFactor, publishedTwilightFactor;
+    private volatile float publishedAmbientEv, publishedSunX, publishedSunY, publishedSunZ;
+    private volatile float publishedMoonX, publishedMoonY, publishedMoonZ;
     private int groundTruthAccumulationFrames;
     private int groundTruthSettingsSignature = Integer.MIN_VALUE;
     private float groundTruthWaterWaveTime = Float.NaN;
@@ -382,12 +405,14 @@ public final class RtComposite {
     private int celestialUvMoonPhase = -1;
     private float sunU0;
     private float sunV0;
-    private float sunU1 = 1f;
-    private float sunV1 = 1f;
+    private float sunU1;
+    private float sunV1;
     private float moonU0;
     private float moonV0;
-    private float moonU1 = 1f;
-    private float moonV1 = 1f;
+    private float moonU1;
+    private float moonV1;
+    private boolean celestialUvFailureLogged;
+    private boolean celestialUvResolvedLogged;
 
     // Per-frame TLAS resources, rebuilt in place from a small ring of persistent slots (see
     // RtAccel.TlasRing — replaces the old create-and-defer-destroy-per-frame churn whose VMA slow path
@@ -448,8 +473,20 @@ public final class RtComposite {
         rtFrameProducedThisFrame = false;
         rrProducedPreviousFrame = false;
         lastDebugView = Integer.MIN_VALUE;
+        lastSkySunX = lastSkySunY = lastSkySunZ = Float.NaN;
+        lastPacketDayTime = Long.MIN_VALUE;
+        lastPacketGameTime = Long.MIN_VALUE;
+        // Do not consume a pending server-command TOD discontinuity here. skyPush owns that flag, so a
+        // coincident camera/FOV reset cannot prevent the required SHARC + lighting-history invalidation.
+        lastSkyAmbientEv = Float.NaN;
+        lastSunlightEv = Float.NaN;
+        lastMoonlightEv = Float.NaN;
+        lastAirglowEv = Float.NaN;
+        lastSunAngularRadius = Float.NaN;
+        lastMoonAngularRadius = Float.NaN;
         hasCapturedProjection = false;
         previousWaterWaveTimeValid = false;
+        exposure.resetAutoHistory();
         // RR/FG resets are routine (FOV transitions, reload notifications, debug changes). Once an
         // offline session owns a frozen camera and scene, those unrelated temporal resets must not erase
         // expensive accumulation. Actual offline image recreation still calls onRendererReset directly.
@@ -616,17 +653,25 @@ public final class RtComposite {
             return false;
         }
         try {
+            // Sun/moon presentation is part of the world pipeline's descriptor contract. Never substitute
+            // the block atlas: if the celestials atlas is one upload behind, vanilla renders this frame and
+            // RT is created only after the correct view exists.
+            if (blockAtlasView() == 0L || celestialsAtlasView() == 0L) {
+                return false;
+            }
             if (displayPipeline == null) {
                 displayPipeline = RtDisplayPipeline.create(ctx);
             }
-            // A resource reload re-stitches the block atlas. We've already torn down the world pipeline
+            // A resource reload re-stitches the block and celestial atlases. We've already torn down the world pipeline
             // (onResourceReloadStart) so nothing references the old atlas, but MC's deferred free keeps the
             // old view handle live for a few frames, then swaps in the new atlas (whose GPU upload may lag,
             // leaving the handle 0 transiently). Skip RT — vanilla renders — until the handle becomes a
             // fresh, non-zero value different from what we last bound; only then rebuild against it.
             if (reloadRebindRequested) {
                 long atlas = blockAtlasView();
-                if (atlas == 0L || atlas == boundAtlasHandle) {
+                long celestialAtlas = celestialsAtlasView();
+                if (!replacementAtlasesReady(atlas, celestialAtlas,
+                        boundAtlasHandle, boundCelestialAtlasHandle)) {
                     return false;
                 }
             }
@@ -672,7 +717,7 @@ public final class RtComposite {
         if (failed || worldPipeline != null || reloadRebindRequested) {
             return;
         }
-        if (Minecraft.getInstance().level == null || blockAtlasView() == 0L) {
+        if (Minecraft.getInstance().level == null || blockAtlasView() == 0L || celestialsAtlasView() == 0L) {
             return;
         }
         try {
@@ -685,6 +730,19 @@ public final class RtComposite {
 
     private RtPipeline ensureWorld(RtContext ctx) {
         if (worldPipeline == null) {
+            if (blockAtlasView() == 0L || celestialsAtlasView() == 0L) {
+                throw new IllegalStateException("world and celestial atlases must be ready before RT pipeline creation");
+            }
+            if (skyViewLut == null) {
+                skyViewLut = ctx.createStorageImage(256, 256, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
+                        "spectral sky-view LUT");
+                skyTransmittanceLut = ctx.createStorageImage(256, 64, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                        "spectral transmittance LUT");
+                skyViewPipeline = RtSkyViewPipeline.create(ctx);
+                skyViewPipeline.setImages(skyViewLut.view, skyTransmittanceLut.view);
+                skyTransmittanceReady = false;
+                skyViewStateValid = false;
+            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, RtDeviceBringup.worldRaygenShader(),
                     new String[]{"world.rmiss.spv", "world_guide.rmiss.spv"}, "world.rchit.spv", "world.rahit.spv",
@@ -705,6 +763,7 @@ public final class RtComposite {
                 bindGuideImages();
             }
             bindWorldTextures(ctx);
+            worldPipeline.setSkyViewLut(skyViewLut.view);
             reloadRebindRequested = false;
         }
         // The TLAS is rebuilt and bound per frame in recordFrame since dynamic entity content animates
@@ -987,13 +1046,14 @@ public final class RtComposite {
             }
             materialBindingsReady = true;
         }
-        // Sky rewrite: bind the vanilla celestials atlas (sun + moon phases) for world.rmiss. The view
-        // handle is stable across frames; the shader only samples it inside the sun/moon discs (sky
-        // directions), so the block-atlas fallback is never read if the celestials atlas isn't ready.
+        // Bind the real vanilla celestials atlas (sun + moon phases). Pipeline creation is gated on this
+        // view, so an upload race cannot silently turn the block atlas into the sky atlas for the session.
         long celView = celestialsAtlasView();
+        if (celView == 0L) throw new IllegalStateException("celestials atlas unavailable during world binding");
+        boundCelestialAtlasHandle = celView;
         if (worldPipeline.hasSkyAtlas()) {
             for (RtPipeline pipeline : worldPipelines()) if (pipeline != null)
-                pipeline.setSkyAtlas(celView != 0L ? celView : atlasView, sampler);
+                pipeline.setSkyAtlas(celView, sampler);
         }
         setCelestialUvAtlas(celView);
         RtTerrain.markAllDirty();
@@ -1004,6 +1064,7 @@ public final class RtComposite {
         long sampler = atlasSampler(ctx);
         long atlasView = blockAtlasView();
         pipeline.setAtlasSampler(atlasView, sampler);
+        if (skyViewLut != null) pipeline.setSkyViewLut(skyViewLut.view);
         pipeline.setBindlessTexture(0, 0, atlasView, sampler);
         if (pipeline.hasBlockMaterialAtlases()) {
             long specView = RtBlockMaterials.INSTANCE.viewS();
@@ -1013,7 +1074,8 @@ public final class RtComposite {
         }
         if (pipeline.hasSkyAtlas()) {
             long celestialView = celestialsAtlasView();
-            pipeline.setSkyAtlas(celestialView != 0L ? celestialView : atlasView, sampler);
+            if (celestialView == 0L) throw new IllegalStateException("celestials atlas unavailable during pipeline binding");
+            pipeline.setSkyAtlas(celestialView, sampler);
         }
         RtEntityTextures.INSTANCE.bindAll(sampler, pipeline);
     }
@@ -1173,12 +1235,16 @@ public final class RtComposite {
         boolean rrOperational = !offlineGroundTruth && RtDlssRr.INSTANCE.isOperational();
         int rrQuality = rrOperational ? RtDlssRr.quality() : Integer.MIN_VALUE;
         boolean fgGuidesRequired = !offlineGroundTruth && RtDlssFg.requested();
+        boolean autoExposure = !offlineGroundTruth
+                && "auto".equalsIgnoreCase(CausticaConfig.Rt.Exposure.MODE.get());
+        boolean exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
         boolean hdrEnabled = RtHdr.effective();
         if (output != null && displayImage != null && hdrDisplayImage != null && exposure.ready()
                 && (!renderSizeRrEnabled || rrOutput != null)
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrOperational && renderSizeRrQuality == rrQuality
                 && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled
+                && renderSizeExposureDepth == exposureDepthRequired
                 && renderSizeGroundTruth == offlineGroundTruth
                 && (!offlineGroundTruth
                     || (groundTruthAccum != null && offlinePilotA != null && offlinePilotB != null))) {
@@ -1216,11 +1282,13 @@ public final class RtComposite {
         int[] optimal = rrOperational ? RtDlssRr.INSTANCE.queryOptimalRenderSize(width, height) : null;
         rrOperational = optimal != null;
         rrQuality = rrOperational ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
         renderW = optimal != null ? optimal[0] : width;
         renderH = optimal != null ? optimal[1] : height;
         renderSizeRrEnabled = rrOperational;
         renderSizeRrQuality = rrQuality;
         renderSizeFgGuides = fgGuidesRequired;
+        renderSizeExposureDepth = exposureDepthRequired;
         renderSizeHdrEnabled = hdrEnabled;
         renderSizeGroundTruth = offlineGroundTruth;
         if (offlineGroundTruth) {
@@ -1248,9 +1316,11 @@ public final class RtComposite {
         int rrGuideH = rrOperational ? renderH : 1;
         int motionGuideW = motionGuidesRequired ? renderW : 1;
         int motionGuideH = motionGuidesRequired ? renderH : 1;
+        int depthGuideW = (motionGuidesRequired || exposureDepthRequired) ? renderW : 1;
+        int depthGuideH = (motionGuidesRequired || exposureDepthRequired) ? renderH : 1;
         gNormal = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness");
         gAlbedo = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo");
-        gDepth = ctx.createStorageImage(motionGuideW, motionGuideH, VK10.VK_FORMAT_R32_SFLOAT, "guide depth");
+        gDepth = ctx.createStorageImage(depthGuideW, depthGuideH, VK10.VK_FORMAT_R32_SFLOAT, "guide depth");
         gMotion = ctx.createStorageImage(motionGuideW, motionGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion");
         gSpecAlbedo = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo");
         gSpecMotion = ctx.createStorageImage(rrGuideW, rrGuideH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion");
@@ -1289,6 +1359,7 @@ public final class RtComposite {
                         "DLSS-RR output " + width + "x" + height)
                 : null;
         exposure.ensureResources(ctx);
+        exposure.resetAutoHistory(); // tile coordinates and trusted-history identity changed with these images
 
         requestTemporalReset(); // recreated images -> every temporal consumer starts from a clean frame
         if (worldPipeline != null) {
@@ -1296,7 +1367,12 @@ public final class RtComposite {
             bindGuideImages();
         }
         RtImage displayInput = rrOutput != null ? rrOutput : output;
-        displayPipeline.setImages(displayImage.view, displayInput.view, exposure.image().view, hdrDisplayImage.view);
+        displayPipeline.setImages(displayImage.view, displayInput.view, exposure.image().view, hdrDisplayImage.view,
+                blueNoiseSequence.buffer());
+    }
+
+    static boolean exposureDepthRequired(boolean autoExposure, boolean rrOperational, boolean fgGuidesRequired) {
+        return autoExposure && !rrOperational && !fgGuidesRequired;
     }
 
     /**
@@ -1359,6 +1435,8 @@ public final class RtComposite {
                 fgReset = true;
                 rrProducedPreviousFrame = false;
                 RtDlssRr.INSTANCE.requestHistoryReset();
+                requestSharcReset("emissive radiance changed");
+                exposure.resetAutoHistory();
             }
             lastEmissiveIntensity = emissiveIntensity;
             if (lastDebugView != Integer.MIN_VALUE && debugView != lastDebugView) {
@@ -1432,6 +1510,9 @@ public final class RtComposite {
                 if (fs.is(FluidTags.WATER) && camY < cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos)) {
                     flags |= 0b01;
                 }
+                if (Level.OVERWORLD.equals(level.dimension())) {
+                    flags |= FRAME_FLAG_EARTH_ATMOSPHERE;
+                }
             }
             if (waterWaves()) {
                 flags |= 0b10000; // W1: animated water wave normals
@@ -1444,6 +1525,9 @@ public final class RtComposite {
             }
             if (renderSizeFgGuides && RtDlssFg.requested()) {
                 flags |= FRAME_FLAG_FG_GUIDES;
+            }
+            if (renderSizeExposureDepth) {
+                flags |= FRAME_FLAG_EXPOSURE_DEPTH;
             }
             if (offlineGroundTruth) {
                 flags |= FRAME_FLAG_OFFLINE_GROUND_TRUTH;
@@ -1473,7 +1557,8 @@ public final class RtComposite {
             float previousWaveTime = previousWaterWaveTimeValid ? previousWaterWaveTime : waterWaveTime;
             previousWaterWaveTime = waterWaveTime;
             previousWaterWaveTimeValid = true;
-            Float4 waterParams = new Float4(wtr, wtg, wtb, waterWaveTime);
+            Float4 waterTint = linearBt2020FromRgb(wtr, wtg, wtb);
+            Float4 waterParams = new Float4(waterTint.x(), waterTint.y(), waterTint.z(), waterWaveTime);
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
@@ -1525,8 +1610,34 @@ public final class RtComposite {
                     CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS.value(),
                     breaking,
                     offlineGroundTruth && pathSampleSequence != null
-                            ? pathSampleSequence.deviceAddress() : blueNoiseSequence.deviceAddress()
+                            ? pathSampleSequence.deviceAddress() : blueNoiseSequence.deviceAddress(),
+                    sky.environmentSky(),
+                    sky.skyState(),
+                    sky.skyLighting()
             ).write(push);
+            if (skyViewPipeline != null && skyViewLut != null) {
+                if (!skyTransmittanceReady) {
+                    skyViewPipeline.dispatchTransmittance(cmd,
+                            skyTransmittanceLut.width, skyTransmittanceLut.height);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    skyTransmittanceReady = true;
+                }
+                float litFraction = sky.skyLighting().w();
+                float solarEnvelope = sky.skyState().w();
+                float lunarSource = (0.25f / 120_000.0f) * sky.skyLighting().y()
+                        * litFraction * (1.0f - solarEnvelope) * sky.sunDir().w();
+                boolean earthAtmosphere = Level.OVERWORLD.equals(level.dimension());
+                float solarSource = solarEnvelope * sky.skyLighting().x() * sky.sunDir().w();
+                if (skyViewChanged(sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(), solarSource,
+                        sky.moonDir().x(), sky.moonDir().y(), sky.moonDir().z(), lunarSource,
+                        earthAtmosphere)) {
+                    skyViewPipeline.dispatchSky(cmd, skyViewLut.width, skyViewLut.height,
+                            sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(), solarSource,
+                            sky.moonDir().x(), sky.moonDir().y(), sky.moonDir().z(), lunarSource,
+                            earthAtmosphere);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+            }
             // Upload any entity textures registered this frame into the bindless set before the trace.
             boolean buildOfflineSnapshot = offlineGroundTruth && offlineTlas == null;
             if (!offlineGroundTruth || buildOfflineSnapshot) {
@@ -1579,6 +1690,7 @@ public final class RtComposite {
             // don't pay for a second global-memory dereference through pcAddr.worldPushAddr first.
             if (sharcCache != null && !offlineGroundTruth) {
                 float sceneScale = CausticaConfig.Rt.Sharc.SCENE_SCALE.value();
+                float radianceScale = CausticaConfig.Rt.Sharc.RADIANCE_SCALE.value();
                 if (level != sharcWorldIdentity) {
                     if (sharcWorldIdentity != null) sharcCache.requestReset("world or dimension changed");
                     sharcWorldIdentity = level;
@@ -1592,6 +1704,13 @@ public final class RtComposite {
                     sharcCache.requestReset("scene scale changed");
                 }
                 sharcSceneScale = sceneScale;
+                // Radiance scale changes the cache encoding/decoding contract; retaining old packed values
+                // would reinterpret their energy. This targeted reset is intentionally not a broad signature.
+                if (!Float.isNaN(sharcRadianceScale)
+                        && Float.floatToIntBits(radianceScale) != Float.floatToIntBits(sharcRadianceScale)) {
+                    sharcCache.requestReset("radiance encoding scale changed");
+                }
+                sharcRadianceScale = radianceScale;
                 RtSharcCache.Frame sharcFrame = sharcCache.beginFrame(frameCounter,
                         (float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
                         (float) (camZ - terrain.blockZ), renderW, renderH);
@@ -1691,18 +1810,20 @@ public final class RtComposite {
             if (rrOutput != null) {
                 displayInput = rrOutput;
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // display input visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace + reconstructed display input visible
 
             boolean screenshotRequested = Minecraft.getInstance().options.keyScreenshot.isDown();
             boolean refreshDisplay = !offlineGroundTruth || screenshotRequested || offlineLastPresentNanos == 0L
                     || System.nanoTime() - offlineLastPresentNanos >= OFFLINE_PRESENT_INTERVAL_NANOS;
-            // Auto-exposure meters the post-RR image when RR ran, otherwise the native-resolution trace.
-            // RR has no exposure input of its own; this compositor-owned meter stays after reconstruction
-            // when reconstruction exists and avoids an otherwise redundant copy on the native path.
+            // Meter the canonical pre-reconstruction scene-linear trace in every renderer. DLSS-D may alter
+            // local radiance statistics while demodulating/reconstructing; letting that proprietary output
+            // drive the camera caused daylight to read near 2^-14 and climb to the exposure ceiling. The
+            // resulting exposure is still applied after reconstruction by display.comp, so DLSS-D receives
+            // neutral inputs while Offline and realtime share one physical camera domain.
             if (refreshDisplay) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
-                    exposure.record(ctx, cmd, stack, displayInput, offlineGroundTruth);
+                    exposure.record(ctx, cmd, stack, output, gDepth, offlineGroundTruth);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
                 if (traceGpuProfiler != null) traceGpuProfiler.exposureEnd(cmd);
@@ -1784,82 +1905,233 @@ public final class RtComposite {
     }
 
     private record SkyPush(Float4 sunDir, Float4 lightDir, Float4 lightRadiance, Float4 moonDir,
-                           Float4 celestial, Float4 sunUv, Float4 moonUv) {}
+                           Float4 celestial, Float4 sunUv, Float4 moonUv, Float4 environmentSky,
+                           Float4 skyState, Float4 skyLighting) {}
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
     /**
-     * Derive the celestial light from Minecraft's time of day as typed values for {@link WorldPushData}.
-     * Celestial angles come from the camera's {@link EnvironmentAttributeProbe} (partial-tick
-     * interpolated). {@code caustica.rt.sunNoonSouthDeg} tilts the east-west arc toward south (+Z) at
-     * noon.
+     * Project Minecraft's authoritative partial-tick clock and eight-day lunar phase onto an Earth-style
+     * astronomical sky. Latitude and season change the solar declination/path; the physical sun altitude
+     * then owns atmosphere, twilight, stars and direct-light gating so those systems cannot disagree.
      */
     private SkyPush skyPush() {
-        float sunX, sunY, sunZ, dayFactor, lx, ly, lz, rr, rg, rb, lightRadius;
-        float moonX, moonY, moonZ, moonPhase, starAngle, starBrightness;
+        final float sceneScale = 1.0f / 1024.0f;
         Minecraft mc = Minecraft.getInstance();
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         var probe = mc.gameRenderer.mainCamera().attributeProbe();
-        float sunAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partial) * (float) (Math.PI / 180.0);
-        float moonAngle = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partial) * (float) (Math.PI / 180.0);
-        float sunNoon = Mth.cos(sunAngle);
-        sunX = -Mth.sin(sunAngle); sunY = sunNoonY() * sunNoon; sunZ = sunNoonZ() * sunNoon;
-        float moonNoon = Mth.cos(moonAngle);
-        moonX = -Mth.sin(moonAngle); moonY = sunNoonY() * moonNoon; moonZ = sunNoonZ() * moonNoon;
-        moonPhase = probe.getValue(EnvironmentAttributes.MOON_PHASE, partial).index(); // 0 full .. 4 new
-        // Stars: use Minecraft's actual celestial rotation + brightness (the same values vanilla's
-        // SkyRenderer uses), so the starfield wheels about the celestial pole tied to world time and
-        // fades in/out at dusk/dawn exactly like vanilla. STAR_ANGLE is in degrees -> radians.
-        starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * (float) (Math.PI / 180.0);
-        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial);
-        dayFactor = smoothstep(-0.08f, 0.10f, sunY);
-        float[] trans = new float[3];
-        if (sunY > -0.05f) {
-            // Sun stays the NEE light through the whole sunset: its colour/intensity is the atmosphere's
-            // own transmittance (same Rayleigh+Mie+ozone march as the sky shader — see
-            // atmosphereTransmittance), so it whitens overhead and reddens+dims into the horizon on
-            // exactly the curve the visible sky follows. The old hand-tuned warmth ramp switched to the
-            // moon at sunY == 0 while the sun was still at ~16% strength, which read as a hard light pop
-            // at sunset/sunrise; transmittance is already near zero at the horizon, and the short
-            // smoothstep below carries the remainder to exactly zero before the moon takes over.
-            atmosphereTransmittance(sunX, sunY, sunZ, trans);
-            float fade = smoothstep(-0.05f, 0.005f, sunY);
-            float sunPeak = 21.0f;
+        float sunClockAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partial)
+                * (float)(Math.PI / 180.0);
+        int moonPhaseIndex = probe.getValue(EnvironmentAttributes.MOON_PHASE, partial).index();
+        long worldDay = mc.level == null ? 0L
+                : Math.floorDiv(mc.level.getLevelData().getGameTime(), 24_000L);
+        AstronomicalSky.State astronomy = AstronomicalSky.calculate(sunClockAngle, worldDay, moonPhaseIndex,
+                CausticaConfig.Rt.Composite.ASTRONOMICAL_LATITUDE_DEG.value(),
+                CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET.value());
+        float[] sunDirection = astronomy.sunDirection();
+        float[] moonDirection = astronomy.moonDirection();
+        float sunX = sunDirection[0], sunY = sunDirection[1], sunZ = sunDirection[2];
+        float moonX = moonDirection[0], moonY = moonDirection[1], moonZ = moonDirection[2];
+        float moonPhase = moonPhaseIndex;
+        boolean earthAtmosphere = mc.level != null && Level.OVERWORLD.equals(mc.level.dimension());
+        float rainBrightness = mc.level == null ? 1.0f : 1.0f - mc.level.getRainLevel(partial);
+        float starBrightness = astronomy.starBrightness() * rainBrightness;
+        int packedSky = probe.getValue(EnvironmentAttributes.SKY_COLOR, partial);
+        float dayFactor = astronomy.dayFactor();
+        float twilightFactor = astronomy.twilightFactor();
+        float solarEnvelope = astronomy.solarEnvelope();
+        float ambientEv = CausticaConfig.Rt.Composite.AMBIENT_LIGHT_EV.value();
+        float sunlightEv = CausticaConfig.Rt.Composite.SUNLIGHT_INTENSITY_EV.value();
+        float moonlightEv = CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV.value();
+        float airglowEv = CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV.value();
+        float sunAngularRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
+        float moonAngularRadius = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
+        handleSkyDiscontinuity(sunX, sunY, sunZ, ambientEv, sunlightEv, moonlightEv, airglowEv,
+                sunAngularRadius, moonAngularRadius);
+        int fallbackSky = (packedSky & 0x00ffffff) != 0
+                ? packedSky : probe.getValue(EnvironmentAttributes.FOG_COLOR, partial);
+        Float4 environmentSky = linearBt2020FromPackedRgb(fallbackSky);
+
+        float[] sunTrans = new float[3];
+        float[] moonTrans = new float[3];
+        atmosphereTransmittance(sunX, sunY, sunZ, sunTrans);
+        atmosphereTransmittance(moonX, moonY, moonZ, moonTrans);
+        float litFraction = astronomy.moonLitFraction();
+        float sunMultiplier = (float)Math.pow(2.0, sunlightEv);
+        float moonMultiplier = (float)Math.pow(2.0, moonlightEv);
+        float airglowMultiplier = (float)Math.pow(2.0, airglowEv);
+        float sunPeak = 120_000.0f * sceneScale * sunMultiplier * dayFactor * rainBrightness;
+        float moonPeak = 0.25f * sceneScale * moonMultiplier * litFraction
+                * (1.0f - solarEnvelope) * rainBrightness;
+        float sunLuma = sunPeak * (0.2627f * sunTrans[0] + 0.6780f * sunTrans[1] + 0.0593f * sunTrans[2]);
+        float moonLuma = moonPeak * (0.2627f * moonTrans[0] + 0.6780f * moonTrans[1] + 0.0593f * moonTrans[2]);
+        float lx, ly, lz, rr, rg, rb, lightRadius;
+        if (sunLuma >= moonLuma) {
             lx = sunX; ly = sunY; lz = sunZ;
-            rr = sunPeak * trans[0] * fade;
-            rg = sunPeak * trans[1] * fade;
-            rb = sunPeak * trans[2] * fade;
-            lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
+            rr = sunPeak * sunTrans[0]; rg = sunPeak * sunTrans[1]; rb = sunPeak * sunTrans[2];
+            lightRadius = sunAngularRadius;
         } else {
-            // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
-            // the sun fade also reaches zero) so the switch is invisible. Scaled by the lit fraction so
-            // a new moon gives near-zero moonlight, and tinted by the same transmittance so a low moon
-            // is warm amber, silver once high (or zero while it is below the horizon).
-            atmosphereTransmittance(moonX, moonY, moonZ, trans);
-            float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
-            float litFraction = 1.0f - Math.abs(moonPhase - 4.0f) / 4.0f; // 0 new .. 1 full
-            float moonPeak = 0.30f * (0.15f + 0.85f * litFraction);
             lx = moonX; ly = moonY; lz = moonZ;
-            rr = 0.30f * moonPeak * moonStrength * trans[0];
-            rg = 0.36f * moonPeak * moonStrength * trans[1];
-            rb = 0.55f * moonPeak * moonStrength * trans[2];
-            lightRadius = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
+            rr = moonPeak * moonTrans[0]; rg = moonPeak * moonTrans[1]; rb = moonPeak * moonTrans[2];
+            lightRadius = moonAngularRadius;
         }
+        if (!earthAtmosphere) {
+            dayFactor = twilightFactor = solarEnvelope = 0.0f;
+            rr = rg = rb = 0.0f;
+            starBrightness = 0.0f;
+        }
+        float ambientMultiplier = (float)Math.pow(2.0, ambientEv);
+        publishedSunAngle = astronomy.solarHourAngle(); publishedMoonAngle = astronomy.lunarHourAngle();
+        publishedDayFactor = dayFactor; publishedTwilightFactor = twilightFactor; publishedAmbientEv = ambientEv;
+        publishedSunX = sunX; publishedSunY = sunY; publishedSunZ = sunZ;
+        publishedMoonX = moonX; publishedMoonY = moonY; publishedMoonZ = moonZ;
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
-                new Float4(sunX, sunY, sunZ, dayFactor),
+                new Float4(sunX, sunY, sunZ, rainBrightness),
                 new Float4(lx, ly, lz, lightRadius),
                 new Float4(rr, rg, rb, starBrightness),
                 new Float4(moonX, moonY, moonZ, moonPhase),
-                new Float4(0f, celestialAxisY(), celestialAxisZ(), starAngle),
-                uv.sun(),
-                uv.moon());
+                new Float4(astronomy.celestialPole()[0], astronomy.celestialPole()[1],
+                        astronomy.celestialPole()[2], astronomy.siderealAngle()),
+                uv.sun(), uv.moon(), environmentSky,
+                new Float4(dayFactor, twilightFactor, ambientMultiplier, solarEnvelope),
+                new Float4(sunMultiplier, moonMultiplier, airglowMultiplier, litFraction));
+    }
+
+    static float vanillaDayFactor(int packedSky) {
+        return Math.max((packedSky >>> 16) & 0xff,
+                Math.max((packedSky >>> 8) & 0xff, packedSky & 0xff)) / 255.0f;
+    }
+
+    static float vanillaTwilightFactor(int packedTwilight) {
+        return ((packedTwilight >>> 24) & 0xff) / 255.0f;
+    }
+
+    private void handleSkyDiscontinuity(float sunX, float sunY, float sunZ,
+                                        float ambientEv, float sunlightEv,
+                                        float moonlightEv, float airglowEv,
+                                        float sunAngularRadius, float moonAngularRadius) {
+        boolean ambientChanged = !Float.isNaN(lastSkyAmbientEv)
+                && Float.floatToIntBits(ambientEv) != Float.floatToIntBits(lastSkyAmbientEv);
+        boolean sourceChanged = (!Float.isNaN(lastSunlightEv)
+                && Float.floatToIntBits(sunlightEv) != Float.floatToIntBits(lastSunlightEv))
+                || (!Float.isNaN(lastMoonlightEv)
+                && Float.floatToIntBits(moonlightEv) != Float.floatToIntBits(lastMoonlightEv))
+                || (!Float.isNaN(lastAirglowEv)
+                && Float.floatToIntBits(airglowEv) != Float.floatToIntBits(lastAirglowEv));
+        float angleDelta = Float.isNaN(lastSkySunX) ? 0.0f
+                : (float)Math.acos(Math.clamp(lastSkySunX * sunX + lastSkySunY * sunY + lastSkySunZ * sunZ,
+                        -1.0f, 1.0f));
+        boolean commandTimeJump = commandTimeResetRequested;
+        commandTimeResetRequested = false;
+        boolean timeJump = commandTimeJump || angleDelta > 0.05f;
+        boolean samplingChanged = (!Float.isNaN(lastSunAngularRadius)
+                && Float.floatToIntBits(sunAngularRadius) != Float.floatToIntBits(lastSunAngularRadius))
+                || (!Float.isNaN(lastMoonAngularRadius)
+                && Float.floatToIntBits(moonAngularRadius) != Float.floatToIntBits(lastMoonAngularRadius));
+        if (ambientChanged || sourceChanged || timeJump || samplingChanged) {
+            String reason = timeJump ? "time-of-day jumped"
+                    : (sourceChanged ? "sky light source changed"
+                    : (samplingChanged ? "celestial sampling radius changed" : "ambient light changed"));
+            fgReset = true;
+            rrProducedPreviousFrame = false;
+            RtDlssRr.INSTANCE.requestHistoryReset();
+            requestSharcReset(reason);
+            exposure.resetAutoHistory();
+        }
+        lastSkySunX = sunX;
+        lastSkySunY = sunY;
+        lastSkySunZ = sunZ;
+        lastSkyAmbientEv = ambientEv;
+        lastSunlightEv = sunlightEv;
+        lastMoonlightEv = moonlightEv;
+        lastAirglowEv = airglowEv;
+        lastSunAngularRadius = sunAngularRadius;
+        lastMoonAngularRadius = moonAngularRadius;
+    }
+
+    static boolean replacementAtlasesReady(long blockAtlas, long celestialAtlas,
+                                            long boundBlockAtlas, long boundCelestialAtlas) {
+        return blockAtlas != 0L && celestialAtlas != 0L
+                && blockAtlas != boundBlockAtlas && celestialAtlas != boundCelestialAtlas;
+    }
+
+    private boolean skyViewChanged(float sunX, float sunY, float sunZ, float sunSource,
+                                   float moonX, float moonY, float moonZ, float moonSource,
+                                   boolean enabled) {
+        // The 256x256 full-float table removes visible elevation rows from exact mirror reflections.
+        // A 0.15-degree threshold still updates multiple times across one apparent solar diameter, and
+        // offsets the doubled row count by rebuilding at most one third as often as the old table.
+        boolean changed = !skyViewStateValid
+                || materiallyDifferentDirection(sunX, sunY, sunZ,
+                        lastSkyViewSunX, lastSkyViewSunY, lastSkyViewSunZ)
+                || materiallyDifferentDirection(moonX, moonY, moonZ,
+                        lastSkyViewMoonX, lastSkyViewMoonY, lastSkyViewMoonZ)
+                || materiallyDifferentSource(sunSource, lastSkyViewSunSource)
+                || materiallyDifferentSource(moonSource, lastSkyViewMoonSource)
+                || enabled != lastSkyViewEnabled;
+        if (changed) {
+            skyViewStateValid = true;
+            lastSkyViewSunX = sunX;
+            lastSkyViewSunY = sunY;
+            lastSkyViewSunZ = sunZ;
+            lastSkyViewSunSource = sunSource;
+            lastSkyViewMoonX = moonX;
+            lastSkyViewMoonY = moonY;
+            lastSkyViewMoonZ = moonZ;
+            lastSkyViewMoonSource = moonSource;
+            lastSkyViewEnabled = enabled;
+        }
+        return changed;
+    }
+
+    static boolean materiallyDifferentDirection(float x, float y, float z,
+                                                  float previousX, float previousY, float previousZ) {
+        return previousX * x + previousY * y + previousZ * z < 0.99999657f; // cos(0.15 degrees)
+    }
+
+    static boolean materiallyDifferentSource(float current, float previous) {
+        float scale = Math.max(Math.max(Math.abs(current), Math.abs(previous)), 1.0e-6f);
+        return Math.abs(current - previous) > scale * (1.0f / 512.0f);
+    }
+
+    /** Called from the vanilla clock-update packet before its new state is applied. */
+    public void observeServerTime(long gameTime, long overworldDayTime) {
+        if (lastPacketDayTime != Long.MIN_VALUE && lastPacketGameTime != Long.MIN_VALUE) {
+            long dayDelta = overworldDayTime - lastPacketDayTime;
+            long gameDelta = gameTime - lastPacketGameTime;
+            if (dayDelta != 0L && dayDelta != gameDelta) commandTimeResetRequested = true;
+        }
+        lastPacketDayTime = overworldDayTime;
+        lastPacketGameTime = gameTime;
+    }
+
+    private static Float4 linearBt2020FromPackedRgb(int packed) {
+        return linearBt2020FromRgb(
+                ((packed >>> 16) & 0xff) / 255.0,
+                ((packed >>> 8) & 0xff) / 255.0,
+                (packed & 0xff) / 255.0);
+    }
+
+    private static Float4 linearBt2020FromRgb(double encodedR, double encodedG, double encodedB) {
+        double r = srgbToLinear(encodedR);
+        double g = srgbToLinear(encodedG);
+        double b = srgbToLinear(encodedB);
+        return new Float4(
+                (float) (0.6274039 * r + 0.3292830 * g + 0.0433131 * b),
+                (float) (0.0690973 * r + 0.9195406 * g + 0.0113612 * b),
+                (float) (0.0163916 * r + 0.0880132 * g + 0.8955953 * b),
+                0.0f);
+    }
+
+    private static double srgbToLinear(double value) {
+        return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
     }
 
     /**
      * Push the celestials-atlas UV rects (u0,v0,u1,v1) for the sun sprite and the current moon-phase
-     * sprite, so world.rmiss can sample the real vanilla textures on the discs. Atlas-not-ready (early
-     * boot / no resources) leaves full-range UVs and the shader's block-atlas fallback covers it.
+     * sprite, so world.rmiss can sample the real vanilla textures on the discs. An unresolved atlas is
+     * represented by a zero-area rect; world.rmiss skips that body and this method retries next frame.
      */
     private CelestialUv celestialUv(float moonPhaseIndex) {
         if (celestialUvAtlasHandle == 0L) {
@@ -1880,25 +2152,53 @@ public final class RtComposite {
         }
         celestialUvAtlasHandle = atlasHandle;
         celestialUvMoonPhase = -1;
-        sunU0 = 0f; sunV0 = 0f; sunU1 = 1f; sunV1 = 1f;
-        moonU0 = 0f; moonV0 = 0f; moonU1 = 1f; moonV1 = 1f;
+        sunU0 = sunV0 = sunU1 = sunV1 = 0f;
+        moonU0 = moonV0 = moonU1 = moonV1 = 0f;
+        celestialUvFailureLogged = false;
+        celestialUvResolvedLogged = false;
     }
 
     private void refreshCelestialUvCache(int moonPhase) {
-        sunU0 = 0f; sunV0 = 0f; sunU1 = 1f; sunV1 = 1f;
-        moonU0 = 0f; moonV0 = 0f; moonU1 = 1f; moonV1 = 1f;
-        try {
-            if (celestialUvAtlasHandle != 0L) {
-                TextureAtlas atlas = Minecraft.getInstance().getAtlasManager().getAtlasOrThrow(AtlasIds.CELESTIALS);
-                TextureAtlasSprite sun = atlas.getSprite(SUN_ID);
-                sunU0 = sun.getU0(); sunV0 = sun.getV0(); sunU1 = sun.getU1(); sunV1 = sun.getV1();
-                TextureAtlasSprite moon = atlas.getSprite(MOON_IDS[moonPhase]);
-                moonU0 = moon.getU0(); moonV0 = moon.getV0(); moonU1 = moon.getU1(); moonV1 = moon.getV1();
-            }
-        } catch (Exception ignored) {
-            // celestials atlas not yet loaded — keep full-range UVs (fallback texture is the block atlas)
+        if (celestialUvAtlasHandle == 0L) {
+            return;
         }
-        celestialUvMoonPhase = moonPhase;
+        try {
+            TextureAtlas atlas = Minecraft.getInstance().getAtlasManager().getAtlasOrThrow(AtlasIds.CELESTIALS);
+            TextureAtlasSprite sun = atlas.getSprite(SUN_ID);
+            TextureAtlasSprite moon = atlas.getSprite(MOON_IDS[moonPhase]);
+            float nextSunU0 = sun.getU0(), nextSunV0 = sun.getV0();
+            float nextSunU1 = sun.getU1(), nextSunV1 = sun.getV1();
+            float nextMoonU0 = moon.getU0(), nextMoonV0 = moon.getV0();
+            float nextMoonU1 = moon.getU1(), nextMoonV1 = moon.getV1();
+            if (!validCelestialUvRect(nextSunU0, nextSunV0, nextSunU1, nextSunV1)
+                    || !validCelestialUvRect(nextMoonU0, nextMoonV0, nextMoonU1, nextMoonV1)) {
+                throw new IllegalStateException("celestial atlas returned an invalid sprite rectangle");
+            }
+            sunU0 = nextSunU0; sunV0 = nextSunV0; sunU1 = nextSunU1; sunV1 = nextSunV1;
+            moonU0 = nextMoonU0; moonV0 = nextMoonV0; moonU1 = nextMoonU1; moonV1 = nextMoonV1;
+            celestialUvMoonPhase = moonPhase;
+            if (!celestialUvResolvedLogged) {
+                CausticaMod.LOGGER.info("Celestial sprites resolved: sun={} uv=[{},{},{},{}], moon={} uv=[{},{},{},{}]",
+                        SUN_ID, sunU0, sunV0, sunU1, sunV1, MOON_IDS[moonPhase],
+                        moonU0, moonV0, moonU1, moonV1);
+                celestialUvResolvedLogged = true;
+            }
+            celestialUvFailureLogged = false;
+        } catch (Exception error) {
+            sunU0 = sunV0 = sunU1 = sunV1 = 0f;
+            moonU0 = moonV0 = moonU1 = moonV1 = 0f;
+            celestialUvMoonPhase = -1;
+            if (!celestialUvFailureLogged) {
+                celestialUvFailureLogged = true;
+                CausticaMod.LOGGER.warn("Celestial sprite lookup failed; hiding the discs and retrying", error);
+            }
+        }
+    }
+
+    static boolean validCelestialUvRect(float u0, float v0, float u1, float v1) {
+        return Float.isFinite(u0) && Float.isFinite(v0) && Float.isFinite(u1) && Float.isFinite(v1)
+                && u0 >= 0.0f && v0 >= 0.0f && u1 <= 1.0f && v1 <= 1.0f
+                && u1 > u0 && v1 > v0;
     }
 
     /** Hermite smoothstep matching GLSL semantics (0 below edge0, 1 above edge1). */
@@ -1909,35 +2209,71 @@ public final class RtComposite {
 
     /**
      * RGB transmittance from the camera to space along {@code dir} — a verbatim port of
-     * {@code world.rmiss}'s {@code transmittanceToSpace} (Rayleigh + Mie + ozone optical depth, 8-step
+     * {@code world.rmiss}'s {@code transmittanceToSpace} (Rayleigh + Mie + ozone optical depth, 16-step
      * march from 2 km altitude; constants must stay in lock-step with the shader). This is what colours
      * the NEE sun/moonlight: because the sky shader tints its visible discs with the identical function,
      * the light on terrain and the sky's sunset can never disagree. A direction below the geometric
      * horizon accumulates enormous optical depth, so the result rolls to zero smoothly on its own —
      * no explicit planet-shadow test needed.
      */
-    private static void atmosphereTransmittance(float dx, float dy, float dz, float[] out) {
-        final double planetR = 6371000.0, atmosR = 6471000.0;
-        final double[] rayBeta = {5.5e-6, 13.0e-6, 22.4e-6};
-        final double mieBeta = 21.0e-6 * 1.1;
-        final double[] ozoneBeta = {0.650e-6, 1.881e-6, 0.085e-6};
-        final double oy = planetR + 2000.0;
-        // Larger root of ray vs atmosphere sphere, origin (0, oy, 0).
+    static void atmosphereTransmittance(float dx, float dy, float dz, float[] out) {
+        final double planetR = 6371.0, atmosR = 6471.0;
+        final double[] molecularBase = {6.605e-3, 1.067e-2, 1.842e-2, 3.156e-2};
+        final double[] ozoneXs = {3.472e-25, 3.914e-25, 1.349e-25, 11.03e-27};
+        final double[] aerosolAbsorbXs = {2.8722e-24, 4.6168e-24, 7.9706e-24, 1.3578e-23};
+        final double[] aerosolScatterXs = {1.5908e-22, 1.7711e-22, 2.0942e-22, 2.4033e-22};
+        final double aerosolBaseDensity = 1.3681e20;
+        final double oy = planetR + 2.0;
         double b = oy * dy;
         double tEnd = -b + Math.sqrt(Math.max(b * b - (oy * oy - atmosR * atmosR), 0.0));
-        double seg = tEnd / 8.0;
-        double odR = 0.0, odM = 0.0, odO = 0.0;
-        for (int i = 0; i < 8; i++) {
+        final int lightSteps = 16;
+        double seg = tEnd / lightSteps;
+        double[] opticalDepth = new double[4];
+        for (int i = 0; i < lightSteps; i++) {
             double t = seg * (i + 0.5);
             double px = dx * t, py = oy + dy * t, pz = dz * t;
             double h = Math.sqrt(px * px + py * py + pz * pz) - planetR;
-            odR += Math.exp(-h / 8000.0) * seg;
-            odM += Math.exp(-h / 1200.0) * seg;
-            odO += Math.max(0.0, 1.0 - Math.abs(h - 25000.0) / 15000.0) * seg;
+            if (h < 0.0) {
+                java.util.Arrays.fill(out, 0.0f);
+                return;
+            }
+            double logH = Math.log(Math.max(h, 1.0e-4));
+            double ozoneDensity = 3.78547397e20
+                    * Math.exp(-Math.pow(logH - 3.22261, 2.0) * 5.55555555 - logH);
+            double aerosolDensity = aerosolBaseDensity
+                    * (Math.exp(-h / 0.73) + 2.0e6 / aerosolBaseDensity);
+            double molecularDensity = Math.exp(-0.07771971 * Math.pow(Math.max(h, 0.0), 1.16364243));
+            for (int wavelength = 0; wavelength < 4; wavelength++) {
+                opticalDepth[wavelength] += (molecularBase[wavelength] * molecularDensity
+                        + ozoneXs[wavelength] * 334.5 * ozoneDensity
+                        + (aerosolAbsorbXs[wavelength] + aerosolScatterXs[wavelength]) * aerosolDensity)
+                        * seg;
+            }
         }
-        for (int i = 0; i < 3; i++) {
-            out[i] = (float) Math.exp(-(rayBeta[i] * odR + mieBeta * odM + ozoneBeta[i] * odO));
+        double[] sun = {1.679, 1.828, 1.986, 1.307};
+        double[] transmitted = new double[4];
+        for (int i = 0; i < 4; i++) {
+            transmitted[i] = sun[i] * Math.exp(-opticalDepth[i]);
         }
+        double[] rgb = spectralToBt2020(transmitted);
+        double[] reference = spectralToBt2020(sun);
+        out[0] = (float) Math.max(rgb[0] / reference[0], 0.0);
+        out[1] = (float) Math.max(rgb[1] / reference[1], 0.0);
+        out[2] = (float) Math.max(rgb[2] / reference[2], 0.0);
+    }
+
+    private static double[] spectralToBt2020(double[] spectrum) {
+        double x = 53.3869177386 * spectrum[0] + 43.9048444664 * spectrum[1]
+                + 1.6137278252 * spectrum[2] + 20.7626686738 * spectrum[3];
+        double y = 22.9813375067 * spectrum[0] + 71.3477957001 * spectrum[1]
+                + 18.4229605915 * spectrum[2] + 2.3614213523 * spectrum[3];
+        double z = 0.1025068680 * spectrum[1] + 31.7429211884 * spectrum[2]
+                + 110.4800964325 * spectrum[3];
+        return new double[] {
+                1.7166512 * x - 0.3556708 * y - 0.2533663 * z,
+                -0.6666844 * x + 1.6164812 * y + 0.0157685 * z,
+                0.0176399 * x - 0.0427706 * y + 0.9421031 * z
+        };
     }
 
     public void destroy() {
@@ -1967,6 +2303,20 @@ public final class RtComposite {
         }
         destroyGuideImages();
         exposure.destroy();
+        if (skyViewPipeline != null) {
+            skyViewPipeline.destroy();
+            skyViewPipeline = null;
+        }
+        if (skyViewLut != null) {
+            skyViewLut.destroy();
+            skyViewLut = null;
+        }
+        if (skyTransmittanceLut != null) {
+            skyTransmittanceLut.destroy();
+            skyTransmittanceLut = null;
+        }
+        skyTransmittanceReady = false;
+        skyViewStateValid = false;
         if (displayPipeline != null) {
             displayPipeline.destroy();
             displayPipeline = null;
@@ -2083,6 +2433,8 @@ public final class RtComposite {
         }
         return atlasSampler;
     }
+
+
 
     private static long blockAtlasView() {
         GpuTextureView view = Minecraft.getInstance().getTextureManager()

@@ -5,7 +5,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 
-/** Precomputed 64x64, 8D Owen-scrambled Sobol sequence used by the live path tracer. */
+/** Spatially permuted 64x64, 8D Owen-scrambled Sobol sequence used by the live path tracer. */
 public final class RtBlueNoiseSequence {
     static final int SIDE = 64;
     static final int SAMPLE_COUNT = SIDE * SIDE;
@@ -31,7 +31,7 @@ public final class RtBlueNoiseSequence {
             long offset = buffer.mapped + (long) sample * DIMENSIONS * Integer.BYTES;
             for (int dimension = 0; dimension < DIMENSIONS; dimension++) {
                 MemoryUtil.memPutInt(offset + (long) dimension * Integer.BYTES,
-                        sampleBits(sample, dimension));
+                        sampleBits(spatialSampleIndex(sample), dimension));
             }
         }
         return new RtBlueNoiseSequence(buffer);
@@ -39,6 +39,10 @@ public final class RtBlueNoiseSequence {
 
     public long deviceAddress() {
         return buffer.deviceAddress;
+    }
+
+    public RtBuffer buffer() {
+        return buffer;
     }
 
     public void destroy() {
@@ -49,6 +53,22 @@ public final class RtBlueNoiseSequence {
         int sobolDimension = DIMENSION_ORDER[dimension];
         int seed = sampleHash((sobolDimension + 1) * 0x9e3779b9);
         return owenScramble(RtPathSampleSequence.sobolBits(sample, sobolDimension), seed);
+    }
+
+    /**
+     * Map the row-major pixel index through a small 12-bit Feistel permutation before assigning its
+     * Sobol point. A raw Sobol sequence laid directly across scanlines has strong column correlation;
+     * this keeps every point exactly once while breaking that screen-axis structure.
+     */
+    static int spatialSampleIndex(int pixelIndex) {
+        int left = pixelIndex & 63;
+        int right = (pixelIndex >>> 6) & 63;
+        for (int key : new int[] {0x15d, 0x2b7, 0x3e1, 0x127}) {
+            int next = left ^ (sampleHash(right ^ key) & 63);
+            left = right;
+            right = next;
+        }
+        return left | (right << 6);
     }
 
     private static int owenScramble(int value, int seed) {

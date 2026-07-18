@@ -79,9 +79,9 @@ final class OfflineGroundTruthContractTest {
         assertTrue(!options.contains("offlineOptions()"));
         assertTrue(!menu.contains("offlineRendererButton"));
         assertTrue(menu.contains("extends CausticaSettingsScreen"));
-        assertTrue(workstation.contains("addImage()"));
+        assertTrue(workstation.contains("addExposure()"));
         assertTrue(workstation.contains("addOutput()"));
-        assertTrue(workstation.contains("addRendering()"));
+        assertTrue(workstation.contains("addLighting()"));
         assertTrue(workstation.contains("addView()"));
         assertTrue(videoMixin.contains("RtVideoOptions.causticaButton"));
         assertTrue(client.contains("OfflineGroundTruth.INSTANCE.handleHotkey(client)"));

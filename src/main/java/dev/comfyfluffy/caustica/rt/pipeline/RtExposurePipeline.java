@@ -46,10 +46,13 @@ final class RtExposurePipeline {
     private final long resolvePipeline;
 
     private long boundColorView;
+    private long boundDepthView;
     private long boundHistogramBufferForHist;
     private long boundHistogramBufferForResolve;
     private long boundExposureView;
     private long boundStateBuffer;
+    private long boundTileHistoryBufferForHist;
+    private long boundTileHistoryBufferForResolve;
     private boolean destroyed;
 
     private RtExposurePipeline(RtContext ctx,
@@ -75,21 +78,25 @@ final class RtExposurePipeline {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             LongBuffer p = stack.mallocLong(1);
 
-            VkDescriptorSetLayoutBinding.Buffer histBinds = VkDescriptorSetLayoutBinding.calloc(2, stack);
+            VkDescriptorSetLayoutBinding.Buffer histBinds = VkDescriptorSetLayoutBinding.calloc(4, stack);
             histBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             histBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            histBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            histBinds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo histDslci = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(histBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, histDslci, null, p), "vkCreateDescriptorSetLayout(rt exposure hist)");
             long histDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, histDsl, "exposure histogram descriptor set layout");
-            long histPool = createPool(vk, stack, 1, 1, "hist");
+            long histPool = createPool(vk, stack, 2, 2, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, histPool, "exposure histogram descriptor pool");
             long histSet = allocateSet(vk, stack, histPool, histDsl, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, histSet, "exposure histogram descriptor set");
-            long histLayout = createPipelineLayout(vk, stack, histDsl, 0, "hist");
+            long histLayout = createPipelineLayout(vk, stack, histDsl, 12, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, histLayout, "exposure histogram pipeline layout");
             long histModule = loadModule(vk, stack, "exposure_hist.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, histModule, "exposure histogram shader module");
@@ -97,23 +104,25 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, histPipeline, "exposure histogram pipeline");
             VK10.vkDestroyShaderModule(vk, histModule, null);
 
-            VkDescriptorSetLayoutBinding.Buffer resolveBinds = VkDescriptorSetLayoutBinding.calloc(3, stack);
+            VkDescriptorSetLayoutBinding.Buffer resolveBinds = VkDescriptorSetLayoutBinding.calloc(4, stack);
             resolveBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             resolveBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             resolveBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            resolveBinds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo resolveDslci = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(resolveBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, resolveDslci, null, p), "vkCreateDescriptorSetLayout(rt exposure resolve)");
             long resolveDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, resolveDsl, "exposure resolve descriptor set layout");
-            long resolvePool = createPool(vk, stack, 1, 2, "resolve");
+            long resolvePool = createPool(vk, stack, 1, 3, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, resolvePool, "exposure resolve descriptor pool");
             long resolveSet = allocateSet(vk, stack, resolvePool, resolveDsl, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, resolveSet, "exposure resolve descriptor set");
-            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 32, "resolve");
+            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 64, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, resolveLayout, "exposure resolve pipeline layout");
             long resolveModule = loadModule(vk, stack, "exposure_resolve.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, resolveModule, "exposure resolve shader module");
@@ -126,25 +135,38 @@ final class RtExposurePipeline {
         }
     }
 
-    void setResources(long colorView, RtBuffer histogram, long exposureView, RtBuffer state) {
-        if (boundColorView != colorView || boundHistogramBufferForHist != histogram.handle) {
+    void setResources(long colorView, long depthView, RtBuffer histogram, long exposureView, RtBuffer state,
+                      RtBuffer tileHistory) {
+        if (boundColorView != colorView || boundDepthView != depthView
+                || boundHistogramBufferForHist != histogram.handle
+                || boundTileHistoryBufferForHist != tileHistory.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorImageInfo.Buffer colorInfo = VkDescriptorImageInfo.calloc(1, stack);
                 colorInfo.get(0).imageView(colorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorBufferInfo.Buffer histInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 histInfo.get(0).buffer(histogram.handle).offset(0).range(histogram.size);
-                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+                VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
+                depthInfo.get(0).imageView(depthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorBufferInfo.Buffer tileInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                tileInfo.get(0).buffer(tileHistory.handle).offset(0).range(tileHistory.size);
+                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
                 writes.get(0).sType$Default().dstSet(histDescriptorSet).dstBinding(0)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(colorInfo);
                 writes.get(1).sType$Default().dstSet(histDescriptorSet).dstBinding(1)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(histInfo);
+                writes.get(2).sType$Default().dstSet(histDescriptorSet).dstBinding(2)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(depthInfo);
+                writes.get(3).sType$Default().dstSet(histDescriptorSet).dstBinding(3)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(tileInfo);
                 VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
             }
             boundColorView = colorView;
+            boundDepthView = depthView;
             boundHistogramBufferForHist = histogram.handle;
+            boundTileHistoryBufferForHist = tileHistory.handle;
         }
         if (boundHistogramBufferForResolve != histogram.handle || boundExposureView != exposureView
-                || boundStateBuffer != state.handle) {
+                || boundStateBuffer != state.handle || boundTileHistoryBufferForResolve != tileHistory.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorBufferInfo.Buffer histInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 histInfo.get(0).buffer(histogram.handle).offset(0).range(histogram.size);
@@ -152,44 +174,65 @@ final class RtExposurePipeline {
                 exposureInfo.get(0).imageView(exposureView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorBufferInfo.Buffer stateInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 stateInfo.get(0).buffer(state.handle).offset(0).range(state.size);
-                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+                VkDescriptorBufferInfo.Buffer tileInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                tileInfo.get(0).buffer(tileHistory.handle).offset(0).range(tileHistory.size);
+                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
                 writes.get(0).sType$Default().dstSet(resolveDescriptorSet).dstBinding(0)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(histInfo);
                 writes.get(1).sType$Default().dstSet(resolveDescriptorSet).dstBinding(1)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
                 writes.get(2).sType$Default().dstSet(resolveDescriptorSet).dstBinding(2)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(stateInfo);
+                writes.get(3).sType$Default().dstSet(resolveDescriptorSet).dstBinding(3)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(tileInfo);
                 VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
             }
             boundHistogramBufferForResolve = histogram.handle;
             boundExposureView = exposureView;
             boundStateBuffer = state.handle;
+            boundTileHistoryBufferForResolve = tileHistory.handle;
         }
     }
 
-    void dispatchHistogram(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height) {
+    void dispatchHistogram(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height,
+                           RtExposure.AutoConfig config) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure histogram")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipelineLayout, 0,
                     stack.longs(histDescriptorSet), null);
-            VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
+            ByteBuffer push = stack.malloc(12);
+            push.putFloat(0, config.logMin());
+            push.putFloat(4, config.logMax());
+            push.putFloat(8, config.centerWeight());
+            VK10.vkCmdPushConstants(cmd, histPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            VK10.vkCmdDispatch(cmd, (width + 31) / 32, (height + 31) / 32, 1);
         }
     }
 
-    void dispatchResolve(org.lwjgl.vulkan.VkCommandBuffer cmd, int pixelCount, RtExposure.AutoConfig config, float frameTimeSeconds) {
+    void dispatchResolve(org.lwjgl.vulkan.VkCommandBuffer cmd, RtExposure.AutoConfig config,
+                         float frameTimeSeconds, int width, int height) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure resolve")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipelineLayout, 0,
                     stack.longs(resolveDescriptorSet), null);
-            ByteBuffer push = stack.malloc(32);
-            push.putInt(0, pixelCount);
-            push.putFloat(4, config.key());
-            push.putFloat(8, config.minEv());
-            push.putFloat(12, config.maxEv());
-            push.putFloat(16, config.adaptUp());
-            push.putFloat(20, config.adaptDown());
-            push.putFloat(24, frameTimeSeconds);
-            push.putFloat(28, config.evBias());
+            ByteBuffer push = stack.malloc(64);
+            push.putFloat(0, config.key());
+            push.putFloat(4, config.minEv());
+            push.putFloat(8, config.maxEv());
+            push.putFloat(12, config.adaptUp());
+            push.putFloat(16, config.adaptDown());
+            push.putFloat(20, frameTimeSeconds);
+            push.putFloat(24, config.evBias());
+            push.putFloat(28, config.lowPercentile());
+            push.putFloat(32, config.highPercentile());
+            push.putFloat(36, config.highlightPercentile());
+            push.putFloat(40, config.highlightHeadroom());
+            push.putFloat(44, config.logMin());
+            push.putFloat(48, config.logMax());
+            long sampledPixels = ((long) width + 1L) / 2L * (((long) height + 1L) / 2L);
+            push.putFloat(52, (float) sampledPixels);
+            push.putInt(56, (width + 31) / 32);
+            push.putInt(60, (height + 31) / 32);
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);
         }

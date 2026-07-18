@@ -81,8 +81,9 @@ public class CausticaSettingsScreen extends Screen {
     private Category category = Category.OVERVIEW;
 
     private enum Category {
-        OVERVIEW("Overview"), OUTPUT("Output"), RENDERING("Rendering"), SHARC("SHaRC"), IMAGE("Image"),
-        VIEW("View"), DIAGNOSTICS("Advanced");
+        OVERVIEW("Overview"), OUTPUT("Display & Latency"), RECONSTRUCTION("Reconstruction"),
+        LIGHTING("Lighting & Sky"), EXPOSURE("Exposure & Tone Mapping"), GEOMETRY("Geometry & Effects"),
+        SHARC("SHaRC"), VIEW("View"), DIAGNOSTICS("Diagnostics");
         final String label;
         Category(String label) { this.label = label; }
     }
@@ -146,9 +147,11 @@ public class CausticaSettingsScreen extends Screen {
             switch (category) {
                 case OVERVIEW -> addOverview();
                 case OUTPUT -> addOutput();
-                case RENDERING -> addRendering();
+                case RECONSTRUCTION -> addReconstruction();
+                case LIGHTING -> addLighting();
+                case EXPOSURE -> addExposure();
+                case GEOMETRY -> addGeometry();
                 case SHARC -> addSharc();
-                case IMAGE -> addImage();
                 case VIEW -> addView();
                 case DIAGNOSTICS -> addDiagnostics();
             }
@@ -223,9 +226,13 @@ public class CausticaSettingsScreen extends Screen {
                 CausticaConfig.Rt.Exposure.MODE::set,
                 value -> Component.translatable("caustica.options.rt.exposureMode." + value), null));
         scene.add(floatSlider(Component.translatable("caustica.options.rt.manualEv"),
-                CausticaConfig.Rt.Exposure.MANUAL_EV, -5, 5,
+                CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV, -12, 12,
                 value -> String.format(Locale.ROOT, "%+.1f EV", value))
                 .activeWhen(() -> "manual".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        scene.add(floatSlider(Component.translatable("caustica.options.rt.exposureCompensation"),
+                CausticaConfig.Rt.Exposure.COMPENSATION_EV, -4, 4,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
         scene.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.sdrTonemap"), SDR_TONEMAPPERS,
                 CausticaConfig.Rt.Sdr.TONEMAP_MODE::configuredValue, CausticaConfig.Rt.Sdr.TONEMAP_MODE::set,
                 value -> Component.translatable("caustica.options.rt.sdrTonemap." + value), this::rebuild));
@@ -249,9 +256,11 @@ public class CausticaSettingsScreen extends Screen {
         collectingSearchResults = true;
         collectedSearchResults.clear();
         addOutput();
-        addRendering();
+        addReconstruction();
+        addLighting();
+        addExposure();
+        addGeometry();
         addSharc();
-        addImage();
         addView();
         addDiagnostics();
         collectingSearchResults = false;
@@ -326,23 +335,9 @@ public class CausticaSettingsScreen extends Screen {
                 : Component.literal("Output changes save automatically"));
     }
 
-    private void addRendering() {
-        addHeader("Rendering", "Path tracing, reconstruction, geometry, and optical effects");
+    private void addReconstruction() {
+        addHeader("Reconstruction", "DLSS Ray Reconstruction and its scene-linear guide inputs");
         List<AbstractWidget> controls = new ArrayList<>();
-        controls.add(toggle(Component.translatable("caustica.options.enabled"), CausticaConfig.Rt.ENABLED));
-        controls.add(intSlider(Component.translatable("caustica.options.rt.spp"), CausticaConfig.Rt.Composite.SPP,
-                1, 8, value -> String.format(Locale.ROOT, "%.0f spp", value)));
-        controls.add(intSlider(Component.translatable("caustica.options.rt.maxBounces"),
-                CausticaConfig.Rt.Composite.MAX_BOUNCES, 2, 8,
-                value -> String.format(Locale.ROOT, "%.0f bounces", value)));
-        controls.add(new Slider(180, Component.translatable("caustica.options.rt.sunSize"),
-                () -> Math.toDegrees(CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.configuredValue()),
-                value -> CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.set((float)Math.toRadians(value)),
-                unit -> 0.1 + unit * 4.9, value -> (value - 0.1) / 4.9,
-                value -> String.format(Locale.ROOT, "%.1f deg", value))
-                .tooltip(Component.translatable("caustica.options.rt.sunSize.tooltip"))
-                .resetOnShift(() -> CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.set(
-                        CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.defaultValue())));
         controls.add(toggle(Component.translatable("caustica.options.rt.dlssRr"), CausticaConfig.Rt.DlssRr.ENABLED));
         controls.add(toggle(Component.translatable("caustica.options.rt.dlssDiffusePathGuide"),
                 CausticaConfig.Rt.DlssRr.DIFFUSE_PATH_GUIDE)
@@ -352,18 +347,75 @@ public class CausticaSettingsScreen extends Screen {
                 CausticaConfig.Rt.DlssRr.QUALITY::configuredValue, CausticaConfig.Rt.DlssRr.QUALITY::set,
                 value -> Component.translatable("caustica.options.rt.dlssQuality." + value), null)
                 .activeWhen(CausticaConfig.Rt.DlssRr.ENABLED::configuredValue));
+        addGrid(controls);
+    }
+
+    private void addLighting() {
+        addHeader("Lighting & Sky", "Celestial energy, atmospheric ambience, emissives, and shadow softness");
+        List<AbstractWidget> controls = new ArrayList<>();
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.sunlightIntensity"),
+                CausticaConfig.Rt.Composite.SUNLIGHT_INTENSITY_EV, -4.0, 4.0,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value)));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.moonlightIntensity"),
+                CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV, -4.0, 8.0,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value)));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.ambientLight"),
+                CausticaConfig.Rt.Composite.AMBIENT_LIGHT_EV, -8.0, 8.0,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value))
+                .tooltip(Component.translatable("caustica.options.rt.ambientLight.tooltip")));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.nightAirglow"),
+                CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV, -8.0, 8.0,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value)));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.astronomicalLatitude"),
+                CausticaConfig.Rt.Composite.ASTRONOMICAL_LATITUDE_DEG, -90.0, 90.0,
+                value -> String.format(Locale.ROOT, "%.1f deg %s", Math.abs(value), value >= 0.0 ? "N" : "S"))
+                .tooltip(Component.translatable("caustica.options.rt.astronomicalLatitude.tooltip")));
+        controls.add(intSlider(Component.translatable("caustica.options.rt.dayOfYearOffset"),
+                CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET, 0, 364,
+                value -> String.format(Locale.ROOT, "day %.0f", value + 1.0))
+                .tooltip(Component.translatable("caustica.options.rt.dayOfYearOffset.tooltip")));
+        controls.add(new Slider(180, Component.translatable("caustica.options.rt.sunSize"),
+                () -> Math.toDegrees(CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.configuredValue()),
+                value -> CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.set((float)value),
+                unit -> 0.1 + unit * 4.9, value -> (value - 0.1) / 4.9,
+                value -> String.format(Locale.ROOT, "%.1f deg", value))
+                .tooltip(Component.translatable("caustica.options.rt.sunSize.tooltip"))
+                .resetOnShift(() -> CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.set(
+                        (float)Math.toDegrees(CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.defaultValue()))));
+        controls.add(new Slider(180, Component.translatable("caustica.options.rt.moonSize"),
+                () -> Math.toDegrees(CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.configuredValue()),
+                value -> CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.set((float)value),
+                unit -> 0.1 + unit * 4.9, value -> (value - 0.1) / 4.9,
+                value -> String.format(Locale.ROOT, "%.1f deg", value))
+                .tooltip(Component.translatable("caustica.options.rt.moonSize.tooltip"))
+                .resetOnShift(() -> CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.set(
+                        (float)Math.toDegrees(CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.defaultValue()))));
+        controls.add(new Slider(180, Component.translatable("caustica.options.rt.torchIntensity"),
+                CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER::configuredValue,
+                value -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set((float)value),
+                unit -> RtVideoOptions.torchMultiplierFromSlider((int)Math.round(unit * 100.0)),
+                value -> RtVideoOptions.torchSliderFromMultiplier((float)value) / 100.0,
+                value -> String.format(Locale.ROOT, "%.0f cd/m²", value * 2000.0))
+                .tooltip(Component.translatable("caustica.options.rt.torchIntensity.tooltip"))
+                .resetOnShift(() -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set(
+                        CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.defaultValue())));
+        addGrid(controls);
+    }
+
+    private void addGeometry() {
+        addHeader("Geometry & Effects", "Path depth, scene participation, water, mirrors, and material transport");
+        List<AbstractWidget> controls = new ArrayList<>();
+        controls.add(toggle(Component.translatable("caustica.options.enabled"), CausticaConfig.Rt.ENABLED));
+        controls.add(intSlider(Component.translatable("caustica.options.rt.spp"), CausticaConfig.Rt.Composite.SPP,
+                1, 8, value -> String.format(Locale.ROOT, "%.0f spp", value)));
+        controls.add(intSlider(Component.translatable("caustica.options.rt.maxBounces"),
+                CausticaConfig.Rt.Composite.MAX_BOUNCES, 2, 8,
+                value -> String.format(Locale.ROOT, "%.0f bounces", value)));
         controls.add(toggle(Component.translatable("caustica.options.rt.entities"), CausticaConfig.Rt.Entities.ENABLED));
         controls.add(toggle(Component.translatable("caustica.options.rt.particles"),
                 CausticaConfig.Rt.Entities.PARTICLES_ENABLED));
         controls.add(toggle(Component.translatable("caustica.options.rt.waterWaves"),
                 CausticaConfig.Rt.Composite.WATER_WAVES));
-        controls.add(new Slider(180, Component.translatable("caustica.options.rt.torchIntensity"),
-                CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER::configuredValue,
-                value -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set((float)value),
-                unit -> unit, value -> value,
-                value -> String.format(Locale.ROOT, "%.1f", value))
-                .resetOnShift(() -> CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.set(
-                        CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.defaultValue())));
         controls.add(intSlider(Component.translatable("caustica.options.rt.psrMirrorDepth"),
                 CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS, 1, 32,
                 value -> String.format(Locale.ROOT, "%.0f", value)));
@@ -435,7 +487,7 @@ public class CausticaSettingsScreen extends Screen {
                         .tooltip(Component.translatable("caustica.options.rt.sharcRestoreParity.tooltip"))));
     }
 
-    private void addImage() {
+    private void addExposure() {
         addHeader("Exposure & tone mapping", "Only the selected output curve's controls are shown");
         List<AbstractWidget> controls = new ArrayList<>();
         controls.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.exposureMode"),
@@ -445,9 +497,73 @@ public class CausticaSettingsScreen extends Screen {
                 .resetOnShift(() -> CausticaConfig.Rt.Exposure.MODE.set(
                         CausticaConfig.Rt.Exposure.MODE.defaultValue())));
         controls.add(floatSlider(Component.translatable("caustica.options.rt.manualEv"),
-                CausticaConfig.Rt.Exposure.MANUAL_EV, -5, 5,
+                CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV, -12, 12,
                 value -> String.format(Locale.ROOT, "%+.1f EV", value))
                 .activeWhen(() -> "manual".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureCompensation"),
+                CausticaConfig.Rt.Exposure.COMPENSATION_EV, -4, 4,
+                value -> String.format(Locale.ROOT, "%+.1f EV", value))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureKey"),
+                CausticaConfig.Rt.Exposure.KEY, 0.05, 0.50,
+                value -> String.format(Locale.ROOT, "%.2f", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureKey.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureLowPercentile"),
+                CausticaConfig.Rt.Exposure.LOW_PERCENTILE, 0.0, 0.50,
+                value -> String.format(Locale.ROOT, "%.0f%%", value * 100.0))
+                .tooltip(Component.translatable("caustica.options.rt.exposureLowPercentile.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureHighPercentile"),
+                CausticaConfig.Rt.Exposure.HIGH_PERCENTILE, 0.50, 1.0,
+                value -> String.format(Locale.ROOT, "%.0f%%", value * 100.0))
+                .tooltip(Component.translatable("caustica.options.rt.exposureHighPercentile.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureHighlightPercentile"),
+                CausticaConfig.Rt.Exposure.HIGHLIGHT_PERCENTILE, 0.95, 1.0,
+                value -> String.format(Locale.ROOT, "%.2f%%", value * 100.0))
+                .tooltip(Component.translatable("caustica.options.rt.exposureHighlightPercentile.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureHighlightHeadroom"),
+                CausticaConfig.Rt.Exposure.HIGHLIGHT_HEADROOM, 1.0, 32.0,
+                value -> String.format(Locale.ROOT, "%.1fx", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureHighlightHeadroom.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureDarkAdapt"),
+                CausticaConfig.Rt.Exposure.ADAPT_UP, 0.1, 10.0,
+                value -> String.format(Locale.ROOT, "%.1f s", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureDarkAdapt.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureBrightAdapt"),
+                CausticaConfig.Rt.Exposure.ADAPT_DOWN, 0.1, 10.0,
+                value -> String.format(Locale.ROOT, "%.1f s", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureBrightAdapt.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureMinEv"),
+                CausticaConfig.Rt.Exposure.MIN_EV, -24.0, 0.0,
+                value -> String.format(Locale.ROOT, "%+.0f EV", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureMinEv.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureMaxEv"),
+                CausticaConfig.Rt.Exposure.MAX_EV, 0.0, 12.0,
+                value -> String.format(Locale.ROOT, "%+.0f EV", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureMaxEv.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureCenterWeight"),
+                CausticaConfig.Rt.Exposure.CENTER_WEIGHT, 0.0, 8.0,
+                value -> String.format(Locale.ROOT, "%.1fx", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureCenterWeight.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureLogMin"),
+                CausticaConfig.Rt.Exposure.LOG_MIN, -32.0, 8.0,
+                value -> String.format(Locale.ROOT, "%+.0f EV", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureLogMin.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
+        controls.add(floatSlider(Component.translatable("caustica.options.rt.exposureLogMax"),
+                CausticaConfig.Rt.Exposure.LOG_MAX, -8.0, 32.0,
+                value -> String.format(Locale.ROOT, "%+.0f EV", value))
+                .tooltip(Component.translatable("caustica.options.rt.exposureLogMax.tooltip"))
+                .activeWhen(() -> "auto".equals(CausticaConfig.Rt.Exposure.MODE.configuredValue())));
         controls.add(new Dropdown<>(180, Component.translatable("caustica.options.rt.sdrTonemap"), SDR_TONEMAPPERS,
                 CausticaConfig.Rt.Sdr.TONEMAP_MODE::configuredValue, CausticaConfig.Rt.Sdr.TONEMAP_MODE::set,
                 value -> Component.translatable("caustica.options.rt.sdrTonemap." + value), this::rebuild)
@@ -472,6 +588,12 @@ public class CausticaSettingsScreen extends Screen {
                 .activeWhen(CausticaConfig.Rt.Hdr.ENABLED::configuredValue));
         addGrid(controls);
 
+        addInfo(() -> Component.literal(String.format(Locale.ROOT,
+                "Exposure  actual %+.2f EV  |  target %+.2f EV  |  confidence %.0f%%  |  trusted %.1f%%  |  ceiling %+.1f EV",
+                RtComposite.INSTANCE.exposureActualEv(), RtComposite.INSTANCE.exposureTargetEv(),
+                RtComposite.INSTANCE.exposureConfidence() * 100.0f,
+                RtComposite.INSTANCE.exposureTrustedCoverage() * 100.0f,
+                RtComposite.INSTANCE.exposureActiveCeilingEv())));
         addInfo(() -> Component.literal("Active curve  \u2022  " + activeToneLabel()));
         List<AbstractWidget> active = toneWidgets(activeToneControls());
         if (!active.isEmpty()) addGrid(active);

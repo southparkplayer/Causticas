@@ -234,7 +234,12 @@ public final class RtDeviceBringup {
     }
 
     private static boolean ommRequested() {
-        return CausticaConfig.Rt.Omm.ENABLED.value();
+        // Terrain OMM is a transparent acceleration representation, not a visual-quality mode. Prefer it
+        // automatically whenever the driver exposes VK_EXT_opacity_micromap: the classifier preserves the
+        // authored alpha test and conservatively leaves uncertain micro-triangles on the any-hit path.
+        // Keeping this behind a persisted scene setting made identical builds silently fall back to the
+        // divergent foliage shader, which is exactly the workload OMM exists to remove.
+        return true;
     }
 
     /** Query the raw {@code VkPhysicalDeviceFeatures} for {@code wideLines} support — no wrapper on
