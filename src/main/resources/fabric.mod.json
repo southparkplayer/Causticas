@@ -10,6 +10,9 @@
 	"license": "LGPL-3.0-or-later",
 	"environment": "client",
 	"entrypoints": {
+		"preLaunch": [
+			"dev.comfyfluffy.caustica.client.CausticaPreLaunch"
+		],
 		"main": [
 			"dev.comfyfluffy.caustica.CausticaMod"
 		],

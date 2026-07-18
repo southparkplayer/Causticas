@@ -29,6 +29,10 @@ loom {
 			setConfigName("Fabric Client")
 			ideConfigGenerated = true
 			runDir = "run"
+			// Caustica cannot render on OpenGL. An explicit launch argument also prevents Minecraft's
+			// post-crash fallback from silently overriding the persisted Vulkan preference in dev runs.
+			programArg "--graphicsBackend"
+			programArg "VULKAN"
 			// java.lang.foreign restricted methods (FFM bindings to amd_fidelityfx_vk.dll)
 			vmArg "--enable-native-access=ALL-UNNAMED"
 
