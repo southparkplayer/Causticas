@@ -180,6 +180,11 @@ final class CausticaDebugBridge {
                 Integer.toString(dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg.INSTANCE.reflexGpuActiveRenderTimeUs()));
         state.setProperty("renderWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
         state.setProperty("renderHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
+        state.setProperty("outputScalePercent", Integer.toString(RtComposite.INSTANCE.outputScalePercent()));
+        state.setProperty("outputWidth", Integer.toString(RtComposite.INSTANCE.outputWidth()));
+        state.setProperty("outputHeight", Integer.toString(RtComposite.INSTANCE.outputHeight()));
+        state.setProperty("outputScalePath", RtComposite.INSTANCE.outputScalePath());
+        state.setProperty("outputScaleFailure", RtComposite.INSTANCE.outputScaleFailure());
         state.setProperty("backend", RtRuntimeStatus.backend());
         state.setProperty("rtRequested", Boolean.toString(RtDeviceBringup.rtRequested()));
         state.setProperty("rtContextReady", Boolean.toString(RtRuntimeStatus.rtContextReady()));

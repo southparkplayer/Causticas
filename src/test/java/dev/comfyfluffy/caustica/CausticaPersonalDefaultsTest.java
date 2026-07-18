@@ -15,6 +15,7 @@ final class CausticaPersonalDefaultsTest {
         assertEquals(2.9925926f, CausticaConfig.Rt.Composite.NIGHT_AIRGLOW_EV.defaultValue());
         assertEquals(0, CausticaConfig.Rt.Composite.DAY_OF_YEAR_OFFSET.defaultValue());
         assertEquals(32, CausticaConfig.Rt.Composite.PSR_MAX_MIRRORS.defaultValue());
+        assertEquals(100, CausticaConfig.Rt.OutputScale.PERCENT.defaultValue());
         assertEquals(192, CausticaConfig.Rt.Terrain.MAX_INFLIGHT_SECTIONS.defaultValue());
         assertEquals(5.027523f, CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV.defaultValue());
         assertEquals(5.7297297f, CausticaConfig.Rt.Exposure.MAX_EV.defaultValue());

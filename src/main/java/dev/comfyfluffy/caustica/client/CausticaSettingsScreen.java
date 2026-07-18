@@ -453,6 +453,11 @@ public class CausticaSettingsScreen extends Screen {
                 .activeWhen(this::dlssControlsActive));
         addBundle("Global backend", "Auto selects NRD on AMD/Linux and DLSS-RR on supported Windows NVIDIA systems");
         addGrid(List.of(controls.get(0), controls.get(4)));
+        addBundle("Output scaling", "World-image resolution before native overlays and UI");
+        addGrid(List.of(intSlider(Component.translatable("caustica.options.rt.outputScale"),
+                CausticaConfig.Rt.OutputScale.PERCENT, 10, 200,
+                value -> String.format(Locale.ROOT, "%.0f%%", value))
+                .tooltip(Component.translatable("caustica.options.rt.outputScale.tooltip"))));
         addBundle("DLSS Ray Reconstruction", "NVIDIA Streamline enablement, upscale quality, and guide inputs");
         addGrid(List.of(controls.get(1), controls.get(3), controls.get(2), controls.get(5)));
 

@@ -74,6 +74,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPathSampleSequence;
+import dev.comfyfluffy.caustica.rt.pipeline.RtOutputScalePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBlueNoiseSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSharcResolvePipeline;
@@ -148,6 +149,11 @@ public final class RtComposite {
     public long copyGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.copyNanos(); }
     public int renderWidth() { return renderW; }
     public int renderHeight() { return renderH; }
+    public int outputScalePercent() { return outputScalePercent; }
+    public int outputWidth() { return outputW; }
+    public int outputHeight() { return outputH; }
+    public String outputScalePath() { return RtOutputScale.path(outputScalePercent, outputScaleLinearFallback); }
+    public String outputScaleFailure() { return outputScaleFailure; }
     public float skySunAngle() { return publishedSunAngle; }
     public float skyMoonAngle() { return publishedMoonAngle; }
     public float skyDayFactor() { return publishedDayFactor; }
@@ -286,6 +292,7 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtOutputScalePipeline outputScalePipeline;
     private RtSkyViewPipeline skyViewPipeline;
     private RtImage skyViewLut;
     private RtImage skyTransmittanceLut;
@@ -296,6 +303,9 @@ public final class RtComposite {
     private boolean lastSkyViewEnabled;
     private RtImage output;
     private RtImage displayImage;
+    private RtImage scaledDisplayImage;
+    private RtImage scaledHdrDisplayImage;
+    private RtImage outputScaleWork;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
     // this image is blitted straight to the swapchain.
@@ -379,6 +389,16 @@ public final class RtComposite {
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
     private int displayW = -1;
     private int displayH = -1;
+    private int outputW = -1;
+    private int outputH = -1;
+    private int outputScalePercent = 100;
+    private boolean outputScaleLinearFallback;
+    private int outputScaleAllocationFailurePercent = Integer.MIN_VALUE;
+    private int outputScaleAllocationFailureW = -1;
+    private int outputScaleAllocationFailureH = -1;
+    private boolean outputScaleAllocationFailureHdr;
+    private boolean outputScaleFailureLogged;
+    private String outputScaleFailure = "none";
     private int renderW = -1;
     private int renderH = -1;
     // What ensureOutput last sized the render/guide images for, so a quality change (or RR being
@@ -1466,10 +1486,20 @@ public final class RtComposite {
                 && "auto".equalsIgnoreCase(CausticaConfig.Rt.Exposure.MODE.get());
         boolean exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
         boolean hdrEnabled = RtHdr.effective();
+        int configuredScalePercent = RtOutputScale.clampPercent(CausticaConfig.Rt.OutputScale.PERCENT.value());
+        int desiredScalePercent = offlineGroundTruth ? 100 : configuredScalePercent;
+        boolean allocationFallback = !offlineGroundTruth
+                && outputScaleAllocationFailurePercent == configuredScalePercent
+                && outputScaleAllocationFailureW == width && outputScaleAllocationFailureH == height
+                && outputScaleAllocationFailureHdr == hdrEnabled;
+        int desiredOutputW = allocationFallback ? width : RtOutputScale.dimension(width, desiredScalePercent);
+        int desiredOutputH = allocationFallback ? height : RtOutputScale.dimension(height, desiredScalePercent);
         if (output != null && displayImage != null && hdrDisplayImage != null && exposure.ready()
                 && bloomHalf != null && bloomQuarter != null && bloomEighth != null
                 && (!renderSizeRrEnabled || rrOutput != null)
                 && displayW == width && displayH == height
+                && outputW == desiredOutputW && outputH == desiredOutputH
+                && outputScalePercent == desiredScalePercent
                 && renderSizeRrEnabled == rrOperational && renderSizeRrQuality == rrQuality
                 && renderSizeFgGuides == fgGuidesRequired && renderSizeHdrEnabled == hdrEnabled
                 && renderSizeExposureDepth == exposureDepthRequired
@@ -1495,6 +1525,11 @@ public final class RtComposite {
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
         }
+        destroyOutputScaleImages();
+        if (desiredScalePercent == 100 && outputScalePipeline != null) {
+            outputScalePipeline.destroy();
+            outputScalePipeline = null;
+        }
         if (output != null) {
             output.destroy();
         }
@@ -1503,17 +1538,21 @@ public final class RtComposite {
 
         displayW = width;
         displayH = height;
+        outputScalePercent = desiredScalePercent;
+        outputW = desiredOutputW;
+        outputH = desiredOutputH;
+        outputScaleLinearFallback = allocationFallback;
         // The path tracer + its guide buffers run at render res; DLSS-RR (or a fallback blit) upscales
         // to display res. With RR off there is no reconstruction pass, so trace at 1:1 for a faithful reference.
         // With RR on, ask the Streamline RR plugin what render resolution its chosen quality mode expects
         // than assuming a fixed ratio: different quality modes (and driver versions) use different
         // ratios, and DLSSD's own optimal-settings query is the source of truth for what it will accept.
-        int[] optimal = rrOperational ? RtReconstruction.queryRenderSize(width, height) : null;
+        int[] optimal = rrOperational ? RtReconstruction.queryRenderSize(outputW, outputH) : null;
         rrOperational = optimal != null;
         rrQuality = rrOperational ? RtReconstruction.resourceIdentity() : Integer.MIN_VALUE;
         exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
-        renderW = optimal != null ? optimal[0] : width;
-        renderH = optimal != null ? optimal[1] : height;
+        renderW = optimal != null ? optimal[0] : outputW;
+        renderH = optimal != null ? optimal[1] : outputH;
         renderSizeRrEnabled = rrOperational;
         renderSizeRrQuality = rrQuality;
         renderSizeFgGuides = fgGuidesRequired;
@@ -1537,8 +1576,63 @@ public final class RtComposite {
         int hdrH = hdrEnabled ? height : 1;
         hdrDisplayImage = ctx.createStorageImage(hdrW, hdrH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                 hdrEnabled ? "RT HDR display image " + width + "x" + height : "inactive HDR display image");
-        int bloomHalfW = Math.max(1, (width + 1) / 2);
-        int bloomHalfH = Math.max(1, (height + 1) / 2);
+        if (outputScalePercent != 100 && !allocationFallback) {
+            try {
+                scaledDisplayImage = ctx.createStorageImage(outputW, outputH, VK10.VK_FORMAT_R8G8B8A8_UNORM,
+                        "scaled SDR world image " + outputW + "x" + outputH);
+                int scaledHdrW = hdrEnabled ? outputW : 1;
+                int scaledHdrH = hdrEnabled ? outputH : 1;
+                scaledHdrDisplayImage = ctx.createStorageImage(scaledHdrW, scaledHdrH,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, hdrEnabled
+                                ? "scaled HDR world image " + outputW + "x" + outputH
+                                : "inactive scaled HDR world image");
+                int workW = width;
+                int workH = outputScalePercent < 100 ? height : outputH;
+                outputScaleWork = ctx.createStorageImage(workW, workH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                        "output scale work image " + workW + "x" + workH);
+            } catch (Throwable scaleFailure) {
+                destroyOutputScaleImages();
+                outputScaleAllocationFailurePercent = configuredScalePercent;
+                outputScaleAllocationFailureW = width;
+                outputScaleAllocationFailureH = height;
+                outputScaleAllocationFailureHdr = hdrEnabled;
+                outputScaleFailure = "allocation: " + scaleFailure.getClass().getSimpleName();
+                if (!outputScaleFailureLogged) {
+                    outputScaleFailureLogged = true;
+                    CausticaMod.LOGGER.error("Output scaling allocation failed at {}%; using native linear fallback",
+                            configuredScalePercent, scaleFailure);
+                }
+                ensureOutput(ctx, width, height);
+                return;
+            }
+            outputScaleAllocationFailurePercent = Integer.MIN_VALUE;
+            outputScaleAllocationFailureW = outputScaleAllocationFailureH = -1;
+            if (outputScalePipeline == null) {
+                try {
+                    outputScalePipeline = RtOutputScalePipeline.create(ctx);
+                    outputScaleFailure = "none";
+                    outputScaleFailureLogged = false;
+                } catch (Throwable scaleFailure) {
+                    outputScaleLinearFallback = true;
+                    outputScaleFailure = "pipeline: " + scaleFailure.getClass().getSimpleName();
+                    if (!outputScaleFailureLogged) {
+                        outputScaleFailureLogged = true;
+                        CausticaMod.LOGGER.error("FSR1 output scaler failed at {}%; using Vulkan linear blit",
+                                configuredScalePercent, scaleFailure);
+                    }
+                }
+            } else {
+                outputScaleFailure = "none";
+                outputScaleFailureLogged = false;
+            }
+        } else if (configuredScalePercent != outputScaleAllocationFailurePercent) {
+            outputScaleAllocationFailurePercent = Integer.MIN_VALUE;
+            outputScaleAllocationFailureW = outputScaleAllocationFailureH = -1;
+            outputScaleFailureLogged = false;
+            outputScaleFailure = "none";
+        }
+        int bloomHalfW = Math.max(1, (outputW + 1) / 2);
+        int bloomHalfH = Math.max(1, (outputH + 1) / 2);
         int bloomQuarterW = Math.max(1, (bloomHalfW + 1) / 2);
         int bloomQuarterH = Math.max(1, (bloomHalfH + 1) / 2);
         int bloomEighthW = Math.max(1, (bloomQuarterW + 1) / 2);
@@ -1637,8 +1731,8 @@ public final class RtComposite {
         // At native resolution the display mapper can consume the trace image directly; reserve a second
         // full-resolution FP16 image only when RR may write or need a same-frame fallback upscale.
         rrOutput = rrOperational
-                ? ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                        "DLSS-RR output " + width + "x" + height)
+                ? ctx.createStorageImage(outputW, outputH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                        "DLSS-RR output " + outputW + "x" + outputH)
                 : null;
         if (nrdOperational) {
             nrdRawOutput = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1649,7 +1743,7 @@ public final class RtComposite {
                     "NRD packed specular output");
             nrdSpecSh1Output = ctx.createStorageImage(nrdSh ? renderW : 1, nrdSh ? renderH : 1,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "NRD specular SH1 output");
-            nrdResolvedOutput = renderW == width && renderH == height ? rrOutput
+            nrdResolvedOutput = renderW == outputW && renderH == outputH ? rrOutput
                     : ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                             "NRD resolved render-resolution output");
             nrdResolvePipeline = RtNrdResolvePipeline.create(ctx);
@@ -1680,8 +1774,29 @@ public final class RtComposite {
         RtImage displayInput = rrOutput != null ? rrOutput : output;
         bloomPipeline.setImages(displayInput.view, exposure.image().view,
                 bloomHalf.view, bloomQuarter.view, bloomEighth.view);
-        displayPipeline.setImages(displayImage.view, displayInput.view, exposure.image().view,
-                hdrDisplayImage.view, blueNoiseSequence.buffer(), bloomHalf.view);
+        RtImage mappedSdr = scaledDisplayImage != null ? scaledDisplayImage : displayImage;
+        RtImage mappedHdr = scaledHdrDisplayImage != null ? scaledHdrDisplayImage : hdrDisplayImage;
+        displayPipeline.setImages(mappedSdr.view, displayInput.view, exposure.image().view,
+                mappedHdr.view, blueNoiseSequence.buffer(), bloomHalf.view);
+        if (outputScalePipeline != null && scaledDisplayImage != null) {
+            outputScalePipeline.setImages(scaledDisplayImage.view, scaledHdrDisplayImage.view,
+                    outputScaleWork.view, displayImage.view, hdrDisplayImage.view);
+        }
+    }
+
+    private void destroyOutputScaleImages() {
+        if (scaledDisplayImage != null) {
+            scaledDisplayImage.destroy();
+            scaledDisplayImage = null;
+        }
+        if (scaledHdrDisplayImage != null) {
+            scaledHdrDisplayImage.destroy();
+            scaledHdrDisplayImage = null;
+        }
+        if (outputScaleWork != null) {
+            outputScaleWork.destroy();
+            outputScaleWork = null;
+        }
     }
 
     private void destroyBloomImages() {
@@ -1809,13 +1924,13 @@ public final class RtComposite {
                 // Validate/create the feature before choosing jitter so setup failure produces an unjittered
                 // fallback frame; the next frame will resize the trace path to native resolution.
                 rrPath = RtReconstruction.usesDlss()
-                        ? RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)
+                        ? RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, outputW, outputH)
                         : RtNrd.INSTANCE.ensureFeature(ctx, renderW, renderH);
             }
             float jitterX = 0f;
             float jitterY = 0f;
             if (rrPath) {
-                CausticaJitter.INSTANCE.prepare(renderW, renderH, displayW);
+                CausticaJitter.INSTANCE.prepare(renderW, renderH, outputW);
                 jitterX = CausticaJitter.INSTANCE.jitterPixelsX() * jitterSignX();
                 jitterY = CausticaJitter.INSTANCE.jitterPixelsY() * jitterSignY();
             }
@@ -2154,7 +2269,7 @@ public final class RtComposite {
                                 gSpecAlbedo, gNormal, gSpecMotion, gDisocclusion, gBiasCurrentColor,
                                 gParticleHint, gDiffuseRayDirectionHitDistance, gColorBeforeTransparency,
                                 gTransparencyLayer, gTransparencyOpacity, rrOutput,
-                                renderW, renderH, displayW, displayH,
+                                renderW, renderH, outputW, outputH,
                                 jitterX, jitterY, frameProjection, mvCurProjView,
                                 fgPreviousViewProjectionValid ? fgPreviousViewProjection : mvCurProjView,
                                 frameViewRotation, camX, camY, camZ,
@@ -2180,7 +2295,7 @@ public final class RtComposite {
                             if (nrdResolvedOutput != rrOutput) {
                                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                                 if (nrdSpatialUpscalePipeline != null) {
-                                    nrdSpatialUpscalePipeline.dispatch(cmd, renderW, renderH, displayW, displayH,
+                                    nrdSpatialUpscalePipeline.dispatch(cmd, renderW, renderH, outputW, outputH,
                                             CausticaConfig.Rt.Nrd.UPSCALE_SHARPNESS.value());
                                 } else {
                                     blitUpscale(cmd, stack, nrdResolvedOutput, rrOutput,
@@ -2203,7 +2318,7 @@ public final class RtComposite {
                     if (nrdResolvedOutput != rrOutput) {
                         VulkanCommandEncoder.memoryBarrier(cmd, stack);
                         if (nrdSpatialUpscalePipeline != null) {
-                            nrdSpatialUpscalePipeline.dispatch(cmd, renderW, renderH, displayW, displayH,
+                            nrdSpatialUpscalePipeline.dispatch(cmd, renderW, renderH, outputW, outputH,
                                     CausticaConfig.Rt.Nrd.UPSCALE_SHARPNESS.value());
                         } else {
                             blitUpscale(cmd, stack, nrdResolvedOutput, rrOutput,
@@ -2252,14 +2367,16 @@ public final class RtComposite {
                 if (traceGpuProfiler != null) traceGpuProfiler.exposureEnd(cmd);
 
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "optical glare")) {
-                    bloomPipeline.dispatch(cmd, displayW, displayH);
+                    bloomPipeline.dispatch(cmd, outputW, outputH);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
-                    displayPipeline.dispatch(cmd, displayW, displayH, RtHdr.effective());
+                    displayPipeline.dispatch(cmd, outputW, outputH, RtHdr.effective());
                 }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                dispatchOutputScale(cmd, stack, RtHdr.effective());
                 if (traceGpuProfiler != null) traceGpuProfiler.displayEnd(cmd);
                 offlineLastPresentNanos = offlineGroundTruth ? System.nanoTime() : 0L;
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -2782,6 +2899,7 @@ public final class RtComposite {
             hdrDisplayImage.destroy();
             hdrDisplayImage = null;
         }
+        destroyOutputScaleImages();
         RtDlssFg.INSTANCE.beforeInputResourcesDestroyed();
         destroyFgInputSlots();
         if (fgUiAlphaPipeline != null) {
@@ -2817,6 +2935,10 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (outputScalePipeline != null) {
+            outputScalePipeline.destroy();
+            outputScalePipeline = null;
         }
         if (hdrCompositePipeline != null) {
             hdrCompositePipeline.destroy();
@@ -3181,6 +3303,49 @@ public final class RtComposite {
      * Linear-filtered fallback from RR render resolution to display resolution. Native-resolution RT feeds
      * display mapping directly and does not use this copy.
      */
+    private void dispatchOutputScale(VkCommandBuffer cmd, MemoryStack stack, boolean hdrEnabled) {
+        if (scaledDisplayImage == null) return; // True zero-overhead native path.
+        if (outputScalePipeline == null) {
+            outputScaleLinearFallback = true;
+            blitUpscale(cmd, stack, scaledDisplayImage, displayImage, VK10.VK_FILTER_LINEAR);
+            if (hdrEnabled) {
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                blitUpscale(cmd, stack, scaledHdrDisplayImage, hdrDisplayImage, VK10.VK_FILTER_LINEAR);
+            }
+            return;
+        }
+        outputScaleLinearFallback = false;
+        if (outputScalePercent < 100) {
+            outputScalePipeline.dispatch(cmd, outputW, outputH, displayW, displayH,
+                    RtOutputScalePipeline.EASU_SDR);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            outputScalePipeline.dispatch(cmd, displayW, displayH, displayW, displayH,
+                    RtOutputScalePipeline.RCAS_SDR);
+            if (hdrEnabled) {
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                outputScalePipeline.dispatch(cmd, outputW, outputH, displayW, displayH,
+                        RtOutputScalePipeline.EASU_HDR);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                outputScalePipeline.dispatch(cmd, displayW, displayH, displayW, displayH,
+                        RtOutputScalePipeline.RCAS_HDR);
+            }
+        } else {
+            outputScalePipeline.dispatch(cmd, outputW, outputH, displayW, outputH,
+                    RtOutputScalePipeline.DOWN_H_SDR);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            outputScalePipeline.dispatch(cmd, displayW, outputH, displayW, displayH,
+                    RtOutputScalePipeline.DOWN_V_SDR);
+            if (hdrEnabled) {
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                outputScalePipeline.dispatch(cmd, outputW, outputH, displayW, outputH,
+                        RtOutputScalePipeline.DOWN_H_HDR);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                outputScalePipeline.dispatch(cmd, displayW, outputH, displayW, displayH,
+                        RtOutputScalePipeline.DOWN_V_HDR);
+            }
+        }
+    }
+
     private static void blitUpscale(VkCommandBuffer cmd, MemoryStack stack, RtImage src, RtImage dst, int filter) {
         VkImageBlit.Buffer region = VkImageBlit.calloc(1, stack);
         region.get(0).srcSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);

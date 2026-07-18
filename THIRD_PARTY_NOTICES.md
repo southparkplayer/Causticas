@@ -41,6 +41,16 @@ Bundled Streamline runtime libraries may include:
 Caustica's `streamline_bridge` native library is project-owned glue code and
 follows Caustica's project license unless otherwise noted.
 
+## AMD FidelityFX Super Resolution 1
+
+Caustica's shader-only output upscaler includes a GLSL port of AMD FidelityFX FSR 1 EASU and RCAS.
+The source retains AMD's copyright notice and is distributed under the MIT license. The complete
+license is reproduced in runtime artifacts at:
+
+- `META-INF/licenses/amd/AMD-FidelityFX-FSR1.txt`
+
+Upstream source: <https://github.com/GPUOpen-Effects/FidelityFX-FSR>
+
 ## NVIDIA SHaRC SDK
 
 SHaRC-enabled Caustica runtime artifacts are built against NVIDIA SHaRC SDK `1.6.5.0`, pinned to

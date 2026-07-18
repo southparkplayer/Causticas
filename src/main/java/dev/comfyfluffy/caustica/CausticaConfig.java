@@ -1040,6 +1040,15 @@ public final class CausticaConfig {
             }
         }
 
+        /** Realtime pre-UI world-image scale. Offline ground-truth rendering owns its resolution separately. */
+        public static final class OutputScale {
+            public static final IntSetting PERCENT = clampedInt(
+                    "caustica.rt.outputScale", "output-scale.percent", 100, 10, 200);
+
+            private OutputScale() {
+            }
+        }
+
         /** DLSS Frame Generation. Default off; gated additionally by hardware/driver availability. */
         public static final class Fg {
             /** Legacy compatibility switch; new code and UI use {@link #MODE}. */

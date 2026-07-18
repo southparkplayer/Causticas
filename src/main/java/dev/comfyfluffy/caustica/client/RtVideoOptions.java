@@ -20,6 +20,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import org.lwjgl.glfw.GLFW;
 
 /**
  * Builds the RT option widgets shown from the vanilla Video Settings screen.
@@ -194,6 +195,7 @@ public final class RtVideoOptions {
             waterWaves(),
             torchIntensity(),
             psrMirrorDepth(),
+            outputScale(),
             dlssRrEnabled(),
             dlssQuality(),
             debugView(),
@@ -693,6 +695,23 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, DLSS_QUALITY_ORDER.size() - 1),
             initialPosition,
             position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
+    }
+
+    public static OptionInstance<Integer> outputScale() {
+        IntSetting setting = CausticaConfig.Rt.OutputScale.PERCENT;
+        return new OptionInstance<>(
+                "caustica.options.rt.outputScale",
+                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.outputScale.tooltip")),
+                (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+                new OptionInstance.IntRange(10, 200),
+                Math.clamp(setting.configuredValue(), 10, 200),
+                percent -> setting.set(shiftDown() ? setting.defaultValue() : percent));
+    }
+
+    private static boolean shiftDown() {
+        long window = Minecraft.getInstance().getWindow().handle();
+        return GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS
+                || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
     }
 
     private static OptionInstance<Boolean> dlssRrEnabled() {

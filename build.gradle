@@ -888,6 +888,12 @@ java {
 
 // Source distributions contain project source, not generated shaders or NVIDIA's proprietary runtime payloads.
 tasks.named("sourcesJar", Jar).configure {
+	from("shaders/display/output_scale.comp") {
+		into "shaders/display"
+	}
+	from("licenses/AMD-FidelityFX-FSR1.txt") {
+		into "META-INF/licenses/amd"
+	}
 	exclude "caustica/natives/**"
 	exclude "caustica/rt/*.spv"
 	exclude "caustica/streamline.properties"
@@ -899,6 +905,9 @@ tasks.named("jar", Jar).configure {
 	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md",
 			"DISTRIBUTION_NOTICE.md")) {
 		into "META-INF"
+	}
+	from(rootProject.file("licenses/AMD-FidelityFX-FSR1.txt")) {
+		into "META-INF/licenses/amd"
 	}
 }
 
@@ -944,6 +953,7 @@ def verifyProductionArtifact = tasks.register("verifyProductionArtifact") {
 			"caustica/natives/windows-x64/nvngx_dlssg.dll",
 			"META-INF/DISTRIBUTION_NOTICE.md",
 			"META-INF/THIRD_PARTY_NOTICES.md",
+			"META-INF/licenses/amd/AMD-FidelityFX-FSR1.txt",
 			"META-INF/licenses/nvidia/STREAMLINE-SDK-MIT.txt",
 			"META-INF/licenses/nvidia/STREAMLINE-THIRD-PARTY.md",
 			"META-INF/licenses/nvidia/NVIDIA-RTX-SDKS.txt",

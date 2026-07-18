@@ -141,6 +141,8 @@
 	"caustica.options.rt.dlssQuality": "DLSS Quality",
 	"caustica.options.rt.dlssQuality.tooltip": "DLSS Ray Reconstruction quality mode. Lower-quality modes render fewer pixels and upscale more aggressively for higher framerates; higher-quality modes render more pixels for a sharper image. Only affects the image when DLSS Ray Reconstruction is enabled.",
 	"caustica.options.rt.dlssRr": "DLSS Ray Reconstruction",
+	"caustica.options.rt.outputScale": "Output Scale",
+	"caustica.options.rt.outputScale.tooltip": "World-image resolution before native-resolution overlays and UI. Below 100% uses FSR 1; above 100% uses high-quality downsampling.",
 	"caustica.options.rt.dlssRr.tooltip": "Use NVIDIA DLSS Ray Reconstruction to denoise and reconstruct the path-traced image. If unavailable, Caustica renders at native resolution instead.",
 	"caustica.options.rt.dlssDiffusePathGuide": "DLSSD Diffuse Path Guide (B)",
 	"caustica.options.rt.dlssDiffusePathGuide.tooltip": "A/B experiment: submit the first diffuse ray direction and world-space hit distance to DLSS Ray Reconstruction so legitimate indirect emitter samples have additional path context.",
