@@ -1305,10 +1305,11 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             primaryHitDistance = payload.hitT;
         }
 
-        // The direction is captured when bounce 0 spawns its diffuse continuation. This invocation is
-        // therefore that ray's first world-space hit; record its distance before any material branch can
-        // terminate, replace, or continue the path. A miss keeps distance zero.
-        if (captureGuides && segment == 1 && gv_diffuseGuidePending) {
+        // The direction is captured when the first scattering vertex spawns its diffuse continuation.
+        // Clear optical interfaces may consume any number of path segments before that vertex, so the
+        // pending flag, rather than an absolute segment number, owns this ray's first hit distance.
+        // A miss keeps distance zero.
+        if (captureGuides && gv_diffuseGuidePending) {
             gv_diffuseRayDirectionHitDistance.w = max(payload.hitT, 0.0);
             gv_diffuseGuidePending = false;
         }
@@ -1532,7 +1533,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             throughput *= albedo;
             rd = cosineDir(n, sampler);
             ro = offsetRayOrigin(hitPos, geometricNormal, rd);
-            if (captureGuides && segment == 0
+            if (captureGuides && scatteringDepth == 0
                     && (pc.flags & FRAME_FLAG_DIFFUSE_PATH_GUIDE) != 0u) {
                 gv_diffuseRayDirectionHitDistance = float4(rd, 0.0);
                 gv_diffuseGuidePending = true;
@@ -1927,7 +1928,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                         / max(diffusePdf * (1.0 - ps), 1.0e-7);
                 rd = l;
                 ro = offsetRayOrigin(hitPos, geometricNormal, rd);
-                if (captureGuides && segment == 0
+                if (captureGuides && scatteringDepth == 0
                         && (pc.flags & FRAME_FLAG_DIFFUSE_PATH_GUIDE) != 0u) {
                     gv_diffuseRayDirectionHitDistance = float4(rd, 0.0);
                     gv_diffuseGuidePending = true;
@@ -1944,7 +1945,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             showCelestial = false; // diffuse bounce: hide the disc (covered by NEE)
             rd = cosineDir(n, sampler);
             ro = offsetRayOrigin(hitPos, geometricNormal, rd);
-            if (captureGuides && segment == 0
+            if (captureGuides && scatteringDepth == 0
                     && (pc.flags & FRAME_FLAG_DIFFUSE_PATH_GUIDE) != 0u) {
                 gv_diffuseRayDirectionHitDistance = float4(rd, 0.0);
                 gv_diffuseGuidePending = true;

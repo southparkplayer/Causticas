@@ -13,6 +13,11 @@ final class DlssdDiffusePathGuideContractTest {
         assertTrue(raygen.contains("gDiffuseRayDirectionHitDistance"));
         assertTrue(raygen.contains("gv_diffuseRayDirectionHitDistance.w = max(payload.hitT, 0.0)"));
         assertTrue(raygen.contains("FRAME_FLAG_DIFFUSE_PATH_GUIDE"));
+        assertTrue(raygen.contains("captureGuides && gv_diffuseGuidePending"));
+        assertTrue(raygen.contains("captureGuides && scatteringDepth == 0"));
+        assertTrue(!raygen.contains("captureGuides && segment == 1 && gv_diffuseGuidePending"));
+        assertTrue(!raygen.matches("(?s).*captureGuides && segment == 0\\s*"
+                + "&& \\(pc.flags & FRAME_FLAG_DIFFUSE_PATH_GUIDE\\).*"));
     }
 
     @Test
