@@ -345,15 +345,26 @@ float3 offsetRayOrigin(float3 position, float3 geometricNormal, float3 outgoingD
 
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 static const float WATER_IOR = 1.333;
+#if CAUSTICA_TRANSPARENCY_HQ
+// The traced water/glass lobes are true delta events. HQ reports the same model to Ray
+// Reconstruction; the baseline keeps its established conservative reconstruction widths.
+static const float WATER_GUIDE_ROUGH = 0.0;
+#else
 static const float WATER_GUIDE_ROUGH = 0.02;
+#endif
 static const float3 SKY_SPEC_ALBEDO = float3(0.5, 0.5, 0.5); // RR guide default for sky pixels.
 static const float3 SKY_DIFF_ALBEDO = float3(0.5, 0.5, 0.5);
 
 // Stained glass / ice (material 3): a thin colored dielectric. IOR ~1.5 (soda-lime glass).
 static const float GLASS_IOR = 1.52;
 static const float ICE_IOR = 1.31;
+#if CAUSTICA_TRANSPARENCY_HQ
+static const float ICE_GUIDE_ROUGH = 0.0;
+static const float GLASS_GUIDE_ROUGH = 0.0;
+#else
 static const float ICE_GUIDE_ROUGH = 0.02;
 static const float GLASS_GUIDE_ROUGH = 0.04;
+#endif
 // Transmitted-ray origin offset when crossing a glass face. Must be SMALLER than the terrain-side
 // TRANSLUCENT_INSET (RtTerrain, 2e-4 blocks): glass is recessed into its block by that inset, so a face
 // touching a slab/stair leaves a tiny gap before the neighbour's surface. A block-scale bias would
@@ -364,6 +375,17 @@ static const float GLASS_TRANSMIT_BIAS = 1.0e-4;
 // stacked water and glass do not consume the user-visible path-bounce budget, while malformed geometry
 // still cannot loop forever.
 static const int MAX_OPTICAL_INTERFACE_DEPTH = 16;
+
+// HQ integrates both lobes of the first visible dielectric exactly. Later interfaces remain
+// Fresnel-sampled, bounding the work to one additional path instead of growing a binary path tree.
+// This entire contract compiles out of the baseline, offline reference, and SHARC update shaders.
+#if CAUSTICA_TRANSPARENCY_HQ && !CAUSTICA_OFFLINE && !CAUSTICA_SHARC_UPDATE
+#define CAUSTICA_PRIMARY_DIELECTRIC_SPLIT 1
+static const uint PRIMARY_OPTICAL_TRANSMISSION = 1u;
+static const uint PRIMARY_OPTICAL_REFLECTION = 2u;
+#else
+#define CAUSTICA_PRIMARY_DIELECTRIC_SPLIT 0
+#endif
 
 // Ray-cone texture LOD: raygen tracks a one-pixel footprint along the path, and closest-hit converts it
 // to texture mip levels from the local UV/world-space scale. Diffuse/glossy bounces widen the cone so
@@ -1256,7 +1278,14 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
 // One Monte Carlo path from (ro, rd). Returns accumulated radiance along the path.
 float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                  bool captureGuides, bool captureRefractedGuides, bool primaryOnly,
-                 inout PathSampler sampler) {
+                 inout PathSampler sampler
+#if CAUSTICA_PRIMARY_DIELECTRIC_SPLIT
+                 , uint primaryOpticalLobe, out bool primaryDielectricSplit
+#endif
+                 ) {
+#if CAUSTICA_PRIMARY_DIELECTRIC_SPLIT
+    primaryDielectricSplit = false;
+#endif
     float3 L = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
 #if CAUSTICA_SHARC_UPDATE
@@ -1459,7 +1488,15 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 // normal or, after the optical walk, with the transmitted lakebed material.
                 gv_normal = interfaceNormal;
                 gv_rough = solidIce ? ICE_GUIDE_ROUGH : GLASS_GUIDE_ROUGH;
+#if CAUSTICA_TRANSPARENCY_HQ
+                float f0Ratio = (etaT - etaI) / (etaT + etaI);
+                float f0 = f0Ratio * f0Ratio;
+                if (thinPane) f0 = 2.0 * f0 / (1.0 + f0);
+                gv_specAlb = F >= 1.0 ? float3(1.0)
+                        : rrSpecularAlbedo(float3(f0), gv_rough * gv_rough, cosI);
+#else
                 gv_specAlb = float3(F, F, F);
+#endif
                 gv_albedo = glassTint;            // demodulate by the transmission tint
                 gv_hitCamRel = hitPos - pc.camOffset;
                 gv_motionHitCamRel = gv_hitCamRel;
@@ -1476,6 +1513,32 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             if (primaryOnly) {
                 break;
             }
+#if CAUSTICA_PRIMARY_DIELECTRIC_SPLIT
+            if (segment == 0 && primaryOpticalLobe != 0u) {
+                primaryDielectricSplit = true;
+                if (primaryOpticalLobe == PRIMARY_OPTICAL_REFLECTION) {
+                    throughput *= F;
+                    if (F <= 0.0) break;
+                    // Keep stochastic alpha/cutout decisions identical up to this interface, then decorrelate
+                    // only the reflected continuation from the transmitted continuation.
+                    sampler.state = sampleHash(sampler.state ^ 0xa511e9b3u) | 1u;
+                    rd = reflect(rd, interfaceNormal);
+                    ro = offsetRayOrigin(hitPos, geometricNormal, rd);
+                } else {
+                    throughput *= 1.0 - F;
+                    if (F >= 1.0) break;
+                    if (thinPane) {
+                        throughput *= glassTint;
+                    } else {
+                        if (!entering) throughput *= glassTint;
+                        inWater = !entering && exteriorWater;
+                        if (inWater) waterExt = waterExtinction(pc.waterParams.xyz);
+                    }
+                    rd = transmittedDir;
+                    ro = hitPos - interfaceNormal * GLASS_TRANSMIT_BIAS;
+                }
+            } else
+#endif
             if (rndf(sampler) < F) {
                 rd = reflect(rd, interfaceNormal);
                 ro = offsetRayOrigin(hitPos, geometricNormal, rd);
@@ -1618,7 +1681,14 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 gv_normal = n;
                 gv_rough = WATER_GUIDE_ROUGH;
                 gv_albedo = float3(0.0, 0.0, 0.0);
+#if CAUSTICA_TRANSPARENCY_HQ
+                float f0Ratio = (etaT - etaI) / (etaT + etaI);
+                float f0 = f0Ratio * f0Ratio;
+                gv_specAlb = dot(transmittedDir, transmittedDir) <= 0.0 ? float3(1.0)
+                        : rrSpecularAlbedo(float3(f0), gv_rough * gv_rough, cosI);
+#else
                 gv_specAlb = float3(F, F, F);
+#endif
                 // Capture the physical interface first. The separately preserved specular guides retain
                 // this water surface; a successful optical walk later moves every ordinary guide to the
                 // same refracted destination so DLSSD depth and motion never describe different layers.
@@ -1651,6 +1721,24 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 break;
             }
             waterExt = waterExtinction(surfaceWaterTint);
+#if CAUSTICA_PRIMARY_DIELECTRIC_SPLIT
+            if (segment == 0 && primaryOpticalLobe != 0u) {
+                primaryDielectricSplit = true;
+                if (primaryOpticalLobe == PRIMARY_OPTICAL_REFLECTION) {
+                    throughput *= F;
+                    if (F <= 0.0) break;
+                    sampler.state = sampleHash(sampler.state ^ 0xa511e9b3u) | 1u;
+                    rd = reflect(rd, n);
+                    ro = offsetRayOrigin(hitPos, surfaceWaterGeometricNormal, rd);
+                } else {
+                    throughput *= 1.0 - F;
+                    if (F >= 1.0) break;
+                    rd = transmittedDir;
+                    ro = offsetRayOrigin(hitPos, surfaceWaterGeometricNormal, rd);
+                    inWater = surfaceWaterEntering;
+                }
+            } else
+#endif
             if (rndf(sampler) < F) {
                 rd = reflect(rd, n);
                 ro = offsetRayOrigin(hitPos, surfaceWaterGeometricNormal, rd);
@@ -2213,9 +2301,27 @@ void main() {
         dir = normalize(farP - nearP);
         rayConeSpread = primaryRayConeSpread(jndc, size, dir);
 
+#if CAUSTICA_PRIMARY_DIELECTRIC_SPLIT
+        bool sampleCapturesGuides = captureGuides && s == 0u;
+        bool sampleCapturesRefractedGuides = captureRefractedGuides && s == 0u;
+        // Start both branches with identical visibility/cutout random decisions. The reflection path is
+        // decorrelated inside tracePath only after it reaches the primary dielectric split.
+        PathSampler reflectionSampler = sampler;
+        bool primaryDielectricSplit;
+        float3 sampleRadiance = tracePath(origin, dir, rayConeSpread,
+                sampleCapturesGuides, sampleCapturesRefractedGuides, primaryOnly, sampler,
+                PRIMARY_OPTICAL_TRANSMISSION, primaryDielectricSplit);
+        if (primaryDielectricSplit && !primaryOnly) {
+            bool reflectedPrimaryDielectricSplit;
+            sampleRadiance += tracePath(origin, dir, rayConeSpread,
+                    false, false, false, reflectionSampler,
+                    PRIMARY_OPTICAL_REFLECTION, reflectedPrimaryDielectricSplit);
+        }
+#else
         float3 sampleRadiance = tracePath(origin, dir, rayConeSpread,
                 captureGuides && s == 0u,
                 captureRefractedGuides && s == 0u, primaryOnly, sampler);
+#endif
         frameRadiance += sampleRadiance;
     }
     frameRadiance /= float(pathCount);

@@ -102,6 +102,27 @@ final class DlssdWaterGuideContractTest {
         assertTrue(terrain.contains("if (!INSTANCE.resourceReloadPaused && RtMaterialRegistry.INSTANCE.isReady())"));
     }
 
+    @Test
+    void highQualityTransparencyExactlySplitsOnlyThePrimaryDielectric() throws IOException {
+        String raygen = read("shaders/world/world.rgen.slang");
+
+        assertTrue(raygen.contains("#if CAUSTICA_TRANSPARENCY_HQ && !CAUSTICA_OFFLINE && !CAUSTICA_SHARC_UPDATE"));
+        assertTrue(raygen.contains("#define CAUSTICA_PRIMARY_DIELECTRIC_SPLIT 1"));
+        assertTrue(raygen.contains("#define CAUSTICA_PRIMARY_DIELECTRIC_SPLIT 0"));
+        assertTrue(raygen.contains("if (segment == 0 && primaryOpticalLobe != 0u)"));
+        assertTrue(raygen.contains("throughput *= F"));
+        assertTrue(raygen.contains("throughput *= 1.0 - F"));
+        assertTrue(raygen.contains("PRIMARY_OPTICAL_TRANSMISSION, primaryDielectricSplit"));
+        assertTrue(raygen.contains("PRIMARY_OPTICAL_REFLECTION, reflectedPrimaryDielectricSplit"));
+        assertTrue(raygen.contains("if (primaryDielectricSplit && !primaryOnly)"));
+        assertTrue(raygen.contains("sampler.state = sampleHash(sampler.state ^ 0xa511e9b3u)"));
+        assertFalse(raygen.contains("reflectionSampler.state = sampleHash"));
+        assertTrue(raygen.contains("gv_specAlb = F >= 1.0 ? float3(1.0)"));
+        assertTrue(raygen.contains("rrSpecularAlbedo(float3(f0), gv_rough * gv_rough, cosI)"));
+        assertTrue(raygen.contains("static const float WATER_GUIDE_ROUGH = 0.0"));
+        assertTrue(raygen.contains("static const float GLASS_GUIDE_ROUGH = 0.0"));
+    }
+
     private static String read(String relative) throws IOException {
         return Files.readString(Path.of(relative)).replace("\r\n", "\n");
     }
