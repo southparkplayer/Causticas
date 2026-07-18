@@ -33,14 +33,13 @@ import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_ALL_COMMA
 import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
 
 /**
- * Single-owner asynchronous GPU submission lane on a queue reserved by Caustica at device creation.
- * Minecraft never fetches or submits to this queue index, so the executor can satisfy Vulkan's external
- * queue-synchronization rule without coordinating a host mutex with Blaze3D.
+ * Single-owner asynchronous GPU submission lane on the device's dedicated compute queue. Queue access
+ * still uses the device host lock because this may be the same queue handle exposed elsewhere by Blaze3D.
  */
 public final class RtGpuExecutor {
     // NVIDIA 610.62 loses the device when the startup burst records many independent terrain AS builds
     // into one command buffer. Keep submissions asynchronous but isolate each build's scratch/query state.
-    private static final int MAX_BUILD_BATCH = 1;
+    private static final int MAX_BUILD_BATCH = 4;
     private static final Job STOP = new Job(null, null, null, null, null);
     private static final Job WAKE = new Job(null, null, null, null, null);
     private static final long TERRAIN_READ_STAGES =
@@ -54,8 +53,11 @@ public final class RtGpuExecutor {
     private final LinkedBlockingQueue<Job> jobs = new LinkedBlockingQueue<>();
     private final AtomicLong nextBuildValue = new AtomicLong();
     private final AtomicLong pendingPublishWaitValue = new AtomicLong();
+    private final AtomicLong latestSubmittedBuildValue = new AtomicLong();
     private final AtomicLong nextGraphicsValue = new AtomicLong();
     private final AtomicLong latestGraphicsUseValue = new AtomicLong();
+    /** Serializes cross-lane timeline reservations so graphics and terrain cannot observe stale peers. */
+    private final Object asLaneOrderLock = new Object();
     private final ArrayList<DestroyJob> destroyJobs = new ArrayList<>();
     private final Thread thread;
     private long commandPool;
@@ -106,16 +108,18 @@ public final class RtGpuExecutor {
     /** Attach the required compute-build wait immediately before the RT command buffer is enqueued. */
     public long beginGraphicsTerrainUse(VulkanCommandEncoder encoder) {
         checkExecutorFailure();
-        long waitValue = pendingPublishWaitValue.get();
-        if (waitValue != 0L) {
-            encoder.waitSemaphore(buildTimeline, waitValue, TERRAIN_READ_STAGES);
+        synchronized (asLaneOrderLock) {
+            long waitValue = Math.max(pendingPublishWaitValue.get(), latestSubmittedBuildValue.get());
+            if (waitValue != 0L) {
+                encoder.waitSemaphore(buildTimeline, waitValue, TERRAIN_READ_STAGES);
+            }
+            long graphicsValue = nextGraphicsValue.incrementAndGet();
+            // Publish the reservation before any terrain-referencing command is enqueued. Retirement must
+            // include a command buffer that has begun recording even though its completion signal is appended
+            // later, after the final overlay consumer.
+            latestGraphicsUseValue.accumulateAndGet(graphicsValue, Math::max);
+            return graphicsValue;
         }
-        long graphicsValue = nextGraphicsValue.incrementAndGet();
-        // Publish the reservation before any terrain-referencing command is enqueued. Retirement must
-        // include a command buffer that has begun recording even though its completion signal is appended
-        // later, after the final overlay consumer.
-        latestGraphicsUseValue.accumulateAndGet(graphicsValue, Math::max);
-        return graphicsValue;
     }
 
     /** Signal completion after the final terrain/TLAS consumer and commit the value for retirement. */
@@ -365,7 +369,7 @@ public final class RtGpuExecutor {
     }
 
     private void execute(List<Job> batch) {
-        VkCommandBuffer cmd = null;
+        ArrayList<VkCommandBuffer> commands = new ArrayList<>(batch.size());
         boolean submitted = false;
         boolean completed = false;
         long signalValue = batch.get(batch.size() - 1).build.value;
@@ -375,40 +379,46 @@ public final class RtGpuExecutor {
                         + " queued=" + jobs.size());
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkCommandBufferAllocateInfo ai = VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
-                    .commandPool(commandPool).level(VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
-            PointerBuffer pCmd = stack.mallocPointer(1);
+                    .commandPool(commandPool).level(VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+                    .commandBufferCount(batch.size());
+            PointerBuffer pCmd = stack.mallocPointer(batch.size());
             RtContext.check(VK10.vkAllocateCommandBuffers(ctx.vk(), ai, pCmd), "vkAllocateCommandBuffers(RT GPU executor)");
-            cmd = new VkCommandBuffer(pCmd.get(0), ctx.vk());
             VkCommandBufferBeginInfo bi = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
                     .flags(VK10.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-            RtContext.check(VK10.vkBeginCommandBuffer(cmd, bi), "vkBeginCommandBuffer(RT GPU executor)");
-            for (Job job : batch) {
+            VkCommandBufferSubmitInfo.Buffer commandInfos = VkCommandBufferSubmitInfo.calloc(batch.size(), stack);
+            for (int i = 0; i < batch.size(); i++) {
+                Job job = batch.get(i);
+                VkCommandBuffer cmd = new VkCommandBuffer(pCmd.get(i), ctx.vk());
+                commands.add(cmd);
+                RtContext.check(VK10.vkBeginCommandBuffer(cmd, bi), "vkBeginCommandBuffer(RT GPU executor)");
                 job.record.accept(cmd);
+                RtContext.check(VK10.vkEndCommandBuffer(cmd), "vkEndCommandBuffer(RT GPU executor)");
+                commandInfos.get(i).sType$Default().commandBuffer(cmd);
             }
-            RtContext.check(VK10.vkEndCommandBuffer(cmd), "vkEndCommandBuffer(RT GPU executor)");
-            VkCommandBufferSubmitInfo.Buffer command = VkCommandBufferSubmitInfo.calloc(1, stack)
-                    .sType$Default().commandBuffer(cmd);
             VkSemaphoreSubmitInfo.Buffer signal = VkSemaphoreSubmitInfo.calloc(1, stack)
                     .sType$Default().semaphore(buildTimeline).value(signalValue)
                     .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
-            long priorGraphicsUse = latestGraphicsUseValue.get();
-            VkSemaphoreSubmitInfo.Buffer wait = null;
-            if (priorGraphicsUse != 0L) {
-                // NVIDIA 610.62 has repeatedly faulted when terrain AS builds overlap a graphics TLAS
-                // build/trace, even though the structures and scratch allocations are disjoint. Preserve
-                // asynchronous CPU submission, but alternate the two GPU AS lanes through their timelines.
-                wait = VkSemaphoreSubmitInfo.calloc(1, stack).sType$Default()
-                        .semaphore(graphicsTimeline).value(priorGraphicsUse)
-                        .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+            synchronized (asLaneOrderLock) {
+                long priorGraphicsUse = latestGraphicsUseValue.get();
+                VkSemaphoreSubmitInfo.Buffer wait = null;
+                if (priorGraphicsUse != 0L) {
+                    // NVIDIA 610.62 has repeatedly faulted when terrain AS builds overlap a graphics TLAS
+                    // build/trace, even though the structures and scratch allocations are disjoint. Alternate
+                    // the two AS lanes through timelines, with this reservation ordered against graphics.
+                    wait = VkSemaphoreSubmitInfo.calloc(1, stack).sType$Default()
+                            .semaphore(graphicsTimeline).value(priorGraphicsUse)
+                            .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+                }
+                VkSubmitInfo2.Buffer submit = VkSubmitInfo2.calloc(1, stack).sType$Default()
+                        .pCommandBufferInfos(commandInfos).pWaitSemaphoreInfos(wait).pSignalSemaphoreInfos(signal);
+                VulkanDiagnostics.noteQueueSubmission(computeQueue.vkQueue(), "Caustica compute queue");
+                synchronized (ctx.deviceQueueHostLock()) {
+                    RtContext.check(org.lwjgl.vulkan.KHRSynchronization2.vkQueueSubmit2KHR(
+                            computeQueue.vkQueue(), submit, 0L), "vkQueueSubmit2KHR(RT GPU executor)");
+                }
+                submitted = true;
+                latestSubmittedBuildValue.accumulateAndGet(signalValue, Math::max);
             }
-            VkSubmitInfo2.Buffer submit = VkSubmitInfo2.calloc(1, stack).sType$Default()
-                    .pCommandBufferInfos(command).pWaitSemaphoreInfos(wait).pSignalSemaphoreInfos(signal);
-            VulkanDiagnostics.noteQueueSubmission(computeQueue.vkQueue(), "Caustica compute queue");
-            synchronized (ctx.deviceQueueHostLock()) {
-                RtContext.check(org.lwjgl.vulkan.KHRSynchronization2.vkQueueSubmit2KHR(
-                        computeQueue.vkQueue(), submit, 0L), "vkQueueSubmit2KHR(RT GPU executor)");
-            }
-            submitted = true;
             VulkanDiagnostics.setInFlight("async-compute",
                     "submitted builds=" + firstValue + ".." + signalValue + " batch=" + batch.size());
             waitTimeline(buildTimeline, signalValue);
@@ -418,9 +428,11 @@ public final class RtGpuExecutor {
             // Never retry a failed host wait while unwinding: propagate its original error. A command
             // buffer is safe to release here only if submission never happened or completion was observed.
             // Otherwise the command pool owns it until shutdown waits the device idle and destroys the pool.
-            if (cmd != null && (!submitted || completed)) {
+            if (!commands.isEmpty() && (!submitted || completed)) {
                 try (MemoryStack stack = MemoryStack.stackPush()) {
-                    VK10.vkFreeCommandBuffers(ctx.vk(), commandPool, stack.pointers(cmd));
+                    for (VkCommandBuffer cmd : commands) {
+                        VK10.vkFreeCommandBuffers(ctx.vk(), commandPool, stack.pointers(cmd));
+                    }
                 }
             }
             if (!submitted || completed) {
