@@ -6,5 +6,6 @@ import world_common;
 void main(inout Payload payload) {
     payload.hitT = -1.0;
     payload.normal = float3(0.0, 0.0, 0.0);
+    payload.geometricNormal = float3(0.0, 0.0, 0.0);
     payload.flags = 0u;
 }

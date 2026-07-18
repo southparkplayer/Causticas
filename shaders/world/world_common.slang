@@ -24,6 +24,9 @@ public struct WorldPushConstants {
     public uint debugView;
 };
 
+// Fork transport modules historically call this exact ABI PushAddr.
+public typealias PushAddr = WorldPushConstants;
+
 // SHaRC uses the same upstream material-table/debug ABI and appends one cache-frame address.
 public struct SharcPushAddr {
     public uint64_t worldPushAddr;
@@ -223,6 +226,26 @@ public uint packHalf2(float2 v) {
 
 public float2 unpackHalf2(uint p) {
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
+}
+
+public static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
+
+public float transportLuminance(float3 c) {
+    return dot(c, BT2020_LUMA);
+}
+
+public float3 bt709ToBt2020(float3 c) {
+    return float3(
+        0.6274039 * c.x + 0.3292830 * c.y + 0.0433131 * c.z,
+        0.0690973 * c.x + 0.9195406 * c.y + 0.0113612 * c.z,
+        0.0163916 * c.x + 0.0880132 * c.y + 0.8955953 * c.z);
+}
+
+public float3 bt2020ToBt709(float3 c) {
+    return float3(
+         1.6604910 * c.x - 0.5876411 * c.y - 0.0728499 * c.z,
+        -0.1245505 * c.x + 1.1328999 * c.y - 0.0083494 * c.z,
+        -0.0181508 * c.x - 0.1005789 * c.y + 1.1187297 * c.z);
 }
 
 // Vanilla's block/entity atlases are ordinary sRGB-encoded PNGs sampled through a plain UNORM view (no
