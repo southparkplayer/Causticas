@@ -26,14 +26,14 @@ public final class RtEntityCapture implements VertexConsumer {
     // depth tie without a visible gap at terrain/entity scale.
     private static final float ORDER_OFFSET = 2.0e-4f;
 
-    final FloatArrayList verts = new FloatArrayList(DEFAULT_VERTEX_CAPACITY * 3);   // 3 floats/vertex (capture-space position)
-    final IntArrayList idx = new IntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY)); // 3 indices/triangle
-    final FloatArrayList uvList = new FloatArrayList(DEFAULT_VERTEX_CAPACITY * 2);  // 2 floats/vertex (entity-texture UV)
-    final FloatArrayList prim = new FloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY)); // 12 floats/triangle
+    final FloatArrayList verts = new UninitializedFloatArrayList(DEFAULT_VERTEX_CAPACITY * 3);   // 3 floats/vertex (capture-space position)
+    final IntArrayList idx = new UninitializedIntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY)); // 3 indices/triangle
+    final FloatArrayList uvList = new UninitializedFloatArrayList(DEFAULT_VERTEX_CAPACITY * 2);  // 2 floats/vertex (entity-texture UV)
+    final FloatArrayList prim = new UninitializedFloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY)); // 12 floats/triangle
     // One classification per triangle in capture order. The upload path repacks indices + primitive
     // records into fixed {opaque, any-hit} BLAS geometries while positions/UVs stay shared. Keeping
     // capture order here preserves glow meshes, parity checks and motion topology.
-    final IntArrayList alphaBuckets = new IntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY) / 3);
+    final IntArrayList alphaBuckets = new UninitializedIntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY) / 3);
     private final IntArrayList packedIdx = new IntArrayList(indexCapacity(DEFAULT_VERTEX_CAPACITY));
     private final FloatArrayList packedPrim = new FloatArrayList(primCapacity(DEFAULT_VERTEX_CAPACITY));
     private final int[] packedBucketTris = new int[RtAccel.ENTITY_BUCKETS];
@@ -402,8 +402,8 @@ public final class RtEntityCapture implements VertexConsumer {
         int base = verts.size() / 3;
         int vertFloatStart = verts.size();
         int uvFloatStart = uvList.size();
-        verts.size(vertFloatStart + 12);
-        uvList.size(uvFloatStart + 8);
+        reserveUninitialized(verts, 12);
+        reserveUninitialized(uvList, 8);
         float[] vertexFloats = verts.elements();
         float[] uvFloats = uvList.elements();
         for (int i = 0; i < 4; i++) {
@@ -417,7 +417,7 @@ public final class RtEntityCapture implements VertexConsumer {
             uvFloats[uvLane + 1] = remapUv ? uvV0 + v[i] * uvDV : v[i];
         }
         int indexStart = idx.size();
-        idx.size(indexStart + 6);
+        reserveUninitialized(idx, 6);
         int[] indices = idx.elements();
         indices[indexStart] = base;
         indices[indexStart + 1] = base + 1;
@@ -444,7 +444,7 @@ public final class RtEntityCapture implements VertexConsumer {
             cachedTb = tb;
         }
         int primitiveStart = prim.size();
-        prim.size(primitiveStart + 24);
+        reserveUninitialized(prim, 24);
         float[] primitives = prim.elements();
         for (int t = 0; t < 2; t++) { // one {normal+emission, tint, mat} record per triangle
             int lane = primitiveStart + t * 12;
@@ -462,7 +462,7 @@ public final class RtEntityCapture implements VertexConsumer {
             primitives[lane + 11] = 0f; // aux1
         }
         int bucketStart = alphaBuckets.size();
-        alphaBuckets.size(bucketStart + 2);
+        reserveUninitialized(alphaBuckets, 2);
         int[] buckets = alphaBuckets.elements();
         buckets[bucketStart] = currentAlphaBucket;
         buckets[bucketStart + 1] = currentAlphaBucket;
@@ -470,6 +470,41 @@ public final class RtEntityCapture implements VertexConsumer {
 
     private static int positionIndex(int[] corners, int vertex) {
         return corners == null ? vertex : corners[vertex];
+    }
+
+    /** Grow a fixed-output range without Fastutil zero-filling lanes appendQuad overwrites. */
+    private static int reserveUninitialized(FloatArrayList list, int count) {
+        return ((UninitializedFloatArrayList) list).reserveUninitialized(count);
+    }
+
+    private static int reserveUninitialized(IntArrayList list, int count) {
+        return ((UninitializedIntArrayList) list).reserveUninitialized(count);
+    }
+
+    private static final class UninitializedFloatArrayList extends FloatArrayList {
+        UninitializedFloatArrayList(int capacity) { super(capacity); }
+
+        int reserveUninitialized(int count) {
+            if (count < 0) throw new IllegalArgumentException("negative reservation: " + count);
+            int start = size;
+            int end = Math.addExact(start, count);
+            ensureCapacity(end);
+            size = end;
+            return start;
+        }
+    }
+
+    private static final class UninitializedIntArrayList extends IntArrayList {
+        UninitializedIntArrayList(int capacity) { super(capacity); }
+
+        int reserveUninitialized(int count) {
+            if (count < 0) throw new IllegalArgumentException("negative reservation: " + count);
+            int start = size;
+            int end = Math.addExact(start, count);
+            ensureCapacity(end);
+            size = end;
+            return start;
+        }
     }
 
     // Unused VertexConsumer surface — ModelPart.Cube.compile only calls the bulk addVertex above.
