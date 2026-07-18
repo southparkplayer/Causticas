@@ -96,7 +96,7 @@ final class GlassOnlyIntegrationContractTest {
         String closestHit = source("shaders/world/world.rchit.slang");
 
         assertTrue(capture.contains("PRIM_FIRST_PERSON_THIN_GLASS = 1 << 1"));
-        assertTrue(capture.contains("prim.add(Float.intBitsToFloat(currentPrimFlags))"));
+        assertTrue(capture.contains("primitives[lane + 9] = Float.intBitsToFloat(currentPrimFlags)"));
         assertTrue(collector.contains("firstPersonHeldItem = captureMode == CaptureMode.FIRST_PERSON_BODY"));
         assertTrue(collector.contains("firstPersonHeldItem && transmissive"));
         assertTrue(closestHit.contains("(pr.flags & PRIM_FIRST_PERSON_THIN_GLASS) != 0u ? 2u : 3u"));

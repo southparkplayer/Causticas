@@ -298,8 +298,12 @@ public final class RtEntityCapture implements VertexConsumer {
         }
         qx[n] = x; qy[n] = y; qz[n] = z;
         qu[n] = u; qv[n] = v;
-        qnx[n] = nx; qny[n] = ny; qnz[n] = nz;
-        qcol[n] = color;
+        // ModelPart emits a planar face with one flat normal/tint. emitQuad has always used only vertex
+        // zero for these attributes, so avoid twelve dead stores for the remaining three vertices.
+        if (n == 0) {
+            qnx[0] = nx; qny[0] = ny; qnz[0] = nz;
+            qcol[0] = color;
+        }
         if (++n == 4) {
             emitQuad();
             n = 0;
@@ -396,20 +400,31 @@ public final class RtEntityCapture implements VertexConsumer {
         float off = offset ? ORDER_OFFSET * currentOrder : 0f;
 
         int base = verts.size() / 3;
+        int vertFloatStart = verts.size();
+        int uvFloatStart = uvList.size();
+        verts.size(vertFloatStart + 12);
+        uvList.size(uvFloatStart + 8);
+        float[] vertexFloats = verts.elements();
+        float[] uvFloats = uvList.elements();
         for (int i = 0; i < 4; i++) {
             int p = positionIndex(corners, i);
-            verts.add(offset ? x[p] + nx * off : x[p]);
-            verts.add(offset ? y[p] + ny * off : y[p]);
-            verts.add(offset ? z[p] + nz * off : z[p]);
-            uvList.add(remapUv ? uvU0 + u[i] * uvDU : u[i]);
-            uvList.add(remapUv ? uvV0 + v[i] * uvDV : v[i]);
+            int vertexLane = vertFloatStart + i * 3;
+            vertexFloats[vertexLane] = offset ? x[p] + nx * off : x[p];
+            vertexFloats[vertexLane + 1] = offset ? y[p] + ny * off : y[p];
+            vertexFloats[vertexLane + 2] = offset ? z[p] + nz * off : z[p];
+            int uvLane = uvFloatStart + i * 2;
+            uvFloats[uvLane] = remapUv ? uvU0 + u[i] * uvDU : u[i];
+            uvFloats[uvLane + 1] = remapUv ? uvV0 + v[i] * uvDV : v[i];
         }
-        idx.add(base);
-        idx.add(base + 1);
-        idx.add(base + 2);
-        idx.add(base);
-        idx.add(base + 2);
-        idx.add(base + 3);
+        int indexStart = idx.size();
+        idx.size(indexStart + 6);
+        int[] indices = idx.elements();
+        indices[indexStart] = base;
+        indices[indexStart + 1] = base + 1;
+        indices[indexStart + 2] = base + 2;
+        indices[indexStart + 3] = base;
+        indices[indexStart + 4] = base + 2;
+        indices[indexStart + 5] = base + 3;
         // Vertex colour as a flat per-prim tint (ARGB → rgb). White (-1) for most models → grey when lit.
         float tr;
         float tg;
@@ -428,21 +443,29 @@ public final class RtEntityCapture implements VertexConsumer {
             cachedTg = tg;
             cachedTb = tb;
         }
+        int primitiveStart = prim.size();
+        prim.size(primitiveStart + 24);
+        float[] primitives = prim.elements();
         for (int t = 0; t < 2; t++) { // one {normal+emission, tint, mat} record per triangle
-            prim.add(nx);
-            prim.add(ny);
-            prim.add(nz);
-            prim.add(emission);
-            prim.add(tr);
-            prim.add(tg);
-            prim.add(tb);
-            prim.add((float) currentTexSlot); // tint.w = bindless texture slot
-            prim.add(Float.intBitsToFloat(currentMaterialId));
-            prim.add(Float.intBitsToFloat(currentPrimFlags));
-            prim.add(0f); // aux0
-            prim.add(0f); // aux1
-            alphaBuckets.add(currentAlphaBucket);
+            int lane = primitiveStart + t * 12;
+            primitives[lane] = nx;
+            primitives[lane + 1] = ny;
+            primitives[lane + 2] = nz;
+            primitives[lane + 3] = emission;
+            primitives[lane + 4] = tr;
+            primitives[lane + 5] = tg;
+            primitives[lane + 6] = tb;
+            primitives[lane + 7] = (float) currentTexSlot; // tint.w = bindless texture slot
+            primitives[lane + 8] = Float.intBitsToFloat(currentMaterialId);
+            primitives[lane + 9] = Float.intBitsToFloat(currentPrimFlags);
+            primitives[lane + 10] = 0f; // aux0
+            primitives[lane + 11] = 0f; // aux1
         }
+        int bucketStart = alphaBuckets.size();
+        alphaBuckets.size(bucketStart + 2);
+        int[] buckets = alphaBuckets.elements();
+        buckets[bucketStart] = currentAlphaBucket;
+        buckets[bucketStart + 1] = currentAlphaBucket;
     }
 
     private static int positionIndex(int[] corners, int vertex) {
