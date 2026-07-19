@@ -44,7 +44,8 @@ final class PathSamplingContractTest {
         assertTrue(raygen.contains("float2 pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5)"));
         assertTrue(raygen.contains("uint pathCount = primaryOnly ? 1u : spp"));
         assertFalse(raygen.contains("remainingSamples"));
-        assertFalse(raygen.contains("[noinline]"));
+        assertEquals(1, raygen.split("\\[noinline]", -1).length - 1);
+        assertTrue(raygen.contains("[noinline]\nvoid setPrimaryMissGuides"));
         assertFalse(raygen.contains("[noRefInline]"));
         assertFalse(raygen.contains("sampleTerrainEmitter"));
     }
