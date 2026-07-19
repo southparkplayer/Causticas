@@ -366,25 +366,23 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // triangle base to land in the section's packed prim/uv arrays (concatenated in BUCKET order).
     // Water prims keep tint.w == 1, converted to the packed material enum below.
     uint pid = PrimitiveIndex() + sec.triBase[GeometryIndex()];
-    if ((payload.flags & PAYLOAD_PRIMARY_RAY) != 0u) {
+    if ((payload.flags & PAYLOAD_CHUNK_REVEAL_ACTIVE) != 0u) {
         WorldPush world = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
         float fadeDuration = world.chunkFade.y;
-        if (fadeDuration > 0.0 && (world.flags & (1u << 7u)) == 0u) {
-            float currentAge = max(world.chunkFade.x - sec.publishedTime, 0.0);
-            float previousAge = max(min(world.chunkFade.z, world.chunkFade.x) - sec.publishedTime, 0.0);
-            // Once the section was already settled last frame, retain the initialized settled state and
-            // avoid the sequence-buffer load and hash entirely on the permanent primary-hit hot path.
-            if (previousAge < fadeDuration) {
-                float currentProgress = smoothstep(0.0, fadeDuration, currentAge);
-                float previousProgress = smoothstep(0.0, fadeDuration, previousAge);
-                float threshold = chunkRevealThreshold(world, pid);
-                bool visible = currentProgress >= 1.0 || currentProgress > threshold;
-                bool previouslyVisible = previousProgress >= 1.0 || previousProgress > threshold;
-                payload.chunkFade = !visible ? CHUNK_FADE_STATE_HIDDEN
-                        : !previouslyVisible ? CHUNK_FADE_STATE_REVEALED
-                        : currentProgress < 1.0 ? CHUNK_FADE_STATE_STABLE
-                        : CHUNK_FADE_STATE_SETTLED;
-            }
+        float currentAge = max(world.chunkFade.x - sec.publishedTime, 0.0);
+        float previousAge = max(min(world.chunkFade.z, world.chunkFade.x) - sec.publishedTime, 0.0);
+        // Once the section was already settled last frame, retain the initialized settled state and
+        // avoid the sequence-buffer load and hash entirely on the permanent primary-hit hot path.
+        if (previousAge < fadeDuration) {
+            float currentProgress = smoothstep(0.0, fadeDuration, currentAge);
+            float previousProgress = smoothstep(0.0, fadeDuration, previousAge);
+            float threshold = chunkRevealThreshold(world, pid);
+            bool visible = currentProgress >= 1.0 || currentProgress > threshold;
+            bool previouslyVisible = previousProgress >= 1.0 || previousProgress > threshold;
+            payload.chunkFade = !visible ? CHUNK_FADE_STATE_HIDDEN
+                    : !previouslyVisible ? CHUNK_FADE_STATE_REVEALED
+                    : currentProgress < 1.0 ? CHUNK_FADE_STATE_STABLE
+                    : CHUNK_FADE_STATE_SETTLED;
         }
     }
     TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[pid];

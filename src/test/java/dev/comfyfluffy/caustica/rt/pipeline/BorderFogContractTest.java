@@ -55,6 +55,8 @@ final class BorderFogContractTest {
         assertTrue(closestHit.contains("world.chunkFade.x - sec.publishedTime"));
         assertTrue(closestHit.contains("world.chunkFade.z"));
         assertTrue(closestHit.contains("if (previousAge < fadeDuration)"));
+        assertTrue(closestHit.contains("payload.flags & PAYLOAD_CHUNK_REVEAL_ACTIVE"));
+        assertTrue(raygen.contains("? PAYLOAD_CHUNK_REVEAL_ACTIVE : 0u"));
         assertTrue(closestHit.contains("CHUNK_FADE_STATE_REVEALED"));
         assertTrue(composite.contains("previousChunkFadeClockSeconds"));
     }

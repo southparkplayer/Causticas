@@ -153,6 +153,9 @@ public static const uint PAYLOAD_FILTER_SKY = 1u << 10u;
 // Camera visibility is allowed to conceal the finite RT terrain boundary with fog. Transport rays keep
 // the conservative dark void so missing geometry cannot become an indirect-light source.
 public static const uint PAYLOAD_PRIMARY_RAY = 1u << 11u;
+// Raygen specializes the chunk-reveal off state before tracing so closest-hit never dereferences the
+// cold WorldPush BDA merely to discover that reveal is disabled.
+public static const uint PAYLOAD_CHUNK_REVEAL_ACTIVE = 1u << 16u;
 
 public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 public static const uint MATERIAL_OPAQUE = 0u;

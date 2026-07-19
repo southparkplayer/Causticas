@@ -344,7 +344,10 @@ void payloadSetTraceState(bool showCelestial, bool filterSky, bool primaryRay,
                           float rayConeWidth, float rayConeSpread) {
     payload.flags = (showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u)
             | (filterSky ? PAYLOAD_FILTER_SKY : 0u)
-            | (primaryRay ? PAYLOAD_PRIMARY_RAY : 0u);
+            | (primaryRay ? PAYLOAD_PRIMARY_RAY : 0u)
+            | (primaryRay && pc.chunkFade.y > 0.0
+                    && (pc.flags & FRAME_FLAG_OFFLINE_GROUND_TRUTH) == 0u
+                    ? PAYLOAD_CHUNK_REVEAL_ACTIVE : 0u);
     payload.rayCone = packHalf2(float2(rayConeWidth, rayConeSpread));
     payload.chunkFade = CHUNK_FADE_STATE_SETTLED;
 }
