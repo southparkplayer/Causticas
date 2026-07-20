@@ -27,6 +27,7 @@ final class RtSectionBuilder {
     /** Upload a non-empty packed section and prepare, but do not record, its BLAS build. */
     static PreparedSection prepare(RtContext ctx, PackedSection packed,
                                    RtAccel.OpacityMicromapInput ommInput,
+                                   boolean compactBlas,
                                    long key, int sox, int soy, int soz) {
         RtMaterialAbi.requireTriangleParity(packed.material().length, packed.indices().length);
         int vertCount = packed.positions().length / 3;
@@ -69,7 +70,7 @@ final class RtSectionBuilder {
             upload.flush();
 
             blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices,
-                    packed.bucketTris(), ommInput, label + " BLAS");
+                    packed.bucketTris(), ommInput, compactBlas, label + " BLAS");
             return new PreparedSection(key, positions, indices, uvs, material, upload, blas,
                     packed.triBase(), sox, soy, soz);
         } catch (Throwable t) {

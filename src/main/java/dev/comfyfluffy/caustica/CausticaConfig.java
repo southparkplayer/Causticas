@@ -557,6 +557,8 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.sectionTableInitialCapacity", "terrain.section-table-initial-capacity", 512, 1);
             public static final IntSetting REBASE_DISTANCE_BLOCKS =
                     intAtLeast("caustica.rt.rebaseDistanceBlocks", "terrain.rebase-distance-blocks", 128, 0);
+            public static final BooleanSetting BLAS_COMPACTION =
+                    bool("caustica.rt.blasCompaction", "terrain.blas-compaction", true);
 
             private Terrain() {
             }
@@ -593,8 +595,8 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.beViewChunks", "entities.block-entities.view-chunks", 8, 0);
             public static final IntSetting BE_BUILDS_PER_FRAME =
                     intAtLeast("caustica.rt.beBuildsPerFrame", "entities.block-entities.builds-per-frame", 64, 0);
-            public static final IntSetting REFIT_REBUILD_INTERVAL =
-                    intAtLeast("caustica.rt.refitRebuildInterval", "entities.refit.rebuild-interval", 120, 1);
+            public static final BooleanSetting REFIT_ENABLED =
+                    bool("caustica.rt.entityRefit", "entities.refit.enabled", true);
 
             private Entities() {
             }

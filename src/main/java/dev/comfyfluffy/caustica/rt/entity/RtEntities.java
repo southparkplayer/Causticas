@@ -160,9 +160,7 @@ public final class RtEntities {
     private static final int REFIT_RING = KEEP_FRAMES;
     // Force a periodic full rebuild of a slot's AS to bound BVH-quality degradation from repeated refits
     // (an entity that deforms a lot would otherwise refit the same BVH topology forever). Per-slot count.
-    private static int refitRebuildInterval() {
-        return CausticaConfig.Rt.Entities.REFIT_REBUILD_INTERVAL.value();
-    }
+    private static final int REFIT_REBUILD_INTERVAL = 120;
 
     // Treat per-vertex displacements as rigid when every vertex agrees within this tolerance, avoiding a
     // transient disp buffer for plain whole-entity translation.
@@ -314,6 +312,7 @@ public final class RtEntities {
         RtBuffer backing;
         RtBuffer geometry;
         RtBuffer refitScratch;
+        boolean updatable;
         int vertCount = -1;
         int triCount = -1;
         int[] bucketTris;
@@ -1686,8 +1685,8 @@ public final class RtEntities {
     /**
      * Refit-or-build this entity's persistent acceleration structure in an already-selected retired slot.
      * Records an in-place UPDATE (cheap refit) when the slot already holds an
-     * AS of the same topology, else a full ALLOW_UPDATE BUILD (first use of the slot, a topology change, or
-     * the periodic BVH-quality rebuild). Refit scratch and packed geometry persist in the slot and are reused.
+     * AS of the same topology when refit is enabled. Otherwise it records a full BUILD; BLAS built while
+     * refit is disabled omit ALLOW_UPDATE. Refit scratch and packed geometry persist per ring slot.
      */
     private RtAccel refitOrBuild(RtContext ctx, FrameBuild build, EntitySlot slot,
                                  long positionAddr, long indexAddr,
@@ -1697,12 +1696,13 @@ public final class RtEntities {
             triCount += bucketTriCount;
         }
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        boolean canUpdate = slot.accel != null
+        boolean refitEnabled = CausticaConfig.Rt.Entities.REFIT_ENABLED.value();
+        boolean canUpdate = refitEnabled && slot.accel != null && slot.updatable
                 && slot.vertCount == vertCount && slot.triCount == triCount
                 && java.util.Arrays.equals(slot.bucketTris, bucketTris)
                 // VUID-03768: indexed BLAS UPDATE requires every referenced index to match the BUILD.
                 && sameIndexTopology(slot, indices)
-                && slot.updatesSinceBuild < refitRebuildInterval();
+                && slot.updatesSinceBuild < REFIT_REBUILD_INTERVAL;
         if (canUpdate) {
             RtFrameStats.FRAME.count("refits", 1);
             long required = slot.updateScratchSize;
@@ -1722,27 +1722,40 @@ public final class RtEntities {
             slot.updatesSinceBuild++;
             return slot.accel;
         }
-        // (Re)build: the selected ring slot is already past the in-flight horizon, so replace its old AS
-        // immediately and create a fresh updatable one sized for the current topology.
+        // (Re)build: the selected ring slot is already past the in-flight horizon, so replace its old AS.
         if (slot.accel != null) {
             RtAccel.destroyEntityAccel(slot.accel, slot.backing);
             slot.accel = null;
             slot.backing = null;
         }
-        RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableEntityBlasBuild(ctx, positionAddr, vertCount,
-                indexAddr, bucketTris,
-                "entity BLAS");
+        if (!refitEnabled && slot.refitScratch != null) {
+            slot.refitScratch.destroy();
+            slot.refitScratch = null;
+        }
         RtFrameStats.FRAME.count("entityVmaBufferCreates", 2); // persistent AS backing + transient build scratch
-        slot.accel = ub.accel();
-        slot.backing = ub.backing();
+        if (refitEnabled) {
+            RtAccel.UpdatableBuild ub = RtAccel.prepareUpdatableEntityBlasBuild(ctx, positionAddr, vertCount,
+                    indexAddr, bucketTris, "entity BLAS");
+            slot.accel = ub.accel();
+            slot.backing = ub.backing();
+            slot.updateScratchSize = ub.updateScratchSize();
+            build.blas.add(ub.op());
+            build.refitScratch.add(ub.scratch());
+        } else {
+            RtAccel.PersistentBuild pb = RtAccel.preparePersistentEntityBlasBuild(ctx, positionAddr, vertCount,
+                    indexAddr, bucketTris, "entity BLAS");
+            slot.accel = pb.accel();
+            slot.backing = pb.backing();
+            slot.updateScratchSize = 0L;
+            build.blas.add(pb.op());
+            build.refitScratch.add(pb.scratch());
+        }
+        slot.updatable = refitEnabled;
         slot.vertCount = vertCount;
         slot.triCount = triCount;
         slot.bucketTris = bucketTris.clone();
         rememberIndexTopology(slot, indices);
-        slot.updateScratchSize = ub.updateScratchSize();
         slot.updatesSinceBuild = 0;
-        build.blas.add(ub.op());
-        build.refitScratch.add(ub.scratch()); // per-frame build scratch (the AS + backing persist in the ring)
         return slot.accel;
     }
 

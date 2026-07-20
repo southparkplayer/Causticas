@@ -327,6 +327,10 @@ public final class RtAccel {
                     total, false, label, updatable, update, false, null, true, entityTris, null);
         }
 
+        public boolean requestsCompaction() {
+            return accel.compactionQueryPool != 0L;
+        }
+
         private void freeTransientBuildResources() {
             scratch.destroy();
             if (opacityMicromap != null) {
@@ -398,7 +402,7 @@ public final class RtAccel {
      */
     public static PreparedBlas prepareTerrainBlas(RtContext ctx, RtBuffer positions, int vertexCount,
                                                   RtBuffer indices, int[] bucketTris, OpacityMicromapInput opacityMicromapInput,
-                                                  String label) {
+                                                  boolean compact, String label) {
         VkDevice vk = ctx.vk();
         String debugLabel = labelOr(label, "terrain BLAS");
         OpacityMicromap opacityMicromap = null;
@@ -408,19 +412,21 @@ public final class RtAccel {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             opacityMicromap = prepareOpacityMicromap(ctx, opacityMicromapInput, debugLabel);
             VkAccelerationStructureBuildSizesInfoKHR sizes = queryTerrainBlasSizes(vk, stack, positions, indices,
-                    vertexCount, bucketTris, opacityMicromap);
+                    vertexCount, bucketTris, opacityMicromap, compact);
             backing = ctx.createAsyncBuffer(sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
                     debugLabel + " backing");
             scratch = createScratchBuffer(ctx, sizes.buildScratchSize(), debugLabel + " build scratch");
             accel = createBlasOn(ctx, stack, backing, sizes.accelerationStructureSize(), true, debugLabel, opacityMicromap);
-            VkQueryPoolCreateInfo queryCi = VkQueryPoolCreateInfo.calloc(stack).sType$Default()
-                    .queryType(VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR).queryCount(1);
-            java.nio.LongBuffer pQueryPool = stack.mallocLong(1);
-            RtContext.check(VK10.vkCreateQueryPool(vk, queryCi, null, pQueryPool),
-                    "vkCreateQueryPool(terrain BLAS compacted size)");
-            accel.compactionQueryPool = pQueryPool.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_QUERY_POOL, accel.compactionQueryPool,
-                    debugLabel + " compacted-size query");
+            if (compact) {
+                VkQueryPoolCreateInfo queryCi = VkQueryPoolCreateInfo.calloc(stack).sType$Default()
+                        .queryType(VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR).queryCount(1);
+                java.nio.LongBuffer pQueryPool = stack.mallocLong(1);
+                RtContext.check(VK10.vkCreateQueryPool(vk, queryCi, null, pQueryPool),
+                        "vkCreateQueryPool(terrain BLAS compacted size)");
+                accel.compactionQueryPool = pQueryPool.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_QUERY_POOL, accel.compactionQueryPool,
+                        debugLabel + " compacted-size query");
+            }
             return PreparedBlas.terrain(accel, scratch, null, positions.deviceAddress, indices.deviceAddress, vertexCount - 1,
                     bucketTris, opacityMicromap, debugLabel);
         } catch (Throwable t) {
@@ -878,12 +884,12 @@ public final class RtAccel {
 
     private static VkAccelerationStructureBuildSizesInfoKHR queryTerrainBlasSizes(VkDevice vk, MemoryStack stack, RtBuffer positions,
                                                                                   RtBuffer indices, int vertexCount, int[] bucketTris,
-                                                                                  OpacityMicromap opacityMicromap) {
+                                                                                  OpacityMicromap opacityMicromap, boolean compact) {
         VkAccelerationStructureGeometryKHR.Buffer geom = terrainGeometries(stack, positions.deviceAddress, indices.deviceAddress,
                 vertexCount, bucketTris, opacityMicromap);
         VkAccelerationStructureBuildGeometryInfoKHR.Buffer build = VkAccelerationStructureBuildGeometryInfoKHR.calloc(1, stack);
         build.sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
-                .flags(buildFlags(false) | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)
+                .flags(buildFlags(false) | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
                 .mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR).geometryCount(geom.capacity()).pGeometries(geom);
         java.nio.IntBuffer maxPrims = stack.mallocInt(geom.capacity());
         for (int tris : bucketTris) {
@@ -1189,10 +1195,10 @@ public final class RtAccel {
     /** Record a terrain section's two-geometry (opaque + alpha) BUILD. Always a fresh BUILD — terrain
      *  sections are never refit in place (re-extraction allocates a new BLAS), so no UPDATE branch. */
     private static void recordTerrainBlasBuild(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, PreparedBlas b) {
-        if (b.accel.compactionQueryPool == 0L) {
-            throw new IllegalStateException("terrain BLAS has no compaction query pool");
+        boolean compact = b.requestsCompaction();
+        if (compact) {
+            VK10.vkCmdResetQueryPool(cmd, b.accel.compactionQueryPool, 0, 1);
         }
-        VK10.vkCmdResetQueryPool(cmd, b.accel.compactionQueryPool, 0, 1);
         if (b.opacityMicromap != null) {
             recordMicromapBuild(cmd, stack, b.opacityMicromap);
             micromapBuildBarrier(cmd, stack);
@@ -1201,7 +1207,7 @@ public final class RtAccel {
                 b.maxVertex + 1, b.terrainTris, b.opacityMicromap);
         VkAccelerationStructureBuildGeometryInfoKHR.Buffer build = VkAccelerationStructureBuildGeometryInfoKHR.calloc(1, stack);
         build.sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
-                .flags(buildFlags(false) | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)
+                .flags(buildFlags(false) | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
                 .mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR)
                 .geometryCount(geom.capacity()).pGeometries(geom)
                 .dstAccelerationStructure(b.accel.handle);
@@ -1209,10 +1215,12 @@ public final class RtAccel {
         VkAccelerationStructureBuildRangeInfoKHR.Buffer range = terrainBuildRanges(stack, b.terrainTris);
         PointerBuffer ppRange = stack.mallocPointer(1).put(0, range.address());
         vkCmdBuildAccelerationStructuresKHR(cmd, build, ppRange);
-        accelerationStructureBuildBarrier(cmd, stack);
-        vkCmdWriteAccelerationStructuresPropertiesKHR(cmd, stack.longs(b.accel.handle),
-                VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-                b.accel.compactionQueryPool, 0);
+        if (compact) {
+            accelerationStructureBuildBarrier(cmd, stack);
+            vkCmdWriteAccelerationStructuresPropertiesKHR(cmd, stack.longs(b.accel.handle),
+                    VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                    b.accel.compactionQueryPool, 0);
+        }
     }
 
     private static void recordMicromapBuild(VkCommandBuffer cmd, MemoryStack stack, OpacityMicromap opacityMicromap) {

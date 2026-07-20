@@ -1008,7 +1008,8 @@ public final class RtTerrain {
                         completeTask(task, null, null, null);
                     } else {
                         PreparedSection prepared = RtSectionBuilder.prepare(dispatch.ctx(), packed,
-                                cpu.opacityMicromap(), task.key, task.sox, task.soy, task.soz);
+                                cpu.opacityMicromap(), CausticaConfig.Rt.Terrain.BLAS_COMPACTION.value(),
+                                task.key, task.sox, task.soy, task.soz);
                         if (!isTaskCurrent(task)) {
                             destroyPreparedSection(prepared);
                             completeTask(task, null, null, null);
@@ -1038,7 +1039,7 @@ public final class RtTerrain {
         }
     }
 
-    /** Build/query, then compact-copy a terrain BLAS before making it eligible for publication. */
+    /** Build a terrain BLAS and optionally compact-copy it before publication. */
     private void submitTerrainBuild(RtContext ctx, SectionTask task, PreparedSection prepared) {
         ctx.gpuExecutor().submit(
                 () -> !isTaskCurrent(task),
@@ -1059,7 +1060,12 @@ public final class RtTerrain {
                         completeTask(task, prepared, build, null);
                         return;
                     }
-                    submitTerrainCompaction(ctx, task, prepared, build);
+                    if (prepared.blas().requestsCompaction()) {
+                        submitTerrainCompaction(ctx, task, prepared, build);
+                    } else {
+                        prepared.releaseBuildInputs();
+                        completeTask(task, prepared, build, null);
+                    }
                 });
     }
 
