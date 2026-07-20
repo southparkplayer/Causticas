@@ -51,8 +51,8 @@ final class CausticaPersonalDefaultsTest {
         assertEquals(50, CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.defaultValue());
         assertTrue(CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.defaultValue());
         assertTrue(CausticaConfig.Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY.defaultValue());
-        assertTrue(CausticaConfig.Rt.Fg.ENABLED.defaultValue());
-        assertEquals("fixed", CausticaConfig.Rt.Fg.MODE.defaultValue());
+        assertFalse(CausticaConfig.Rt.Fg.ENABLED.defaultValue());
+        assertEquals("off", CausticaConfig.Rt.Fg.MODE.defaultValue());
         assertEquals(1, CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.defaultValue());
         assertFalse(CausticaConfig.Rt.Reflex.LOW_LATENCY_BOOST.defaultValue());
         assertTrue(CausticaConfig.Rt.Sharc.ENABLED.defaultValue());

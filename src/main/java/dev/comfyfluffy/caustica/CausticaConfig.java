@@ -120,6 +120,8 @@ public final class CausticaConfig {
         if ("dynamic".equals(Rt.Fg.MODE.configuredValue())) {
             Rt.Fg.setMode("fixed");
         }
+        // Keep the legacy boolean synchronized with MODE so both TOML keys agree after save.
+        Rt.Fg.ENABLED.set(!"off".equals(Rt.Fg.MODE.configuredValue()));
         // Pre-release settings used absolute first-person offsets and duplicated PsychoV23 output controls.
         // The tested pose is now the zero adjustment origin and PsychoV23's shared stages have one owner.
         FILE.remove("first-person.forward-offset");
@@ -217,7 +219,8 @@ public final class CausticaConfig {
             config.clear();
             return config;
         }
-        if (existed && migrateLegacySceneConfig(config)) {
+        boolean fresh = !existed || config.valueMap().isEmpty();
+        if (!fresh && migrateLegacySceneConfig(config)) {
             try {
                 config.save();
                 LOGGER.info("Migrated obsolete physical-scene defaults in {} to schema {}",
@@ -246,8 +249,8 @@ public final class CausticaConfig {
      * so the migration contract can be tested without touching the real config file.
      */
     static boolean migrateLegacySceneConfig(CommentedConfig config) {
-        Number versionNumber = config.get("config-version");
-        int version = versionNumber == null ? 0 : versionNumber.intValue();
+        Object rawVersion = config.get("config-version");
+        int version = rawVersion instanceof Number number ? number.intValue() : 0;
         if (version >= CONFIG_SCHEMA_VERSION) {
             return false;
         }
@@ -292,9 +295,9 @@ public final class CausticaConfig {
             migrateExactNumber(config, "terrain.max-inflight-sections", 192.0, 32.0);
         }
         if (version < 8 && !config.contains("dlss-rr.input-scale-percent")) {
-            Number quality = config.get("dlss-rr.quality");
-            int mode = quality == null ? 0 : quality.intValue();
-            int percent = switch (mode) {
+            Object rawQuality = config.get("dlss-rr.quality");
+            int quality = rawQuality instanceof Number number ? number.intValue() : 0;
+            int percent = switch (quality) {
                 case 3 -> 33;
                 case 1 -> 58;
                 case 2 -> 66;
@@ -304,10 +307,10 @@ public final class CausticaConfig {
             config.set("dlss-rr.input-scale-percent", percent);
         }
         if (version < 9) {
-            Number output = config.get("output-scale.percent");
-            Number fast = config.get("output-scale.fast-percent");
-            if (fast != null) {
-                int outputPercent = output == null ? 100 : output.intValue();
+            Object rawOutput = config.get("output-scale.percent");
+            Object rawFast = config.get("output-scale.fast-percent");
+            if (rawFast instanceof Number fast) {
+                int outputPercent = rawOutput instanceof Number number ? number.intValue() : 100;
                 int migrated = Math.clamp(Math.round(outputPercent * fast.floatValue() / 100.0f), 10, 200);
                 config.set("output-scale.percent", migrated);
             }
@@ -316,9 +319,9 @@ public final class CausticaConfig {
         if (version < 10) {
             Object modeValue = config.get("frame-generation.mode");
             if (modeValue == null && config.contains("frame-generation.enabled")) {
-                Boolean enabled = config.get("frame-generation.enabled");
+                Object rawEnabled = config.get("frame-generation.enabled");
                 config.set("frame-generation.mode",
-                        Boolean.TRUE.equals(enabled) ? "fixed" : "off");
+                        Boolean.TRUE.equals(rawEnabled) ? "fixed" : "off");
             }
         }
         config.set("config-version", CONFIG_SCHEMA_VERSION);
@@ -1215,9 +1218,9 @@ public final class CausticaConfig {
         /** DLSS Frame Generation. The selected fixed-generation look is the personal default. */
         public static final class Fg {
             /** Legacy compatibility switch; new code and UI use {@link #MODE}. */
-            public static final BooleanSetting ENABLED = bool("caustica.rt.fg", "frame-generation.enabled", true);
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fg", "frame-generation.enabled", false);
             public static final StringSetting MODE = string(
-                    "caustica.rt.fg.mode", "frame-generation.mode", "fixed", Fg::sanitizeMode);
+                    "caustica.rt.fg.mode", "frame-generation.mode", "off", Fg::sanitizeMode);
             public static final IntSetting MULTI_FRAME_COUNT =
                     clampedInt("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1, 5);
             public static final FloatSetting DYNAMIC_TARGET_FPS = clampedFloat(
@@ -1244,13 +1247,17 @@ public final class CausticaConfig {
             }
 
             public static String mode() {
-                String mode = MODE.get();
-                return "off".equals(mode) && ENABLED.value() ? "fixed" : mode;
+                if (MODE.isOverridden()) {
+                    return MODE.get();
+                }
+                if (ENABLED.isOverridden()) {
+                    return ENABLED.value() ? "fixed" : "off";
+                }
+                return MODE.get();
             }
 
             public static String configuredMode() {
-                String mode = MODE.configuredValue();
-                return "off".equals(mode) && ENABLED.configuredValue() ? "fixed" : mode;
+                return MODE.configuredValue();
             }
 
             public static boolean requested() {
