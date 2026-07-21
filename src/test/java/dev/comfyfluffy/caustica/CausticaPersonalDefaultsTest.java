@@ -10,7 +10,7 @@ final class CausticaPersonalDefaultsTest {
     @Test
     void personalRendererAndDisplayValuesAreTheDefaults() {
         assertEquals(8, CausticaConfig.Rt.Composite.MAX_BOUNCES.defaultValue());
-        assertEquals(1.4741987, Math.toDegrees(CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.defaultValue()), 1.0e-5);
+        assertEquals(1.5, Math.toDegrees(CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.defaultValue()), 1.0e-5);
         assertEquals(5.0, Math.toDegrees(CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.defaultValue()), 1.0e-5);
         assertEquals(0.025641026f, CausticaConfig.Rt.Composite.AMBIENT_LIGHT_EV.defaultValue());
         assertEquals(6.02f, CausticaConfig.Rt.Composite.MOONLIGHT_INTENSITY_EV.defaultValue());

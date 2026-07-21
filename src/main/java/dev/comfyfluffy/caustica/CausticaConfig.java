@@ -822,7 +822,7 @@ public final class CausticaConfig {
             public static final IntSetting POINT_SAMPLE_MAX_SIZE = clampedInt(
                     "caustica.rt.pointSampleMaxSize", "composite.point-sample-max-size", 512, 0, 8192);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
-                    radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 1.4741987f);
+                    radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 1.5f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =
                     radians("caustica.rt.moonAngularRadius", "composite.moon-angular-radius-deg", 5.0f);
             // Artist-facing spectral-sky controls. Rayleigh has independent nighttime and daytime endpoints;
