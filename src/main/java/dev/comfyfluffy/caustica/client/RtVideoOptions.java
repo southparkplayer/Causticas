@@ -464,7 +464,7 @@ public final class RtVideoOptions {
                     Component.literal(String.format(Locale.ROOT, "%.1f deg", tenths / 10.0f))),
             new OptionInstance.IntRange(1, 50),
             initialTenths,
-            tenths -> setting.set((float)Math.toRadians(tenths / 10.0f)));
+            tenths -> setting.set(tenths / 10.0f));
     }
 
     private static OptionInstance<Integer> moonSize() {
@@ -478,7 +478,7 @@ public final class RtVideoOptions {
                     Component.literal(String.format(Locale.ROOT, "%.1f deg", tenths / 10.0f))),
             new OptionInstance.IntRange(1, 50),
             initialTenths,
-            tenths -> setting.set((float)Math.toRadians(tenths / 10.0f)));
+            tenths -> setting.set(tenths / 10.0f));
     }
 
     private static OptionInstance<Integer> ambientLight() {

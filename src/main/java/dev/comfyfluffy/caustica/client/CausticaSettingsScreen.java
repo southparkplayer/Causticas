@@ -1359,7 +1359,7 @@ public class CausticaSettingsScreen extends Screen {
         String key = "caustica.options.rt." + id;
         return new Slider(180, Component.translatable(key),
                 () -> Math.toDegrees(setting.configuredValue()),
-                value -> setting.set((float)Math.toRadians(value)),
+                value -> setting.set((float) value),
                 unit -> 0.1 + unit * 4.9, value -> (value - 0.1) / 4.9,
                 value -> String.format(Locale.ROOT, "%.1f deg", value))
                 .tooltip(Component.translatable(key + ".tooltip"))
