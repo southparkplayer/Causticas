@@ -31,6 +31,9 @@ final class ResponsiveOptionsMenuContractTest {
         assertTrue(workstation.contains("new CollapsibleLayout.TreeHeader(navigationContentWidth"));
         assertTrue(workstation.contains("restoreBookmark"));
         assertTrue(workstation.contains("revealControl(Control control)"));
+        assertTrue(workstation.contains("SettingsRevealPlanner.planReveal"));
+        assertFalse(workstation.contains("prepareToneControl"));
+        assertFalse(workstation.contains("RtResolutionScale.ensurePresetSelection"));
         assertTrue(workstation.contains("migrateLegacyExpansionState"));
         assertTrue(workstation.contains("uiState.save()"));
         assertTrue(workstation.contains("addEssentialsGrid(controls)"));

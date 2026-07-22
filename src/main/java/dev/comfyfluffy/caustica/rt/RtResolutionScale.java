@@ -36,27 +36,11 @@ public final class RtResolutionScale {
         return presetQuality(CausticaConfig.Rt.DlssRr.QUALITY.configuredValue());
     }
 
-    public static int displayedQuality(int inputRatioTenths) {
-        return displayedQuality();
-    }
-
     public static int presetQuality(int quality) {
         return switch (quality) {
             case 0, 1, 2, 3, ULTRA_QUALITY, DLAA_QUALITY -> quality;
             default -> 0;
         };
-    }
-
-    /** Converts legacy custom ratios back to the selected preset. */
-    public static void ensurePresetSelection() {
-        int quality = presetQuality(CausticaConfig.Rt.DlssRr.QUALITY.configuredValue());
-        int ratio = presetRatioTenths(quality);
-        if (CausticaConfig.Rt.DlssRr.QUALITY.configuredValue() != quality) {
-            CausticaConfig.Rt.DlssRr.QUALITY.set(quality);
-        }
-        if (CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.configuredValue() != ratio) {
-            CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.set(ratio);
-        }
     }
 
     public static void selectQuality(int quality) {

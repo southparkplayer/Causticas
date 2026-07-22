@@ -24,6 +24,8 @@ import dev.comfyfluffy.caustica.client.settings.SettingsCatalog;
 import dev.comfyfluffy.caustica.client.settings.SettingsCatalog.Control;
 import dev.comfyfluffy.caustica.client.settings.SettingsCatalog.Group;
 import dev.comfyfluffy.caustica.client.settings.SettingsCatalog.Page;
+import dev.comfyfluffy.caustica.client.settings.SettingsRevealPlanner;
+import dev.comfyfluffy.caustica.client.settings.SettingsRevealPlanner.RevealPlan;
 import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtHdr;
 import dev.comfyfluffy.caustica.rt.RtResolutionScale;
@@ -110,6 +112,7 @@ public class CausticaSettingsScreen extends Screen {
     private Page category = Page.ESSENTIALS;
     private Page buildingCategory = Page.ESSENTIALS;
     private String pendingTargetId;
+    private String pendingRevealReasonKey;
     private AbstractWidget targetWidget;
     private AbstractWidget flashWidget;
     private CollapsibleLayout activeBundle;
@@ -183,7 +186,6 @@ public class CausticaSettingsScreen extends Screen {
         activeBundleId = null;
         sectionColumns = null;
         metrics = SettingsUiMetrics.calculate(width, height, 0);
-        RtResolutionScale.ensurePresetSelection();
         railWidth = metrics.railWidth();
         contentWidth = metrics.contentWidth();
         gridColumns = metrics.principalColumns();
@@ -464,57 +466,17 @@ public class CausticaSettingsScreen extends Screen {
 
     private void revealControl(Control control) {
         rememberMenuPosition();
-        prepareToneControl(control.id());
-        category = control.page();
+        RevealPlan plan = SettingsRevealPlanner.planReveal(control,
+                new SettingsRevealPlanner.VisibilityContext(
+                        CausticaConfig.Rt.Hdr.ENABLED.configuredValue(),
+                        CausticaConfig.Rt.Sdr.TONEMAP_MODE.configuredValue(),
+                        CausticaConfig.Rt.Hdr.TONEMAP_MODE.configuredValue()));
+        category = plan.page();
         searchQuery = "";
         temporaryExpandedSectionId = null;
-        pendingTargetId = control.id();
+        pendingTargetId = plan.available() ? plan.targetControlId() : null;
+        pendingRevealReasonKey = plan.unavailableReasonKey();
         rebuildScreen();
-    }
-
-    private void prepareToneControl(String id) {
-        if (id == null || !id.startsWith("tone.")) return;
-        if (id.startsWith("tone.sdr.")) {
-            if (CausticaConfig.Rt.Hdr.ENABLED.configuredValue()) {
-                CausticaConfig.Rt.Hdr.ENABLED.set(false);
-                pendingSwapchainRecreate = true;
-            }
-            String mode = id.substring("tone.sdr.".length(), id.indexOf('.', "tone.sdr.".length()));
-            String configuredMode = switch (mode) {
-                case "pbrNeutral" -> CausticaConfig.Rt.Sdr.TONEMAP_PBR_NEUTRAL;
-                case "uncharted2" -> CausticaConfig.Rt.Sdr.TONEMAP_UNCHARTED2;
-                case "psychov" -> CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV;
-                default -> mode;
-            };
-            CausticaConfig.Rt.Sdr.TONEMAP_MODE.set(configuredMode);
-        } else if (id.startsWith("tone.psychov23.")) {
-            if (!CausticaConfig.Rt.Hdr.ENABLED.configuredValue()) {
-                CausticaConfig.Rt.Sdr.TONEMAP_MODE.set(CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV23);
-            } else {
-                CausticaConfig.Rt.Hdr.TONEMAP_MODE.set(CausticaConfig.Rt.Hdr.TONEMAP_PSYCHOV23);
-            }
-        } else if (id.startsWith("tone.psychov.")) {
-            boolean hdrOnly = id.endsWith(".bleaching") || id.endsWith(".clipPoint")
-                    || id.endsWith(".whiteCurve");
-            if (hdrOnly) {
-                if (!CausticaConfig.Rt.Hdr.ENABLED.configuredValue()) {
-                    CausticaConfig.Rt.Hdr.ENABLED.set(true);
-                    pendingSwapchainRecreate = true;
-                }
-                CausticaConfig.Rt.Hdr.TONEMAP_MODE.set(CausticaConfig.Rt.Hdr.TONEMAP_PSYCHOV);
-                return;
-            }
-            boolean activePsycho = CausticaConfig.Rt.Hdr.ENABLED.configuredValue()
-                    ? CausticaConfig.Rt.Hdr.TONEMAP_MODE.configuredValue().startsWith("psychov")
-                    : CausticaConfig.Rt.Sdr.TONEMAP_MODE.configuredValue().startsWith("psychov");
-            if (!activePsycho) {
-                CausticaConfig.Rt.Sdr.TONEMAP_MODE.set(CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV);
-                if (CausticaConfig.Rt.Hdr.ENABLED.configuredValue()) {
-                    CausticaConfig.Rt.Hdr.ENABLED.set(false);
-                    pendingSwapchainRecreate = true;
-                }
-            }
-        }
     }
 
     private void addDisplayHdr() {
@@ -1148,6 +1110,11 @@ public class CausticaSettingsScreen extends Screen {
         if (!active.isEmpty()) {
             addBundle("exposure.activeCurve");
             addGrid(active);
+        }
+        if (pendingRevealReasonKey != null) {
+            String reasonKey = pendingRevealReasonKey;
+            pendingRevealReasonKey = null;
+            addInfo(() -> Component.translatable(reasonKey));
         }
     }
 
