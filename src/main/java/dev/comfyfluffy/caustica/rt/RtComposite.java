@@ -1607,8 +1607,9 @@ public final class RtComposite {
                 && "auto".equalsIgnoreCase(CausticaConfig.Rt.Exposure.MODE.get());
         boolean exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
         boolean hdrEnabled = RtHdr.effective();
-        int configuredScalePercent = RtOutputScale.clampPercent(CausticaConfig.Rt.OutputScale.PERCENT.value());
-        int desiredScalePercent = offlineGroundTruth ? 100 : configuredScalePercent;
+        // Output scale is fixed at 100% in the active UI flow after resolution-control removal.
+        int configuredScalePercent = 100;
+        int desiredScalePercent = 100;
         boolean allocationFallback = !offlineGroundTruth
                 && outputScaleAllocationFailurePercent == configuredScalePercent
                 && outputScaleAllocationFailureW == width && outputScaleAllocationFailureH == height

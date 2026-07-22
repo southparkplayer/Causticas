@@ -66,8 +66,6 @@ public abstract class VideoSettingsScreenMixin {
         list.addBig(RtVideoOptions.causticaButton((Screen) (Object) this, list::applyUnsavedChanges));
         if (CausticaConfig.Rt.ENABLED.value()) {
             list.addHeader(Component.translatable("caustica.options.rt.header"));
-            list.addBig(RtVideoOptions.outputScale());
-            list.addBig(RtVideoOptions.inputScale());
         }
     }
 

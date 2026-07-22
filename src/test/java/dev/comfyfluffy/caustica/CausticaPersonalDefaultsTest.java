@@ -46,8 +46,8 @@ final class CausticaPersonalDefaultsTest {
 
     @Test
     void selectedVendorAndReconstructionDefaultsStayLocked() {
-        assertEquals(2, CausticaConfig.Rt.DlssRr.QUALITY.defaultValue());
-        assertEquals(4, CausticaConfig.Rt.DlssRr.PRESET.defaultValue());
+        assertEquals(0, CausticaConfig.Rt.DlssRr.QUALITY.defaultValue());
+        assertEquals(5, CausticaConfig.Rt.DlssRr.PRESET.defaultValue());
         assertEquals(20, CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.defaultValue());
         assertTrue(CausticaConfig.Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY.defaultValue());
         assertTrue(CausticaConfig.Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY.defaultValue());

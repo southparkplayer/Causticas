@@ -11,7 +11,7 @@ final class OutputScaleContractTest {
     private static String read(String path) throws Exception { return Files.readString(Path.of(path)); }
 
     @Test
-    void configAndBothSettingsSurfacesExposeInputRatioAndOutputPercentSliders() throws Exception {
+    void resolutionScaleControlsAreRemovedFromSettingsSurfaces() throws Exception {
         String config = read("src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java");
         String caustica = read("src/main/java/dev/comfyfluffy/caustica/client/CausticaSettingsScreen.java");
         String vanilla = read("src/main/java/dev/comfyfluffy/caustica/mixin/VideoSettingsScreenMixin.java");
@@ -19,22 +19,16 @@ final class OutputScaleContractTest {
         assertTrue(config.contains("\"output-scale.percent\", 100, 10, 200"));
         assertFalse(config.contains("FAST_PERCENT"));
         assertTrue(config.contains("\"dlss-rr.input-scale-percent\", 20, 10, 40"));
-        assertTrue(caustica.contains("\"%.1fx\""));
-        assertTrue(caustica.contains("CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS"));
-        assertTrue(caustica.contains("private Slider percentSlider(Component label"));
-        assertFalse(caustica.contains("snapTo(List.of(10, 15, 17, 20, 30), 2)"));
+        assertFalse(caustica.contains("outputScale"));
+        assertFalse(caustica.contains("inputScale"));
+        assertFalse(caustica.contains("reconstruction.outputScaling"));
+        assertFalse(caustica.contains("pendingInputScaleTenths"));
         String videoMixin = vanilla;
-        assertTrue(options.contains("public static OptionInstance<Integer> outputScale()"));
-        assertTrue(options.contains("new OptionInstance.IntRange(10, 200)"));
-        assertTrue(options.contains("ratioScale(\"caustica.options.rt.inputScale\","));
-        assertTrue(options.contains("CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS"));
-        assertTrue(options.contains("setting::set"));
-        assertTrue(options.contains("shiftDown() ? setting.defaultValue() : percent"));
-        assertTrue(options.contains("shiftDown() ? setting.defaultValue() : tenths"));
-        assertTrue(options.contains("RtComposite.INSTANCE.requestResolutionScaleCommit()"));
-        assertTrue(videoMixin.contains("list.addBig(RtVideoOptions.outputScale())"));
+        assertFalse(options.contains("public static OptionInstance<Integer> outputScale()"));
+        assertFalse(options.contains("public static OptionInstance<Integer> inputScale()"));
+        assertFalse(videoMixin.contains("list.addBig(RtVideoOptions.outputScale())"));
         assertFalse(videoMixin.contains("fastOutputScale"));
-        assertTrue(videoMixin.contains("list.addBig(RtVideoOptions.inputScale())"));
+        assertFalse(videoMixin.contains("list.addBig(RtVideoOptions.inputScale())"));
     }
 
     @Test
@@ -44,7 +38,7 @@ final class OutputScaleContractTest {
         assertTrue(composite.contains("dlssdResolutionPlan.dlssdOutputWidth()"));
         assertTrue(composite.contains("if (scaledDisplayImage == null) return; // True zero-overhead native path."));
         assertTrue(composite.contains("OfflineGroundTruth.INSTANCE.active()"));
-        assertTrue(composite.contains("desiredScalePercent = offlineGroundTruth ? 100"));
+        assertTrue(composite.contains("int desiredScalePercent = 100"));
         assertFalse(composite.contains("desiredFastPercent"));
         assertTrue(composite.contains("blitUpscale(cmd, stack, scaledDisplayImage, displayImage, VK10.VK_FILTER_LINEAR)"));
         assertTrue(composite.contains("desiredScalePercent == 100 && outputScalePipeline != null"));

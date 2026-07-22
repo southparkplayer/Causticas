@@ -322,6 +322,46 @@ final class CausticaConfigSceneMigrationTest {
     }
 
     @Test
+    void schema13ForcesNewDlssdDefaults() {
+        CommentedConfig nonNrd = CommentedConfig.inMemory();
+        nonNrd.set("config-version", 12);
+        nonNrd.set("reconstruction.backend", "dlss-rr");
+        nonNrd.set("dlss-rr.preset", "A");
+        nonNrd.set("dlss-rr.quality", 3);
+        nonNrd.set("dlss-rr.input-scale-percent", 30);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(nonNrd));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) nonNrd.get("config-version")).intValue());
+        assertEquals("dlss-rr", nonNrd.get("reconstruction.backend"));
+        assertEquals(true, nonNrd.get("dlss-rr.enabled"));
+        assertEquals("D", nonNrd.get("dlss-rr.preset"));
+        assertEquals(20, ((Number) nonNrd.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig defaultsAdded = CommentedConfig.inMemory();
+        defaultsAdded.set("config-version", 12);
+        defaultsAdded.set("reconstruction.backend", "off");
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(defaultsAdded));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) defaultsAdded.get("config-version")).intValue());
+        assertEquals("dlss-rr", defaultsAdded.get("reconstruction.backend"));
+        assertEquals(true, defaultsAdded.get("dlss-rr.enabled"));
+        assertEquals("D", defaultsAdded.get("dlss-rr.preset"));
+        assertEquals(20, ((Number) defaultsAdded.get("dlss-rr.input-scale-percent")).intValue());
+    }
+
+    @Test
+    void schema13DoesNotReplaceNrdBackend() {
+        CommentedConfig nrd = CommentedConfig.inMemory();
+        nrd.set("config-version", 12);
+        nrd.set("reconstruction.backend", "nrd");
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(nrd));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) nrd.get("config-version")).intValue());
+        assertFalse(nrd.contains("dlss-rr.enabled"));
+        assertFalse(nrd.contains("dlss-rr.quality"));
+        assertFalse(nrd.contains("dlss-rr.preset"));
+        assertFalse(nrd.contains("dlss-rr.input-scale-percent"));
+        assertEquals("nrd", nrd.get("reconstruction.backend"));
+    }
+
+    @Test
     void schemaElevenPreservesUserCustomizations() {
         CommentedConfig custom = CommentedConfig.inMemory();
         custom.set("config-version", 10);

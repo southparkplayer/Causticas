@@ -286,6 +286,7 @@ static bool gv_motionUseRefracted; // true when the MV tracks the refracted hit 
 // terrain/sky, an entity's per-vertex/object motion for a dynamic hit).
 static float3 gv_motionObjDisp;
 static float3 gv_opticalGuideDir;
+static float3 gv_opticalGuideTransmissionFilter;
 static const uint OPTICAL_GUIDE_NONE = 0u;
 static const uint OPTICAL_GUIDE_TRANSMISSION = 1u;
 static uint gv_opticalGuideMode;
@@ -412,6 +413,7 @@ void setPrimaryMissGuides(float3 rayDirection) {
     gv_motionObjDisp = float3(0.0, 0.0, 0.0);
     gv_motionUseRefracted = false;
     gv_opticalGuideMode = OPTICAL_GUIDE_NONE;
+    gv_opticalGuideTransmissionFilter = float3(1.0, 1.0, 1.0);
     gv_diffuseRayDirectionHitDistance = float4(0.0);
 #if CAUSTICA_NRD
     gv_nrdPrimaryMiss = true;
@@ -1618,10 +1620,12 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
 void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNormal,
                      float3 surfaceGeometricNormal,
                      float currentIor,
+                     float3 initialTransmissionFilter,
                      float rayBias, float rayConeWidth, float rayConeSpread, float waterWaveTime,
                      out float3 hitCamRel, out float3 motionPrev, out bool transmitted,
                      out float3 normal, out float roughness,
                      out float3 diffuseAlbedo,
+                     out float3 transmissionFilter,
                      out bool encounteredAnimatedWater, out uint failure) {
     hitCamRel = surfacePos - pc.camOffset;
     motionPrev = float3(0.0, 0.0, 0.0);
@@ -1629,6 +1633,10 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
     normal = surfaceNormal;
     roughness = 1.0;
     diffuseAlbedo = float3(0.0, 0.0, 0.0);
+
+    // The primary interface was crossed before this helper starts.
+    transmissionFilter = initialTransmissionFilter;
+
     encounteredAnimatedWater = false;
     failure = OPTICAL_GUIDE_FAILURE_UNSUPPORTED;
     if (dot(transmittedDir, transmittedDir) <= 0.0) {
@@ -1678,6 +1686,7 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         float3 interfaceNormal;
         float targetIor = currentIor;
         bool straightThrough = false;
+        bool crossedGlassEntry = false;
         if (interfaceMaterial == MATERIAL_WATER) {
             bool entering = payloadWaterEntering();
             targetIor = entering ? WATER_IOR : 1.0;
@@ -1690,6 +1699,8 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         } else if (interfaceMaterial == MATERIAL_GLASS) {
             uint opticalClass = payloadOpticalClass();
             if (opticalClass == OPTICAL_TRANSLUCENT_SURFACE) {
+                // A generic translucent surface is the visible destination, not another
+                // clear optical boundary. Its own albedo is returned directly.
                 hitCamRel = interfacePos - pc.camOffset;
                 motionPrev = payload.motionPrev;
                 normal = payload.normal;
@@ -1699,16 +1710,19 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
                 failure = OPTICAL_GUIDE_FAILURE_NONE;
                 return;
             }
+            bool interfaceEntering = payloadInterfaceEntering();
             interfaceNormal = normalize(payload.geometricNormal);
             if (opticalClass == OPTICAL_THIN_GLASS) {
-                // The transport model collapses a pane's two faces into one sheet. Secondary pane faces
-                // therefore change neither direction nor medium; advance past them deterministically.
+                // Match tracePath's collapsed-sheet model. Both geometric faces are
+                // crossed straight through, but only the entering face consumes tint.
                 straightThrough = true;
+                crossedGlassEntry = interfaceEntering;
             } else if (opticalClass == OPTICAL_SOLID_GLASS || opticalClass == OPTICAL_SOLID_ICE) {
-                bool entering = payloadInterfaceEntering();
                 float materialIor = opticalClass == OPTICAL_SOLID_ICE ? ICE_IOR : GLASS_IOR;
-                targetIor = entering ? materialIor
+                targetIor = interfaceEntering
+                        ? materialIor
                         : (payloadInterfaceExteriorWater() ? WATER_IOR : 1.0);
+                crossedGlassEntry = interfaceEntering;
             } else {
                 failure = OPTICAL_GUIDE_FAILURE_UNSUPPORTED;
                 return;
@@ -1733,6 +1747,14 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
             ro = interfacePos + rayBias * reflectedSideNormal;
             continue;
         }
+
+        // The guide crossed this interface by transmission. Match tracePath by
+        // consuming the authored glass filter exactly once on an entering face.
+        // Never consume it for exits or TIR reflection.
+        if (crossedGlassEntry) {
+            transmissionFilter *= payload.albedo;
+        }
+
         direction = normalize(nextDirection);
         currentIor = targetIor;
         float3 interfaceSideNormal = dot(interfaceGeometricNormal, direction) >= 0.0
@@ -2037,11 +2059,18 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 // normal or, after the optical walk, with the transmitted lakebed material.
                 gv_normal = interfaceNormal;
                 gv_rough = solidIce ? ICE_GUIDE_ROUGH : GLASS_GUIDE_ROUGH;
+                // The primary dielectric reflection remains neutral.
                 gv_specAlb = float3(F, F, F);
+                // The interface itself has no diffuse lobe. The deterministic optical
+                // walk replaces this with the transmitted destination.
                 // A dielectric interface has no diffuse reflectance. Its tint attenuates radiance in the
                 // transport path below; it must not masquerade as the transmitted surface's DLSS-RR
                 // diffuse albedo. A successful optical walk replaces this zero with the destination albedo.
                 gv_albedo = float3(0.0, 0.0, 0.0);
+                gv_opticalGuideTransmissionFilter =
+                        entering && dot(transmittedDir, transmittedDir) > 0.0
+                        ? glassTint
+                        : float3(1.0, 1.0, 1.0);
                 gv_hitCamRel = hitPos - pc.camOffset;
                 gv_motionHitCamRel = gv_hitCamRel;
                 gv_motionUseRefracted = false;
@@ -3110,6 +3139,7 @@ void main() {
     gv_opticalGuideIor = 1.0;
     gv_opticalGuideBias = RAY_ORIGIN_BIAS;
     gv_opticalGuideFailure = OPTICAL_GUIDE_FAILURE_NONE;
+    gv_opticalGuideTransmissionFilter = float3(1.0, 1.0, 1.0);
     gv_animatedGuide = 0.0;
     gv_primarySky = false;
     gv_diffuseRayDirectionHitDistance = float4(0.0, 0.0, 0.0, 0.0);
@@ -3240,21 +3270,26 @@ void main() {
         float3 destinationNormal;
         float destinationRoughness;
         float3 destinationDiffuseAlbedo;
+        float3 destinationTransmissionFilter;
         bool encounteredAnimatedWater;
         float guideConeWidth = max(length(gv_hitCamRel) * rayConeSpread, RAY_CONE_MIN_WIDTH);
         opticalGuideHit(gv_hitCamRel + pc.camOffset, gv_opticalGuideDir, gv_normal, gv_geometricNormal,
                 gv_opticalGuideIor,
+                gv_opticalGuideTransmissionFilter,
                 gv_opticalGuideBias, guideConeWidth, rayConeSpread, pc.waterParams.w,
                 destinationHitCamRel, destinationMotionPrev, destinationValid,
                 destinationNormal, destinationRoughness,
-                destinationDiffuseAlbedo, encounteredAnimatedWater, gv_opticalGuideFailure);
+                destinationDiffuseAlbedo, destinationTransmissionFilter, encounteredAnimatedWater,
+                gv_opticalGuideFailure);
         // The guide walk records animated-water traversal for diagnostics only. It is not a reason to
         // replace unrelated destination history with the current sample.
         if (destinationValid) {
             gv_motionHitCamRel = destinationHitCamRel;
             gv_motionObjDisp = destinationMotionPrev;
             gv_motionUseRefracted = true;
-            gv_albedo = destinationDiffuseAlbedo;
+            // DLSSD receives the effective diffuse reflectance visible through every
+            // entered glass interface crossed by the deterministic optical guide.
+            gv_albedo = destinationDiffuseAlbedo * destinationTransmissionFilter;
             // Standard is refraction-priority, so every ordinary guide describes this same destination.
             gv_hitCamRel = destinationHitCamRel;
             gv_normal = destinationNormal;

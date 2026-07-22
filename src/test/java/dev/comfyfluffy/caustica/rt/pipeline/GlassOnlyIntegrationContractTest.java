@@ -103,10 +103,14 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(validPath.contains("Standard is refraction-priority"));
         assertTrue(validPath.contains("gv_normal = destinationNormal"));
         assertTrue(validPath.contains("gv_rough = destinationRoughness"));
-        assertTrue(raygen.contains("gv_albedo = destinationDiffuseAlbedo"));
+        assertFalse(raygen.contains(
+                "gv_albedo = destinationDiffuseAlbedo"));
+        assertTrue(raygen.contains(
+                "gv_albedo = destinationDiffuseAlbedo * destinationTransmissionFilter;"));
         assertTrue(raygen.contains("float3 specSurfaceCamRel = gv_hitCamRel"));
         assertTrue(raygen.contains("specSurfaceAlbedo, dir, jndc, size"));
-        assertTrue(raygen.contains("destinationDiffuseAlbedo, encounteredAnimatedWater, gv_opticalGuideFailure"));
+        assertTrue(raygen.contains(
+                "destinationDiffuseAlbedo, destinationTransmissionFilter,"));
         assertTrue(raygen.contains("Favg * Favg * Eavg"));
         assertTrue(closestHit.contains(
                 "float3 texAlbedo = sampleSrgbLinearTrilinear(blockAlbedoAtlas, uv, blockLod"));
@@ -117,6 +121,52 @@ final class GlassOnlyIntegrationContractTest {
         assertEquals(2, occurrences(raygen, "opticalGuideHit(")); // definition and one current-frame guide walk
         assertFalse(raygen.contains("world_dlssd_guides"));
         assertFalse(closestHit.contains("PAYLOAD_SHADOW_QUERY"));
+    }
+
+    @Test
+    void dlssdOpticalGuideAccumulatesEnteredGlassTint() throws IOException {
+        String raygen = source("shaders/world/world.rgen.slang");
+
+        assertTrue(raygen.contains("static float3 gv_opticalGuideTransmissionFilter;"));
+
+        assertTrue(raygen.contains(
+                "gv_opticalGuideTransmissionFilter = float3(1.0, 1.0, 1.0);"));
+
+        assertTrue(raygen.contains(
+                "float3 initialTransmissionFilter"));
+
+        assertTrue(raygen.contains(
+                "out float3 transmissionFilter"));
+
+        assertTrue(raygen.contains(
+                "transmissionFilter = initialTransmissionFilter;"));
+
+        assertTrue(raygen.contains(
+                "bool crossedGlassEntry = false;"));
+
+        assertTrue(raygen.contains(
+                "crossedGlassEntry = interfaceEntering;"));
+
+        assertTrue(raygen.contains(
+                "if (crossedGlassEntry)"));
+
+        assertTrue(raygen.contains(
+                "transmissionFilter *= payload.albedo;"));
+
+        assertTrue(raygen.contains(
+                "destinationDiffuseAlbedo * destinationTransmissionFilter"));
+
+        // Reflection remains a neutral dielectric Fresnel lobe.
+        assertTrue(raygen.contains(
+                "gv_specAlb = float3(F, F, F);"));
+
+        // Ordinary glass must not become PSR.
+        int glassStart = raygen.indexOf("if (material == MATERIAL_GLASS)");
+        int waterStart = raygen.indexOf(
+                "if (material == MATERIAL_WATER)", glassStart);
+        String glassTransport = raygen.substring(glassStart, waterStart);
+
+        assertFalse(glassTransport.contains("gv_psrMirror = true"));
     }
 
     @Test
@@ -132,7 +182,10 @@ final class GlassOnlyIntegrationContractTest {
         assertTrue(walk.contains("opticalClass == OPTICAL_SOLID_GLASS || opticalClass == OPTICAL_SOLID_ICE"));
         assertTrue(walk.contains("straightThrough = true"));
         assertTrue(walk.contains("currentIor = targetIor"));
+        assertTrue(walk.contains("transmissionFilter *= payload.albedo"));
         assertTrue(walk.contains("failure = OPTICAL_GUIDE_FAILURE_NONE"));
+        assertFalse(walk.contains(
+                "if (!interfaceEntering) {\n            transmissionFilter *= payload.albedo;"));
         assertFalse(walk.contains("diffuseAlbedo = payload.albedo;\n            transmitted = true;\n            return;\n        }\n\n        float3 interfacePos"));
     }
 

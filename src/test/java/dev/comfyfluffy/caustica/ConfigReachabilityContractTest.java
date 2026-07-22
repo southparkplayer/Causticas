@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class ConfigReachabilityContractTest {
     private static final Set<String> COMPATIBILITY_ALIASES = Set.of(
             "DlssRr.HIGH_QUALITY_TRANSPARENCY",
+            "OutputScale.PERCENT",
             "Fg.ENABLED");
     private static final Set<String> OWNER_MEDIATED_SETTINGS = Set.of(
             // Frame-generation policy deliberately funnels reads and writes through Fg's

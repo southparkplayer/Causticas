@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Locale;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -31,7 +32,7 @@ import org.slf4j.LoggerFactory;
 public final class CausticaConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
-    static final int CONFIG_SCHEMA_VERSION = 12;
+    static final int CONFIG_SCHEMA_VERSION = 13;
 
     private static final Path CONFIG_PATH = resolveConfigPath();
     private static final CommentedFileConfig FILE = loadAndMigrateFile(CONFIG_PATH);
@@ -366,10 +367,26 @@ public final class CausticaConfig {
             int ratioTenths = Math.clamp(Math.round(10.0 * outputPercent / (double) inputPercent), 10, 40);
             config.set("dlss-rr.input-scale-percent", ratioTenths);
         }
+        if (version < 13) {
+            applySchema13Defaults(config);
+        }
         config.set("config-version", CONFIG_SCHEMA_VERSION);
         return true;
     }
 
+    private static boolean isNrdBackend(CommentedConfig config) {
+        Object rawBackend = config.get("reconstruction.backend");
+        return rawBackend instanceof String value && "nrd".equalsIgnoreCase(value.trim());
+    }
+
+    private static void applySchema13Defaults(CommentedConfig config) {
+        if (!isNrdBackend(config)) {
+            config.set("reconstruction.backend", "dlss-rr");
+            config.set("dlss-rr.enabled", true);
+            config.set("dlss-rr.preset", "D");
+            config.set("dlss-rr.input-scale-percent", 20);
+        }
+    }
     private static void migrateExactNumber(CommentedConfig config, String path, double obsolete, double replacement) {
         Object value = config.get(path);
         if (value instanceof Number number && Math.abs(number.doubleValue() - obsolete) <= 1.0e-6) {
@@ -1136,8 +1153,8 @@ public final class CausticaConfig {
             public static final BooleanSetting PARTICLE_TEMPORAL_HISTORY = bool(
                     "caustica.rt.dlssRr.particleTemporalHistory",
                     "dlss-rr.particle-temporal-history", true);
-            public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 4);
-            public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 2);
+            public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 5);
+            public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0);
             public static final IntSetting INPUT_RATIO_TENTHS = clampedInt(
                     "caustica.rt.dlssRr.inputScale", "dlss-rr.input-scale-percent", 20, 10, 40);
 

@@ -505,52 +505,6 @@ public class CausticaSettingsScreen extends Screen {
                 .activeWhen(this::dlssControlsActive));
         addBundle("reconstruction.backend");
         addGrid(List.of(controls.get(0), controls.get(6)));
-        int[] pendingInputScaleTenths = {
-                CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.configuredValue()
-        };
-        Runnable commitInputScale = () -> {
-            int selectedTenths = Math.clamp(pendingInputScaleTenths[0], 10, 40);
-            CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.set(selectedTenths);
-            RtComposite.INSTANCE.requestResolutionScaleCommit();
-        };
-        Slider outputSlider = new Slider(180,
-                Component.translatable("caustica.options.rt.outputScale"),
-                CausticaConfig.Rt.OutputScale.PERCENT::configuredValue,
-                value -> {
-                    int next = (int) Math.round(value);
-                    CausticaConfig.Rt.OutputScale.PERCENT.set(next);
-                    RtComposite.INSTANCE.requestResolutionScaleCommit();
-                },
-                unit -> 10.0 + unit * 190.0, value -> (value - 10.0) / 190.0,
-                value -> String.format(Locale.ROOT, "%.0f%%", value))
-                .tooltip(Component.translatable("caustica.options.rt.outputScale.tooltip"))
-                .snapTo(List.of(33, 58, 67), 2)
-                .resetOnShift(() -> {
-                    CausticaConfig.Rt.OutputScale.PERCENT.set(CausticaConfig.Rt.OutputScale.PERCENT.defaultValue());
-                    RtComposite.INSTANCE.requestResolutionScaleCommit();
-                });
-        Slider inputSlider = new Slider(180,
-                Component.translatable("caustica.options.rt.inputScale"),
-                () -> pendingInputScaleTenths[0],
-                value -> {
-                    pendingInputScaleTenths[0] = (int) Math.round(value);
-                },
-                unit -> 10.0 + unit * 30.0, value -> (value - 10.0) / 30.0,
-                value -> String.format(Locale.ROOT, "%.1fx", value / 10.0))
-                .tooltip(Component.translatable("caustica.options.rt.inputScale.tooltip"))
-                .activeWhen(this::dlssControlsActive)
-                .onRelease(commitInputScale)
-                .resetOnShift(() -> {
-                    int defaultTenths = CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.defaultValue();
-                    pendingInputScaleTenths[0] = defaultTenths;
-                    commitInputScale.run();
-                });
-        addInfo(() -> Component.literal(String.format(Locale.ROOT,
-                "Output Scale: %d%% of window  \u2022  Input Scale: %.1fx of output",
-                CausticaConfig.Rt.OutputScale.PERCENT.configuredValue(),
-                pendingInputScaleTenths[0] / 10.0)));
-        addBundle("reconstruction.outputScaling");
-        addGrid(List.of(outputSlider, inputSlider));
         addBundle("reconstruction.dlss");
         addGrid(List.of(controls.get(1), controls.get(4), controls.get(5),
                 controls.get(2), controls.get(3), controls.get(7)));
