@@ -51,20 +51,46 @@ final class PathSamplingContractTest {
     }
 
     @Test
-    void liveContinuationRoulettePrecedesCurrentVertexLightingAndRemainsUnbiased() throws Exception {
+    void nonSharcRoulettePreservesCurrentVertexLightingAndOnlyGatesContinuation() throws Exception {
         String raygen = Files.readString(Path.of("shaders/world/world.rgen.slang"));
-        int roulette = raygen.indexOf("Standard path roulette owns the complete opaque vertex");
-        int emissive = raygen.indexOf("All emissive materials retain the legacy base radiance");
-        int nee = raygen.indexOf("NEE: direct light from the dominant celestial body");
-        int lobeSampling = raygen.indexOf("Indirect continuation: importance-sample");
-        assertTrue(roulette >= 0);
-        assertTrue(emissive > roulette);
-        assertTrue(nee > roulette);
-        assertTrue(lobeSampling > roulette);
+
+        int emissive = raygen.indexOf(
+                "All emissive materials retain the legacy base radiance");
+        int celestialNee = raygen.indexOf(
+                "NEE: direct light from the dominant celestial body");
+        int vertexComplete = raygen.indexOf(
+                "This vertex's emission and direct lighting are complete.");
+        int roulette = raygen.indexOf(
+                "Standard non-SHaRC roulette runs only after this vertex's emission and direct lighting are complete.");
+        int lobeSampling = raygen.indexOf(
+                "Indirect continuation: importance-sample");
+        int sharcRoulette = raygen.indexOf(
+                "Cache variants retain roulette after the sampled lobe");
+
+        assertTrue(emissive >= 0);
+        assertTrue(celestialNee > emissive);
+        assertTrue(vertexComplete > celestialNee);
+        assertTrue(roulette > vertexComplete,
+                "non-SHaRC roulette must not terminate before current-vertex lighting");
+        assertTrue(lobeSampling > roulette,
+                "roulette must still gate continuation before the next lobe is sampled");
+        assertTrue(sharcRoulette > lobeSampling,
+                "SHARC must retain its separate post-lobe roulette path");
+
         assertTrue(raygen.contains("int rrStart = 1;"));
-        assertTrue(raygen.contains("#if !CAUSTICA_SHARC_UPDATE && !CAUSTICA_SHARC_QUERY"));
-        assertTrue(raygen.substring(roulette, lobeSampling).contains("throughput /= q;"));
-        assertTrue(raygen.substring(roulette, lobeSampling).contains("if (rndf(sampler) > q)"));
+        assertEquals(1, raygen.split(
+                "Standard non-SHaRC roulette runs only after", -1).length - 1);
+
+        String rouletteBlock = raygen.substring(roulette, lobeSampling);
+        assertTrue(rouletteBlock.contains(
+                "#if !CAUSTICA_SHARC_UPDATE && !CAUSTICA_SHARC_QUERY"));
+        assertTrue(rouletteBlock.contains(
+                "if (rndf(sampler) > q)"));
+        assertTrue(rouletteBlock.contains(
+                "throughput /= q;"));
+
+        assertFalse(raygen.contains(
+                "Standard path roulette owns the complete opaque vertex"));
     }
 
     @Test
