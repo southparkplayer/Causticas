@@ -1,5 +1,7 @@
 import world_common;
 
+static const uint OFFLINE_MIN_ADAPTIVE_SAMPLES = 64u;
+
 struct OfflineScheduleState {
     uint indirectWidth;
     uint indirectHeight;
@@ -56,7 +58,7 @@ inline bool tileActiveThisFrame(uint2 tile, uint frameIndex, uint cadence) {
 inline uint offlineCadence(float relativeVariance, uint sampleCount, float targetRelativeError) {
     if (isnan(relativeVariance) || isinf(relativeVariance) || relativeVariance < 0.0
             || isnan(targetRelativeError) || isinf(targetRelativeError) || targetRelativeError <= 0.0
-            || sampleCount < 4u) {
+            || sampleCount < OFFLINE_MIN_ADAPTIVE_SAMPLES) {
         return 1u;
     }
     float predictedError = sqrt(relativeVariance) / sqrt(max(1.0, float(sampleCount)));
@@ -71,7 +73,7 @@ inline uint offlinePathCount(float relativeVariance, uint sampleCount, uint batc
         float targetRelativeError) {
     if (isnan(relativeVariance) || isinf(relativeVariance) || relativeVariance < 0.0
             || isnan(targetRelativeError) || isinf(targetRelativeError) || targetRelativeError <= 0.0
-            || sampleCount < 4u) {
+            || sampleCount < OFFLINE_MIN_ADAPTIVE_SAMPLES) {
         return batchLimit;
     }
     float predictedError = sqrt(relativeVariance) / sqrt(max(1.0, float(sampleCount)));
@@ -93,7 +95,13 @@ void main(uint3 dispatchThread : SV_DispatchThreadID) {
     uint validPixels = validWidth * validHeight;
     float4 packedPilot = offlinePilotState[int2(tile)];
     float relativeVariance = max(packedPilot.r, max(packedPilot.g, packedPilot.b));
-    uint completedSamples = offlineSampleCount[int2(firstPixel)];
+    uint completedSamples = 0xffffffffu;
+    for (uint y = 0u; y < validHeight; y++) {
+        for (uint x = 0u; x < validWidth; x++) {
+            completedSamples = min(completedSamples,
+                    offlineSampleCount[int2(firstPixel + uint2(x, y))]);
+        }
+    }
     uint cadence = offlineCadence(relativeVariance, completedSamples, sp.targetRelativeError);
     if (!tileActiveThisFrame(tile, sp.frameIndex, cadence)) {
         return;

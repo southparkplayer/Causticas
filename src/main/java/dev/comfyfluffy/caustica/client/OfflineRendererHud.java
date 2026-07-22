@@ -30,8 +30,9 @@ public final class OfflineRendererHud {
         drawRight(graphics, font, title, right, y, ACTIVE);
 
         String progress = renderer.active()
-                ? String.format(Locale.ROOT, "%,d main paths   %.1f paths/s   %.1fs",
-                        renderer.submittedSamples(), renderer.samplesPerSecond(), renderer.elapsedSeconds())
+                ? String.format(Locale.ROOT, "requested %.1f spp   %.2f spp/s   %.1fs",
+                        renderer.scheduledSamplesPerPixel(), renderer.scheduledSamplesPerPixelPerSecond(),
+                        renderer.elapsedSeconds())
                 : "Freezing scene snapshot";
         drawRight(graphics, font, progress, right, y + font.lineHeight + 2, WHITE);
         if (renderer.elapsedSeconds() < HELP_SECONDS) {

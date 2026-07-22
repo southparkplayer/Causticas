@@ -20,9 +20,9 @@ class ReflexIndependentOfFrameGenerationContractTest {
         assertTrue(fg.contains("if (reflexSupported) {") && fg.contains("library.reflexSleep(frameToken)"),
                 "Reflex sleep must run from the unconditional frame-token path");
 
-        int reflexControl = screen.indexOf(
-                "controls.add(new Dropdown<>(180, Component.translatable(\"caustica.options.rt.fg.reflex\")");
-        int nextControl = screen.indexOf("caustica.options.rt.fg.queueParallelism", reflexControl);
+        int reflexControl = screen.indexOf("private Dropdown<String> reflexControl()");
+        int nextControl = screen.indexOf("private ActionButton vsyncControl()", reflexControl);
+        assertTrue(reflexControl >= 0 && nextControl > reflexControl);
         String reflexBlock = screen.substring(reflexControl, nextControl);
         assertFalse(reflexBlock.contains("activeWhen"),
                 "The Reflex control must stay interactive while DLSS-G is Off");

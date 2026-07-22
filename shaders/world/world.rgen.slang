@@ -1914,9 +1914,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #if CAUSTICA_SHARC_UPDATE
         // Sparse cache updates are transport samples, not camera visibility: exclude particles and the
         // first-person-only primary mask from their first segment as well.
-        traceRadiance(CULL_SECONDARY, ro, 0.0, rd, 10000.0);
+        traceRadiance(CULL_SECONDARY, ro, RAY_TMIN, rd, 10000.0);
 #else
-        traceRadiance(cameraVisibilityMask, ro, 0.0, rd, 10000.0);
+        traceRadiance(cameraVisibilityMask, ro, RAY_TMIN, rd, 10000.0);
 #endif
 
 #if CAUSTICA_NRD
@@ -3134,11 +3134,6 @@ void main() {
     uint pathCount = workItem.pathCount;
 #else
     uint pathCount = spp;
-    if (!offlineCalibrating && pilotState.a >= 4.0) {
-        float relativeNoise = sqrt(max(pilotState.r, max(pilotState.g, pilotState.b)));
-        float predictedError = relativeNoise / sqrt(float(completedSamples + 1u));
-        pathCount = min(spp, max(1u, uint(predictedError * 100.0 + 0.999)));
-    }
 #endif
     bool pilotLeader = false;
     uint totalPathCount = pathCount;

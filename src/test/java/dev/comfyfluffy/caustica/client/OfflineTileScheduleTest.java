@@ -9,7 +9,16 @@ final class OfflineTileScheduleTest {
     @Test
     void invalidEstimatorRunsEveryFrame() {
         assertEquals(1, OfflineTileSchedule.cadence(Float.NaN, 100L, 0.01f));
-        assertEquals(1, OfflineTileSchedule.cadence(1.0f, 3L, 0.01f));
+        assertEquals(1, OfflineTileSchedule.cadence(1.0f,
+                OfflineTileSchedule.MIN_ADAPTIVE_SAMPLES - 1L, 0.01f));
+    }
+
+    @Test
+    void adaptationStartsOnlyAfterTheMinimumSampleFloor() {
+        assertEquals(1, OfflineTileSchedule.cadence(0.0f,
+                OfflineTileSchedule.MIN_ADAPTIVE_SAMPLES - 1L, 0.01f));
+        assertEquals(32, OfflineTileSchedule.cadence(0.0f,
+                OfflineTileSchedule.MIN_ADAPTIVE_SAMPLES, 0.01f));
     }
 
     @Test

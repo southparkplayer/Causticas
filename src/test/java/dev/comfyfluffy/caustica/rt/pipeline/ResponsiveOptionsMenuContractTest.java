@@ -20,9 +20,10 @@ final class ResponsiveOptionsMenuContractTest {
         assertTrue(workstation.contains("IMAGE(\"image\")"));
         assertTrue(workstation.contains("WORLD(\"world\")"));
         assertTrue(workstation.contains("ADVANCED(\"advanced\")"));
-        assertTrue(workstation.contains("MAX_CONTENT_WIDTH = 1600"));
-        assertTrue(workstation.contains("TARGET_CELL_WIDTH = 180"));
-        assertTrue(workstation.contains("MAX_GRID_COLUMNS = 8"));
+        assertTrue(workstation.contains("MAX_CONTENT_WIDTH = 1400"));
+        assertTrue(workstation.contains("TARGET_CELL_WIDTH = 280"));
+        assertTrue(workstation.contains("MAX_GRID_COLUMNS = 3"));
+        assertTrue(workstation.contains("CONTROL_HEIGHT = 34"));
         assertTrue(workstation.contains("computeRailWidth()"));
         assertTrue(workstation.contains("widest + 32"));
         assertTrue(workstation.contains("columnsFor(controls)"));
@@ -59,7 +60,7 @@ final class ResponsiveOptionsMenuContractTest {
         assertTrue(workstation.contains("addGrid(controls.subList(0, 4))"));
         assertTrue(workstation.contains("addGrid(controls.subList(4, 6))"));
         assertTrue(workstation.contains("addGrid(controls.subList(6, 9))"));
-        assertTrue(workstation.contains("ordered(rendering, 0, 4, 5, 1, 2, 3, 6, 7, 8)"));
+        assertFalse(workstation.contains("ordered(rendering,"));
         assertFalse(workstation.contains("throw new IllegalArgumentException(\"Incomplete menu order\")"));
         assertTrue(usage.contains("FREQUENCY_HALF_LIFE_DAYS = 30.0"));
         assertTrue(usage.contains("caustica-menu-usage.json"));

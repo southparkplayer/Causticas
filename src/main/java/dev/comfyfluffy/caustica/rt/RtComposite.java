@@ -895,16 +895,9 @@ public final class RtComposite {
     }
 
     private boolean shouldUseOfflineIndirect() {
-        if (!RtDeviceBringup.traceRaysIndirectSupported() || offlineIndirectPipeline == null
-                || offlineSchedulePipeline == null) {
-            return false;
-        }
-        int tileWidth = (renderW + 7) / 8;
-        int tileHeight = (renderH + 7) / 8;
-        long invocations = 1L + Math.multiplyExact((long) tileWidth * tileHeight, 64L);
-        return OfflineGroundTruth.INSTANCE.actualMainPaths()
-                >= Math.multiplyExact(Math.multiplyExact((long) renderW, (long) renderH), 64L)
-                && invocations <= RtDeviceBringup.maxRayDispatchInvocationCount();
+        // Keep reference accumulation uniform until adaptive scheduling has GPU-read sample counts
+        // and a measured image-error stopping rule. Nominal path totals are not a convergence signal.
+        return false;
     }
 
     /**
@@ -1206,7 +1199,7 @@ public final class RtComposite {
     }
 
     private void syncTraceGpuProfiler(RtContext ctx) {
-        boolean wanted = sharcCache != null || RtFrameStats.enabled();
+        boolean wanted = sharcCache != null || RtFrameStats.enabled() || OfflineGroundTruth.INSTANCE.active();
         if (wanted && traceGpuProfiler == null) {
             try {
                 traceGpuProfiler = RtTraceGpuProfiler.create(ctx);

@@ -43,6 +43,14 @@ public final class OfflineGroundTruth {
     public long submittedSamples() { return actualMainPaths; }
     public long actualMainPaths() { return actualMainPaths; }
     public long actualPilotPaths() { return actualPilotPaths; }
+    public double scheduledSamplesPerPixel() {
+        long pixels = (long) RtComposite.INSTANCE.renderWidth() * RtComposite.INSTANCE.renderHeight();
+        return pixels > 0L ? actualMainPaths / (double) pixels : 0.0;
+    }
+    public double scheduledSamplesPerPixelPerSecond() {
+        long pixels = (long) RtComposite.INSTANCE.renderWidth() * RtComposite.INSTANCE.renderHeight();
+        return pixels > 0L ? samplesPerSecond / pixels : 0.0;
+    }
     public int samplesPerBatch() { return samplesPerBatch; }
     public int maxBounces() { return 64; }
     public int sessionSignature() { return sessionSignature; }
@@ -161,7 +169,7 @@ public final class OfflineGroundTruth {
         samplesPerBatch = DEFAULT_BATCH;
         actualMainPaths = 0L;
         actualPilotPaths = 0L;
-        lastGpuFrameSerial = 0;
+        lastGpuFrameSerial = RtComposite.INSTANCE.completedOfflineGpuFrameSerial();
         batchController.reset(DEFAULT_BATCH);
     }
 
@@ -185,6 +193,7 @@ public final class OfflineGroundTruth {
         RtComposite.INSTANCE.requestTemporalReset();
         actualMainPaths = 0L;
         actualPilotPaths = 0L;
+        samplesPerSecond = 0.0;
         startedNanos = 0L;
         notify(minecraft, message);
     }

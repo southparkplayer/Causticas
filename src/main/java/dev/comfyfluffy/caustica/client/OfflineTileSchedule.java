@@ -3,6 +3,7 @@ package dev.comfyfluffy.caustica.client;
 /** Pure CPU mirror of the tile cadence policy used by offline scheduling. */
 final class OfflineTileSchedule {
     static final int MAX_CADENCE = 32;
+    static final long MIN_ADAPTIVE_SAMPLES = 64L;
 
     private OfflineTileSchedule() {
     }
@@ -10,7 +11,7 @@ final class OfflineTileSchedule {
     static int cadence(float relativeVariance, long sampleCount, float targetRelativeError) {
         if (!Float.isFinite(relativeVariance) || relativeVariance < 0.0f
                 || !Float.isFinite(targetRelativeError) || targetRelativeError <= 0.0f
-                || sampleCount < 4L) {
+                || sampleCount < MIN_ADAPTIVE_SAMPLES) {
             return 1;
         }
         double predictedError = Math.sqrt(relativeVariance)

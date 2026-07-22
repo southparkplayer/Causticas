@@ -19,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import net.fabricmc.loader.api.FabricLoader;
+import dev.comfyfluffy.caustica.client.settings.SettingsCatalog;
 
 /** Local-only, low-volume menu history used for Recent and Frequent quick links. */
 final class CausticaMenuUsage {
@@ -33,20 +34,20 @@ final class CausticaMenuUsage {
     private final Path path = FabricLoader.getInstance().getConfigDir().resolve("caustica-menu-usage.json");
     private final Map<String, Entry> entries = new HashMap<>();
     private final Map<String, Double> scrollPositions = new HashMap<>();
-    private String lastCategory = "OVERVIEW";
+    private String lastCategory = SettingsCatalog.Page.ESSENTIALS.routeId();
     private boolean dirty;
 
     private CausticaMenuUsage() {
         load();
     }
 
-    synchronized void record(String label, String category) {
+    synchronized void record(String id, String label, SettingsCatalog.Page page) {
         String trimmed = label == null ? "" : label.trim();
         if (trimmed.isEmpty()) return;
-        String id = normalize(trimmed);
-        Entry entry = entries.computeIfAbsent(id, ignored -> new Entry());
+        String stableId = id == null || id.isBlank() ? normalize(trimmed) : id;
+        Entry entry = entries.computeIfAbsent(stableId, ignored -> new Entry());
         entry.label = trimmed;
-        entry.category = category == null ? "" : category;
+        entry.category = page == null ? "" : page.routeId();
         entry.count++;
         entry.lastUsedMillis = System.currentTimeMillis();
         dirty = true;
@@ -135,7 +136,7 @@ final class CausticaMenuUsage {
         } catch (RuntimeException | IOException ignored) {
             entries.clear();
             scrollPositions.clear();
-            lastCategory = "OVERVIEW";
+            lastCategory = SettingsCatalog.Page.ESSENTIALS.routeId();
         }
     }
 

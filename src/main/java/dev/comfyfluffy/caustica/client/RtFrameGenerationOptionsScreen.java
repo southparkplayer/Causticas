@@ -1,7 +1,7 @@
 package dev.comfyfluffy.caustica.client;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
-import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
+import dev.comfyfluffy.caustica.client.settings.SettingsRuntimeStatus;
 import dev.comfyfluffy.caustica.streamline.StreamlineSwapchainCoordinator;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
@@ -67,27 +67,10 @@ public final class RtFrameGenerationOptionsScreen extends OptionsSubScreen {
         if (statusWidget == null) {
             return;
         }
-        RtDlssFg fg = RtDlssFg.INSTANCE;
         if (vsyncWidget != null) {
-            boolean enabled = options.enableVsync().get();
-            Component state = !enabled
-                    ? Component.translatable("caustica.options.rt.fg.vsync.off")
-                    : StreamlineSwapchainCoordinator.INSTANCE.mailboxSupported()
-                            ? Component.translatable("caustica.options.rt.fg.vsync.mailbox")
-                            : Component.translatable("caustica.options.rt.fg.vsync.fifoFallback");
-            vsyncWidget.setMessage(Component.translatable("caustica.options.rt.fg.vsync.status", state));
+            vsyncWidget.setMessage(SettingsRuntimeStatus.vsync(options));
         }
-        Component availability = fg.isActive() ? Component.translatable("caustica.feature.active")
-                : fg.isAvailable() && fg.hasGeneratedFrames()
-                        ? Component.translatable("caustica.feature.verifiedSuspendedMenu")
-                : fg.isAvailable() && RtDlssFg.requested() ? Component.literal(fg.submissionStatus())
-                : fg.isAvailable() ? Component.translatable("caustica.feature.available")
-                : fg.unavailableReason().isBlank() ? Component.translatable("caustica.feature.unavailable")
-                        : Component.literal(fg.unavailableReason());
-        statusWidget.setMessage(fg.multiFrameCountMax() > 0
-                ? Component.translatable("caustica.options.rt.fg.status.maximum", availability,
-                        fg.multiFrameCountMax() + 1)
-                : Component.translatable("caustica.options.rt.fg.status", availability));
+        statusWidget.setMessage(SettingsRuntimeStatus.frameGeneration());
     }
 
     private static Button diagnosticButton() {

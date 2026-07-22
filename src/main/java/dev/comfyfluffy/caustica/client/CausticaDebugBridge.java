@@ -200,6 +200,10 @@ final class CausticaDebugBridge {
                 OfflineGroundTruth.INSTANCE.samplesPerBatch()));
         state.setProperty("offlineSubmittedMainPaths", Long.toString(
                 OfflineGroundTruth.INSTANCE.submittedSamples()));
+        state.setProperty("offlineScheduledSpp", Double.toString(
+                OfflineGroundTruth.INSTANCE.scheduledSamplesPerPixel()));
+        state.setProperty("offlineScheduledSppPerSecond", Double.toString(
+                OfflineGroundTruth.INSTANCE.scheduledSamplesPerPixelPerSecond()));
         var offlineMetadata = RtComposite.INSTANCE.completedOfflineDispatchMetadata();
         state.setProperty("offlineGpuFrameSerial", Integer.toString(
                 RtComposite.INSTANCE.completedOfflineGpuFrameSerial()));

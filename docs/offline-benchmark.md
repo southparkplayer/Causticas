@@ -38,6 +38,18 @@ These are workload metadata, not wall-clock throughput. Until device-local path
 counters are enabled, `offlineMainPaths` is the submitted configured estimate and
 must not be reported as an actual adaptive path count.
 
+Adaptive cadence and reduced path batches begin only after every valid pixel in a
+tile has at least 64 accumulated samples. The scheduler uses the tile's minimum
+per-pixel count so a failed or under-sampled pixel cannot be hidden by its
+top-left neighbor's progress.
+
+The production offline path currently keeps adaptive indirect scheduling disabled.
+It dispatches a uniform full-frame batch because configured path totals and pilot
+variance have not yet been validated as an image-error stopping rule. Direct mode
+does not reduce path counts in the shader. The HUD reports requested samples per
+pixel rather than full-image path totals; invalid-path rejection can still make a
+pixel's stored count lower than this requested value.
+
 ## Reporting rules
 
 Do not average the offline snapshot frame into steady-state results. Report at
