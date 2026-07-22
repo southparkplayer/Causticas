@@ -49,7 +49,7 @@ final class DisplayShaderContractTest {
         String options = Files.readString(Path.of(
                 "src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java")).replace("\r\n", "\n");
 
-        assertTrue(config.contains("4.0f, 0.5f, 64.0f"));
+        assertTrue(config.contains("1.0f, 0.5f, 64.0f"));
         assertTrue(options.contains("CausticaConfig.Rt.Sdr.PSYCHOV23_PEAK,\n                    10, 5, 640, 1"));
     }
 

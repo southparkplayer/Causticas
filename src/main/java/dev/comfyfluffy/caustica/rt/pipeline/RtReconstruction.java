@@ -4,7 +4,6 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.mixin.GpuDeviceAccessor;
-import dev.comfyfluffy.caustica.rt.RtOutputScale;
 import dev.comfyfluffy.caustica.rt.RtResolutionScale;
 import java.util.Locale;
 
@@ -80,7 +79,7 @@ public final class RtReconstruction {
     }
 
     public static int resourceIdentity() {
-        return resourceIdentity(CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value());
+        return resourceIdentity(CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value());
     }
 
     public static int resourceIdentity(int appliedInputScalePercent) {
@@ -106,16 +105,16 @@ public final class RtReconstruction {
     public static int[] queryRenderSize(int windowWidth, int windowHeight,
             int outputWidth, int outputHeight) {
         return queryRenderSize(windowWidth, windowHeight, outputWidth, outputHeight,
-                CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value());
+                CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value());
     }
 
     public static int[] queryRenderSize(int windowWidth, int windowHeight,
-            int outputWidth, int outputHeight, int inputScalePercent) {
+            int outputWidth, int outputHeight, int inputRatioTenths) {
         if (usesDlss()) {
-            // Input scale is always an absolute percentage of the window; never derive it from
-            // the output scale so the two sliders stay fully independent.
-            int requestedWidth = RtOutputScale.dimension(windowWidth, inputScalePercent);
-            int requestedHeight = RtOutputScale.dimension(windowHeight, inputScalePercent);
+            // Input scale is relative to output resolution, not the raw window, so quality and output scale
+            // remain independently tunable.
+            int requestedWidth = RtResolutionScale.inputDimension(outputWidth, inputRatioTenths);
+            int requestedHeight = RtResolutionScale.inputDimension(outputHeight, inputRatioTenths);
             return RtDlssRr.INSTANCE.querySupportedRenderSize(
                     outputWidth, outputHeight, requestedWidth, requestedHeight);
         }
@@ -128,12 +127,12 @@ public final class RtReconstruction {
     }
 
     public static DlssdResolutionPlan queryDlssdPlan(int windowWidth, int windowHeight,
-            int outputWidth, int outputHeight, int inputScalePercent) {
+            int outputWidth, int outputHeight, int inputRatioTenths) {
         if (!usesDlss()) return null;
-        // Input scale is always an absolute percentage of the window; never derive it from
-        // the output scale so the two sliders stay fully independent.
-        int requestedWidth = RtOutputScale.dimension(windowWidth, inputScalePercent);
-        int requestedHeight = RtOutputScale.dimension(windowHeight, inputScalePercent);
+        // Input scale is relative to output resolution, not the raw window, so quality and output scale
+        // remain independently tunable.
+        int requestedWidth = RtResolutionScale.inputDimension(outputWidth, inputRatioTenths);
+        int requestedHeight = RtResolutionScale.inputDimension(outputHeight, inputRatioTenths);
         return RtDlssRr.INSTANCE.queryResolutionPlan(outputWidth, outputHeight,
                 requestedWidth, requestedHeight, RtDlssRr.quality(), RtDlssRr.renderPreset());
     }

@@ -202,7 +202,18 @@ final class CausticaDebugBridge {
         state.setProperty("renderWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
         state.setProperty("renderHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
         state.setProperty("outputScalePercent", Integer.toString(RtComposite.INSTANCE.outputScalePercent()));
+        state.setProperty("traceWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
+        state.setProperty("traceHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
+        state.setProperty("finalOutputWidth", Integer.toString(RtComposite.INSTANCE.outputWidth()));
+        state.setProperty("finalOutputHeight", Integer.toString(RtComposite.INSTANCE.outputHeight()));
+        state.setProperty("inputRatioTenths", Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("inputUpscaleRatio",
+                Float.toString(RtComposite.INSTANCE.inputScalePercent() / 10.0f));
         state.setProperty("inputScalePercent", Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("requestedInputRatioTenths",
+                Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("appliedInputRatioTenths",
+                Integer.toString(RtComposite.INSTANCE.appliedInputScalePercent()));
         state.setProperty("requestedInputScalePercent",
                 Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
         state.setProperty("appliedInputScalePercent",
@@ -214,10 +225,15 @@ final class CausticaDebugBridge {
             state.setProperty("dlssdQuality", Integer.toString(dlssdPlan.quality()));
             state.setProperty("dlssdOutputWidth", Integer.toString(dlssdPlan.dlssdOutputWidth()));
             state.setProperty("dlssdOutputHeight", Integer.toString(dlssdPlan.dlssdOutputHeight()));
+            state.setProperty("dlssdIntermediateWidth", Integer.toString(dlssdPlan.dlssdOutputWidth()));
+            state.setProperty("dlssdIntermediateHeight", Integer.toString(dlssdPlan.dlssdOutputHeight()));
             state.setProperty("dlssdRenderWidthMin", Integer.toString(dlssdPlan.renderWidthMin()));
             state.setProperty("dlssdRenderHeightMin", Integer.toString(dlssdPlan.renderHeightMin()));
             state.setProperty("dlssdRenderWidthMax", Integer.toString(dlssdPlan.renderWidthMax()));
             state.setProperty("dlssdRenderHeightMax", Integer.toString(dlssdPlan.renderHeightMax()));
+        } else {
+            state.setProperty("dlssdIntermediateWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
+            state.setProperty("dlssdIntermediateHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
         }
         state.setProperty("dlssdLastEvaluateResult", Integer.toString(
                 dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr.INSTANCE.lastEvaluateResult()));

@@ -185,7 +185,7 @@ public final class RtComposite {
     public int renderWidth() { return renderW; }
     public int renderHeight() { return renderH; }
     public int outputScalePercent() { return outputScalePercent; }
-    public int inputScalePercent() { return CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value(); }
+    public int inputScalePercent() { return CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value(); }
     public int appliedInputScalePercent() {
         return appliedInputScalePercent == Integer.MIN_VALUE ? inputScalePercent() : appliedInputScalePercent;
     }
@@ -1559,8 +1559,8 @@ public final class RtComposite {
     }
 
     private int updateAppliedInputScalePercent() {
-        int requested = RtOutputScale.clampPercent(
-                CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value());
+        int requested = RtResolutionScale.clampInputTenths(
+                CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value());
         long now = System.nanoTime();
         if (appliedInputScalePercent == Integer.MIN_VALUE) {
             appliedInputScalePercent = requested;

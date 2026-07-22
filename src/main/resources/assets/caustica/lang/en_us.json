@@ -301,7 +301,7 @@
 	"caustica.options.rt.outputScale": "Output Scale",
 	"caustica.options.rt.outputScale.tooltip": "Reconstruction output as an absolute percentage of the window. The result is scaled to the window before overlays and UI.",
 	"caustica.options.rt.inputScale": "Input Resolution",
-	"caustica.options.rt.inputScale.tooltip": "Path-tracing and guide resolution as an absolute percentage of the window. DLSS quality modes are shortcuts; changing this directly displays Custom.",
+	"caustica.options.rt.inputScale.tooltip": "Path-tracing input resolution as a ratio of output. DLSS quality modes are shortcuts; changing this directly displays Custom. At 2.0x ratio, input equals half output resolution.",
 	"caustica.options.rt.dlssRr.tooltip": "Use NVIDIA DLSS Ray Reconstruction to denoise and reconstruct the path-traced image. If unavailable, Caustica renders at native resolution instead.",
 	"caustica.options.rt.dlssDiffusePathGuide": "DLSSD Diffuse Path Guide (B)",
 	"caustica.options.rt.dlssDiffusePathGuide.tooltip": "A/B experiment: submit the first diffuse ray direction and world-space hit distance to DLSS Ray Reconstruction so legitimate indirect emitter samples have additional path context.",

@@ -11,21 +11,27 @@ final class OutputScaleContractTest {
     private static String read(String path) throws Exception { return Files.readString(Path.of(path)); }
 
     @Test
-    void configAndBothSettingsSurfacesExposeTwoAbsolutePercentSliders() throws Exception {
+    void configAndBothSettingsSurfacesExposeInputRatioAndOutputPercentSliders() throws Exception {
         String config = read("src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java");
         String caustica = read("src/main/java/dev/comfyfluffy/caustica/client/CausticaSettingsScreen.java");
-        String vanilla = read("src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java");
+        String vanilla = read("src/main/java/dev/comfyfluffy/caustica/mixin/VideoSettingsScreenMixin.java");
+        String options = read("src/main/java/dev/comfyfluffy/caustica/client/RtVideoOptions.java");
         assertTrue(config.contains("\"output-scale.percent\", 100, 10, 200"));
         assertFalse(config.contains("FAST_PERCENT"));
-        assertTrue(config.contains("\"dlss-rr.input-scale-percent\", 50, 10, 200"));
-        assertTrue(caustica.contains("%.0f%%"));
-        assertTrue(caustica.contains("() -> pendingOutput[0],"));
-        assertTrue(caustica.contains("() -> pendingInput[0],"));
+        assertTrue(config.contains("\"dlss-rr.input-scale-percent\", 20, 10, 40"));
+        assertTrue(caustica.contains("\"%.1fx\""));
+        assertTrue(caustica.contains("CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS"));
         assertTrue(caustica.contains("private Slider percentSlider(Component label"));
-        String videoMixin = read("src/main/java/dev/comfyfluffy/caustica/mixin/VideoSettingsScreenMixin.java");
-        assertTrue(vanilla.contains("public static OptionInstance<Integer> outputScale()"));
-        assertTrue(vanilla.contains("new OptionInstance.IntRange(10, 200)"));
-        assertTrue(vanilla.contains("shiftDown() ? setting.defaultValue() : percent"));
+        assertFalse(caustica.contains("snapTo(List.of(10, 15, 17, 20, 30), 2)"));
+        String videoMixin = vanilla;
+        assertTrue(options.contains("public static OptionInstance<Integer> outputScale()"));
+        assertTrue(options.contains("new OptionInstance.IntRange(10, 200)"));
+        assertTrue(options.contains("ratioScale(\"caustica.options.rt.inputScale\","));
+        assertTrue(options.contains("CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS"));
+        assertTrue(options.contains("setting::set"));
+        assertTrue(options.contains("shiftDown() ? setting.defaultValue() : percent"));
+        assertTrue(options.contains("shiftDown() ? setting.defaultValue() : tenths"));
+        assertTrue(options.contains("RtComposite.INSTANCE.requestResolutionScaleCommit()"));
         assertTrue(videoMixin.contains("list.addBig(RtVideoOptions.outputScale())"));
         assertFalse(videoMixin.contains("fastOutputScale"));
         assertTrue(videoMixin.contains("list.addBig(RtVideoOptions.inputScale())"));
@@ -64,9 +70,19 @@ final class OutputScaleContractTest {
         assertTrue(bridge.contains("\"outputScalePercent\""));
         assertFalse(bridge.contains("\"fastOutputScalePercent\""));
         assertTrue(bridge.contains("\"inputScalePercent\""));
+        assertTrue(bridge.contains("\"inputRatioTenths\""));
+        assertTrue(bridge.contains("\"inputUpscaleRatio\""));
+        assertTrue(bridge.contains("\"requestedInputRatioTenths\""));
+        assertTrue(bridge.contains("\"appliedInputRatioTenths\""));
         assertTrue(bridge.contains("\"outputWidth\""));
         assertTrue(bridge.contains("\"outputHeight\""));
         assertTrue(bridge.contains("\"renderWidth\""));
+        assertTrue(bridge.contains("\"finalOutputWidth\""));
+        assertTrue(bridge.contains("\"finalOutputHeight\""));
+        assertTrue(bridge.contains("\"dlssdIntermediateWidth\""));
+        assertTrue(bridge.contains("\"dlssdIntermediateHeight\""));
+        assertTrue(bridge.contains("\"traceWidth\""));
+        assertTrue(bridge.contains("\"traceHeight\""));
         assertTrue(bridge.contains("\"outputScalePath\""));
         assertTrue(bridge.contains("\"outputScaleFailure\""));
     }

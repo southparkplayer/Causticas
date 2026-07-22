@@ -717,12 +717,29 @@ public final class RtVideoOptions {
                 (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
                 new OptionInstance.IntRange(10, 200),
                 Math.clamp(setting.configuredValue(), 10, 200),
-                percent -> setting.set(shiftDown() ? setting.defaultValue() : percent));
+                percent -> {
+                    setting.set(shiftDown() ? setting.defaultValue() : percent);
+                    RtComposite.INSTANCE.requestResolutionScaleCommit();
+                });
     }
 
     public static OptionInstance<Integer> inputScale() {
-        return percentScale("caustica.options.rt.inputScale", CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT,
-                10, 200);
+        return ratioScale("caustica.options.rt.inputScale", CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS,
+                10, 40);
+    }
+
+    private static OptionInstance<Integer> ratioScale(String key, IntSetting setting, int min, int max) {
+        return new OptionInstance<>(
+                key,
+                OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+                (caption, tenths) -> Options.genericValueLabel(caption,
+                        Component.literal(String.format(Locale.ROOT, "%.1fx", tenths / 10.0f))),
+                new OptionInstance.IntRange(min, max),
+                Math.clamp(setting.configuredValue(), min, max),
+                tenths -> {
+                    setting.set(shiftDown() ? setting.defaultValue() : tenths);
+                    RtComposite.INSTANCE.requestResolutionScaleCommit();
+                });
     }
 
     private static OptionInstance<Integer> percentScale(String key, IntSetting setting, int min, int max) {
@@ -732,7 +749,10 @@ public final class RtVideoOptions {
                 (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
                 new OptionInstance.IntRange(min, max),
                 Math.clamp(setting.configuredValue(), min, max),
-                percent -> setting.set(shiftDown() ? setting.defaultValue() : percent));
+                percent -> {
+                    setting.set(shiftDown() ? setting.defaultValue() : percent);
+                    RtComposite.INSTANCE.requestResolutionScaleCommit();
+                });
     }
 
     private static boolean shiftDown() {

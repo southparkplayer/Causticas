@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
 public final class CausticaConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
-    static final int CONFIG_SCHEMA_VERSION = 11;
+    static final int CONFIG_SCHEMA_VERSION = 12;
 
     private static final Path CONFIG_PATH = resolveConfigPath();
     private static final CommentedFileConfig FILE = loadAndMigrateFile(CONFIG_PATH);
@@ -87,7 +87,7 @@ public final class CausticaConfig {
             Rt.Reconstruction.BACKEND, Rt.DlssRr.ENABLED, Rt.DlssRr.DIFFUSE_PATH_GUIDE,
             Rt.DlssRr.SUBPIXEL_DETAIL,
             Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY, Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY,
-            Rt.DlssRr.PRESET, Rt.DlssRr.QUALITY, Rt.DlssRr.INPUT_SCALE_PERCENT, Rt.OutputScale.PERCENT,
+            Rt.DlssRr.PRESET, Rt.DlssRr.QUALITY, Rt.DlssRr.INPUT_RATIO_TENTHS, Rt.OutputScale.PERCENT,
             Rt.Nrd.DENOISER, Rt.Nrd.SPHERICAL_HARMONICS, Rt.Nrd.MAX_ACCUMULATED_FRAMES,
             Rt.Nrd.MAX_FAST_ACCUMULATED_FRAMES, Rt.Nrd.HISTORY_FIX_FRAMES,
             Rt.Nrd.PREPASS_BLUR_RADIUS, Rt.Nrd.MAX_BLUR_RADIUS, Rt.Nrd.ANTI_FIREFLY,
@@ -353,6 +353,18 @@ public final class CausticaConfig {
             migrateExactNumber(config, "hdr.paper-white-nits", 200.0, 203.0);
             migrateExactNumber(config, "hdr.ui-brightness-nits", 200.0, 100.0);
             migrateExactNumber(config, "hdr.peak-nits", 1000.0, 800.0);
+        }
+        if (version < 12) {
+            Object rawOutput = config.get("output-scale.percent");
+            Object rawInput = config.get("dlss-rr.input-scale-percent");
+            int outputPercent = rawOutput instanceof Number rawOutputPercent
+                    ? Math.clamp(rawOutputPercent.intValue(), 10, 200)
+                    : 100;
+            int inputPercent = rawInput instanceof Number rawInputPercent
+                    ? Math.clamp(rawInputPercent.intValue(), 10, 200)
+                    : 50;
+            int ratioTenths = Math.clamp(Math.round(10.0 * outputPercent / (double) inputPercent), 10, 40);
+            config.set("dlss-rr.input-scale-percent", ratioTenths);
         }
         config.set("config-version", CONFIG_SCHEMA_VERSION);
         return true;
@@ -1126,8 +1138,8 @@ public final class CausticaConfig {
                     "dlss-rr.particle-temporal-history", true);
             public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 4);
             public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 2);
-            public static final IntSetting INPUT_SCALE_PERCENT = clampedInt(
-                    "caustica.rt.dlssRr.inputScale", "dlss-rr.input-scale-percent", 67, 10, 200);
+            public static final IntSetting INPUT_RATIO_TENTHS = clampedInt(
+                    "caustica.rt.dlssRr.inputScale", "dlss-rr.input-scale-percent", 20, 10, 40);
 
             private DlssRr() {
             }
