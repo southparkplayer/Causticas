@@ -394,7 +394,10 @@ void main(inout Payload payload) {
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
     bool filterSky = (payload.flags & PAYLOAD_FILTER_SKY) != 0u;
     bool primaryRay = (payload.flags & PAYLOAD_PRIMARY_RAY) != 0u;
-    bool presentationSky = primaryRay || filterSky;
+    // Exact mirrors keep the continuous atmosphere path; ordinary glossy/specular misses only opt into
+    // the camera-visible lower-hemisphere fallback and continue using the cheaper sky-view LUT.
+    bool presentationSky = primaryRay || filterSky
+            || (payload.flags & PAYLOAD_PRESENTATION_SKY) != 0u;
     bool earthAtmosphere = (pc.flags & (1u << 10u)) != 0u;
 
     // Physically-based in-scattering: blue zenith, bright/desaturated horizon, warm Mie halo + red

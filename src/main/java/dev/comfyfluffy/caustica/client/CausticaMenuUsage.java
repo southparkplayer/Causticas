@@ -61,6 +61,15 @@ final class CausticaMenuUsage {
         return scrollPositions.getOrDefault(category, 0.0);
     }
 
+    synchronized double scrollPosition(SettingsCatalog.Page page) {
+        Double canonical = scrollPositions.get(page.routeId());
+        if (canonical != null) return canonical;
+        return scrollPositions.entrySet().stream()
+                .filter(entry -> page.recognizes(entry.getKey()))
+                .mapToDouble(Map.Entry::getValue)
+                .findFirst().orElse(0.0);
+    }
+
     synchronized void setMenuPosition(String category, double scrollAmount) {
         if (category == null || category.isBlank() || !Double.isFinite(scrollAmount)) return;
         double normalizedScroll = Math.max(0.0, scrollAmount);

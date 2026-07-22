@@ -51,4 +51,37 @@ final class MirrorPsrShaderContractTest {
         assertTrue(source.contains("float rough = max(perceptualRough, MIN_ROUGH);"));
         assertTrue(source.contains("static const float MIN_ROUGH = 0.045;"));
     }
+
+    @Test
+    void psrExportsTerminalSpecularMaterialAndUsesVirtualMotionFallback() throws Exception {
+        String source = Files.readString(Path.of("shaders/world/world.rgen.slang"));
+        String normalized = source.replace("\r\n", "\n");
+
+        int psrStart = normalized.indexOf(
+                "float2 recursivePrimarySurfaceReplacement(");
+        int psrEnd = normalized.indexOf(
+                "// Reflection (specular) motion vector for DLSS-RR", psrStart);
+
+        assertTrue(psrStart >= 0 && psrEnd > psrStart);
+        String psrBody = normalized.substring(psrStart, psrEnd);
+
+        // The terminal hit already carries the material's F0, roughness and oriented normal.
+        assertTrue(psrBody.contains("float3 terminalF0 = payload.f0;"));
+        assertTrue(psrBody.contains("float terminalNoV = abs(dot(terminalNormal, -rayDir));"));
+        assertTrue(psrBody.contains("finalSpecular = rrSpecularAlbedo("));
+        assertTrue(psrBody.contains("gv_specAlb = finalSpecular;"));
+
+        // Regressing to a diffuse-only PSR endpoint erases fully metallic terminal materials.
+        assertFalse(psrBody.contains("gv_specAlb = float3(0.0, 0.0, 0.0);"));
+
+        // Optical paths retain their foreground interface guide; only PSR selects the endpoint guide.
+        assertTrue(source.contains("float3 resolvedSpecularAlbedo = gv_psrMirror"));
+        assertTrue(source.contains("? gv_specAlb"));
+        assertTrue(source.contains(": specSurfaceAlbedo;"));
+        assertTrue(source.contains("gSpecAlbedo[pix] = float4(resolvedSpecularAlbedo, 1.0);"));
+
+        // Do not re-enable a terminal specular guide while continuing to publish a hard zero MV.
+        assertTrue(source.contains("float2 resolvedSpecMotion = gv_psrMirror"));
+        assertTrue(source.contains("gSpecMotion[pix] = resolvedSpecMotion;"));
+    }
 }

@@ -4,7 +4,8 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 
 /** Shared preset and input ratio rules for realtime reconstruction sizing. */
 public final class RtResolutionScale {
-    public static final int CUSTOM_QUALITY = -1;
+    public static final int ULTRA_QUALITY = 4;
+    public static final int DLAA_QUALITY = 5;
     public static final int MIN_INPUT_RATIO_TENTHS = 10;
     public static final int MAX_INPUT_RATIO_TENTHS = 40;
 
@@ -21,7 +22,8 @@ public final class RtResolutionScale {
             case 3 -> 3.0;
             case 1 -> 1.7;
             case 2 -> 1.5;
-            case 5 -> 1.0;
+            case ULTRA_QUALITY -> 1.3;
+            case DLAA_QUALITY -> 1.0;
             default -> 2.0;
         };
     }
@@ -31,19 +33,20 @@ public final class RtResolutionScale {
     }
 
     public static int displayedQuality() {
-        return displayedQuality(CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.configuredValue());
+        return presetQuality(CausticaConfig.Rt.DlssRr.QUALITY.configuredValue());
     }
 
-    public static int displayedQuality(int inputRatioTenths) {
-        int quality = CausticaConfig.Rt.DlssRr.QUALITY.configuredValue();
-        int presetRatioTenths = presetRatioTenths(quality);
-        return inputRatioTenths == presetRatioTenths
-                ? quality : CUSTOM_QUALITY;
+    public static int presetQuality(int quality) {
+        return switch (quality) {
+            case 0, 1, 2, 3, ULTRA_QUALITY, DLAA_QUALITY -> quality;
+            default -> 0;
+        };
     }
 
     public static void selectQuality(int quality) {
-        CausticaConfig.Rt.DlssRr.QUALITY.set(quality);
-        CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.set(presetRatioTenths(quality));
+        int preset = presetQuality(quality);
+        CausticaConfig.Rt.DlssRr.QUALITY.set(preset);
+        CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.set(presetRatioTenths(preset));
     }
 
     /** Exact input dimension from output dimension for ratio-tenths input scale values. */

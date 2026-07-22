@@ -31,7 +31,9 @@ final class OfflineGroundTruthContractTest {
         assertTrue(!shader.contains("InterlockedAdd(groundTruthConverged"));
         assertTrue(shader.contains("offlinePilotRead"));
         assertTrue(shader.contains("pilotSample"));
-        assertTrue(shader.contains("max(1u, uint(predictedError"));
+        assertTrue(shader.contains("uint pathCount = workItem.pathCount"));
+        assertTrue(shader.contains("uint pathCount = spp"));
+        assertTrue(!shader.contains("uint(predictedError"));
         assertTrue(shader.contains("groundTruthAccum[pix] = float4(runningMean, 1.0)"));
         assertTrue(composite.contains("clearOfflineAccumulation(cmd, stack)"));
         assertTrue(composite.contains("exposure.beginOfflineSession(ctx)"));
@@ -107,7 +109,7 @@ final class OfflineGroundTruthContractTest {
         assertTrue(!menu.contains("offlineRendererButton"));
         assertTrue(menu.contains("extends CausticaSettingsScreen"));
         assertTrue(workstation.contains("addExposure()"));
-        assertTrue(workstation.contains("addOutput()"));
+        assertTrue(workstation.contains("addDisplayHdr()"));
         assertTrue(workstation.contains("addLighting()"));
         assertTrue(workstation.contains("addView()"));
         assertTrue(videoMixin.contains("RtVideoOptions.causticaButton"));

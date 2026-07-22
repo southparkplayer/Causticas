@@ -15,7 +15,8 @@ final class SkyControlsContractTest {
     @Test
     void exactPsrMissesSharePrimaryHorizonWithoutOpeningTransportVoid() throws Exception {
         String miss = Files.readString(Path.of("shaders/world/world.rmiss.slang"));
-        assertTrue(miss.contains("bool presentationSky = primaryRay || filterSky;"));
+        assertTrue(miss.contains("bool presentationSky = primaryRay || filterSky"));
+        assertTrue(miss.contains("PAYLOAD_PRESENTATION_SKY"));
         assertTrue(miss.contains("if (!presentationSky && earthAtmosphere && !aboveHorizon)"));
         assertTrue(miss.contains("if (earthAtmosphere && aboveHorizon && (!primaryRay || !directSkyStarLayer))"));
         assertTrue(miss.contains("col += sharedStars"));
@@ -65,11 +66,10 @@ final class SkyControlsContractTest {
                 "src/main/java/dev/comfyfluffy/caustica/client/CausticaSettingsScreen.java"));
         String language = Files.readString(Path.of(
                 "src/main/resources/assets/caustica/lang/en_us.json"));
-        assertTrue(screen.contains("SKY(CategoryGroup.WORLD, \"sky\")"));
-        assertTrue(screen.contains("case SKY -> addSky()"));
+        assertTrue(screen.contains("case SKY_ATMOSPHERE -> addSky()"));
         assertTrue(screen.contains("private void addSky()"));
         assertTrue(screen.contains("resetOnShift(() -> setting.set(setting.defaultValue()))"));
-        assertTrue(language.contains("\"caustica.options.category.sky\": \"Sky & Atmosphere\""));
+        assertTrue(language.contains("\"caustica.options.category.skyAtmosphere\": \"Sky & Atmosphere\""));
         assertTrue(language.contains("caustica.options.rt.sky.aerosolScatter"));
         assertTrue(language.contains("Night Rayleigh Strength"));
         assertTrue(screen.contains("SKY_DAY_RAYLEIGH"));

@@ -49,11 +49,15 @@ public final class CategoryLayout implements Layout {
 
     @Override
     public void setX(int x) {
+        int delta = x - this.x;
+        children.forEach(child -> child.setX(child.getX() + delta));
         this.x = x;
     }
 
     @Override
     public void setY(int y) {
+        int delta = y - this.y;
+        children.forEach(child -> child.setY(child.getY() + delta));
         this.y = y;
     }
 

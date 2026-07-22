@@ -51,6 +51,7 @@ final class RtOutputScaleTest {
         assertEquals(20, RtResolutionScale.presetRatioTenths(0));
         assertEquals(17, RtResolutionScale.presetRatioTenths(1));
         assertEquals(15, RtResolutionScale.presetRatioTenths(2));
+        assertEquals(13, RtResolutionScale.presetRatioTenths(4));
         assertEquals(10, RtResolutionScale.presetRatioTenths(5));
     }
 
@@ -60,6 +61,7 @@ final class RtOutputScaleTest {
         assertEquals(2.0, RtResolutionScale.presetUpscaleRatio(0));
         assertEquals(1.7, RtResolutionScale.presetUpscaleRatio(1));
         assertEquals(1.5, RtResolutionScale.presetUpscaleRatio(2));
+        assertEquals(1.3, RtResolutionScale.presetUpscaleRatio(4));
         assertEquals(1.0, RtResolutionScale.presetUpscaleRatio(5));
     }
 }

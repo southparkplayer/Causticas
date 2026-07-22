@@ -33,6 +33,10 @@ final class CausticaTreeState {
         return Boolean.TRUE.equals(collapsed.get(id));
     }
 
+    boolean hasPersistedState() {
+        return Files.isRegularFile(path);
+    }
+
     synchronized void setCollapsed(String id, boolean value) {
         if (id == null || id.isBlank()) return;
         if (value) {

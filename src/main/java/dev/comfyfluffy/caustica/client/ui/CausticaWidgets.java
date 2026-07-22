@@ -28,9 +28,9 @@ import org.lwjgl.glfw.GLFW;
 public final class CausticaWidgets {
     public static final int ACCENT = 0xFFF0F0F0;
     public static final int ACCENT_DIM = 0xFF777B80;
-    public static final int PANEL = 0x28000000;
-    public static final int PANEL_2 = 0x44000000;
-    public static final int PANEL_HOVER = 0x48FFFFFF;
+    public static final int PANEL = 0x50000000;
+    public static final int PANEL_2 = 0x30000000;
+    public static final int PANEL_HOVER = 0x30FFFFFF;
     public static final int TEXT = 0xFFF0F0F0;
     public static final int MUTED = 0xFFAAAAAA;
     public static final int DISABLED = 0xFF707070;
@@ -86,16 +86,11 @@ public final class CausticaWidgets {
         return result == null ? null : Tooltip.create(result);
     }
 
-    private static void resetMarker(GuiGraphicsExtractor g, AbstractWidget widget, int x, int color) {
-        g.text(Minecraft.getInstance().font, Component.literal("R"), x,
-                centeredTextY(widget, Minecraft.getInstance().font), color);
-    }
-
     public static final class SectionHeader extends AbstractWidget {
         private final Component subtitle;
 
         public SectionHeader(int width, Component title, Component subtitle) {
-            super(0, 0, width, 46, title);
+            super(0, 0, width, 38, title);
             this.subtitle = subtitle;
             this.active = false;
         }
@@ -106,15 +101,21 @@ public final class CausticaWidgets {
             int y = getY();
             g.fill(x, getBottom() - 1, getRight(), getBottom(), 0x70FFFFFF);
             Font font = Minecraft.getInstance().font;
-            g.text(font, getMessage(), x + 2, y + 6, TEXT);
+            int textWidth = Math.max(0, getWidth() - 4);
+            boolean titleClipped = font.width(getMessage()) > textWidth;
+            g.text(font, Component.literal(clipped(getMessage(), textWidth)), x + 2, y + 4, TEXT);
             List<net.minecraft.util.FormattedCharSequence> lines = font.split(this.subtitle, getWidth() - 8);
-            for (int index = 0; index < Math.min(2, lines.size()); index++) {
-                g.text(font, lines.get(index), x + 2, y + 20 + index * 10, MUTED);
+            for (int index = 0; index < Math.min(1, lines.size()); index++) {
+                g.text(font, lines.get(index), x + 2, y + 19, MUTED);
             }
-            if (lines.size() > 2) {
-                g.fill(getRight() - font.width("...") - 4, y + 30, getRight() - 2, y + 40, PANEL);
-                g.text(font, Component.literal("..."), getRight() - font.width("...") - 2, y + 30, MUTED);
-                setTooltip(Tooltip.create(this.subtitle));
+            if (lines.size() > 1) {
+                g.text(font, Component.literal("..."), getRight() - font.width("...") - 2, y + 19, MUTED);
+                setTooltip(Tooltip.create(titleClipped
+                        ? getMessage().copy().append("\n").append(this.subtitle) : this.subtitle));
+            } else if (titleClipped) {
+                setTooltip(Tooltip.create(getMessage()));
+            } else {
+                setTooltip(null);
             }
         }
 
@@ -128,7 +129,7 @@ public final class CausticaWidgets {
     /** Compact visual boundary for a related control bundle inside a category. */
     public static final class BundleHeader extends AbstractWidget {
         public BundleHeader(int width, Component title) {
-            super(0, 0, width, 18, title);
+            super(0, 0, width, 24, title);
             this.active = false;
         }
 
@@ -136,8 +137,8 @@ public final class CausticaWidgets {
         public void extractWidgetRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             int y = getY();
             g.fill(getX(), y + 2, getX() + 3, getBottom() - 2, 0xC0B9D9FF);
-            g.fill(getX() + 3, y + 2, getRight(), getBottom() - 2, 0x26000000);
-            g.text(Minecraft.getInstance().font, getMessage(), getX() + 9, y + 5, TEXT);
+            g.text(Minecraft.getInstance().font, getMessage(), getX() + 9,
+                    y + (getHeight() - Minecraft.getInstance().font.lineHeight) / 2, TEXT);
         }
 
         @Override
@@ -150,7 +151,7 @@ public final class CausticaWidgets {
         private final Supplier<Component> text;
 
         public InfoStrip(int width, Supplier<Component> text) {
-            super(0, 0, width, 48, Component.empty());
+            super(0, 0, width, 38, Component.empty());
             this.text = Objects.requireNonNull(text);
             this.active = false;
         }
@@ -159,16 +160,15 @@ public final class CausticaWidgets {
         protected void extractWidgetRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             Component message = this.text.get();
             setMessage(message);
-            g.fill(getX(), getY(), getRight(), getBottom(), PANEL_2);
+            g.fill(getX(), getY(), getRight(), getBottom(), 0x28000000);
             Font font = Minecraft.getInstance().font;
             List<net.minecraft.util.FormattedCharSequence> lines = font.split(message, getWidth() - 16);
-            for (int index = 0; index < Math.min(3, lines.size()); index++) {
-                g.text(font, lines.get(index), getX() + 8, getY() + 8 + index * 11, MUTED);
+            for (int index = 0; index < Math.min(2, lines.size()); index++) {
+                g.text(font, lines.get(index), getX() + 8, getY() + 7 + index * 11, MUTED);
             }
-            if (lines.size() > 3) {
+            if (lines.size() > 2) {
                 int ellipsisX = getRight() - font.width("...") - 8;
-                g.fill(ellipsisX - 2, getY() + 30, getRight() - 6, getY() + 41, PANEL_2);
-                g.text(font, Component.literal("..."), ellipsisX, getY() + 30, MUTED);
+                g.text(font, Component.literal("..."), ellipsisX, getY() + 18, MUTED);
                 setTooltip(Tooltip.create(message));
             } else {
                 setTooltip(null);
@@ -207,8 +207,9 @@ public final class CausticaWidgets {
         protected void extractContents(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             setMessage(this.label.get());
             int color = !this.active ? 0x18000000 : this.accent ? 0x34FFFFFF
-                    : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
-            g.fill(getX(), getY(), getRight(), getBottom(), color);
+                    : isHoveredOrFocused() ? PANEL_HOVER : 0;
+            if (color != 0) g.fill(getX(), getY(), getRight(), getBottom(), color);
+            g.fill(getX(), getBottom() - 1, getRight(), getBottom(), 0x28777777);
             focusOutline(g, this);
             int textColor = this.active ? TEXT : DISABLED;
             Font font = Minecraft.getInstance().font;
@@ -286,20 +287,25 @@ public final class CausticaWidgets {
             setTooltip(controlTooltip(this.tooltip, reason, this.active, this.resetAction != null));
             refreshMessage();
             boolean enabled = this.getter.getAsBoolean();
-            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
-            g.fill(getX(), getY(), getRight(), getBottom(), color);
-            int switchX = getRight() - 30;
-            int switchY = getY() + (getHeight() - 8) / 2;
-            g.fill(switchX, switchY, switchX + 22, switchY + 8, enabled ? 0xFFB8B8B8 : 0xFF555555);
-            int knobX = enabled ? switchX + 14 : switchX + 2;
-            g.fill(knobX, switchY - 2, knobX + 6, switchY + 10, enabled ? 0xFFFFFFFF : 0xFF999999);
-            focusOutline(g, this);
+            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : 0;
+            if (color != 0) g.fill(getX(), getY(), getRight(), getBottom(), color);
+            g.fill(getX(), getBottom() - 1, getRight(), getBottom(), 0x28777777);
             Font font = Minecraft.getInstance().font;
-            int available = Math.max(0, getWidth() - (this.resetAction == null ? 48 : 58));
+            Component state = onOff(this.getter.getAsBoolean());
+            int stateWidth = font.width(state);
+            int switchX = getRight() - 40;
+            int switchY = getY() + (getHeight() - 14) / 2;
+            g.fill(switchX, switchY, switchX + 30, switchY + 14, enabled ? 0xFFB8B8B8 : 0xFF555555);
+            int knobX = enabled ? switchX + 18 : switchX + 2;
+            g.fill(knobX, switchY + 2, knobX + 10, switchY + 12,
+                    enabled ? 0xFFFFFFFF : 0xFF999999);
+            focusOutline(g, this);
+            g.text(font, state, switchX - stateWidth - 7, centeredTextY(this, font),
+                    this.active ? MUTED : DISABLED);
+            int available = Math.max(0, switchX - stateWidth - getX() - 18);
             g.text(font,
                     Component.literal(clipped(this.label, available)), getX() + 9, centeredTextY(this, font),
                     this.active ? TEXT : DISABLED);
-            if (this.resetAction != null) resetMarker(g, this, switchX - 10, this.active ? MUTED : DISABLED);
         }
 
         @Override
@@ -315,7 +321,7 @@ public final class CausticaWidgets {
     }
 
     public static final class Dropdown<T> extends AbstractButton implements LabeledControl {
-        private static final int ITEM_HEIGHT = 20;
+        private static final int ITEM_HEIGHT = 28;
         private static final int MAX_VISIBLE_ITEMS = 8;
 
         private final Component label;
@@ -426,7 +432,7 @@ public final class CausticaWidgets {
         public boolean clickOverlay(double mouseX, double mouseY, int screenHeight) {
             if (!open) return false;
             OverlayGeometry geometry = overlayGeometry(screenHeight);
-            if (mouseX < getX() || mouseX >= getRight()
+            if (mouseX < valueLeft() || mouseX >= getRight()
                     || mouseY < geometry.top || mouseY >= geometry.top + geometry.height) {
                 return false;
             }
@@ -445,7 +451,7 @@ public final class CausticaWidgets {
         public boolean scrollOverlay(double mouseX, double mouseY, double vertical, int screenHeight) {
             if (!open || vertical == 0.0) return false;
             OverlayGeometry geometry = overlayGeometry(screenHeight);
-            if (mouseX < getX() || mouseX >= getRight()
+            if (mouseX < valueLeft() || mouseX >= getRight()
                     || mouseY < geometry.top || mouseY >= geometry.top + geometry.height) return false;
             int maximum = Math.max(0, values.size() - geometry.visibleItems);
             scrollOffset = Math.clamp(scrollOffset + (vertical > 0.0 ? -1 : 1), 0, maximum);
@@ -455,12 +461,12 @@ public final class CausticaWidgets {
         public void extractOverlay(GuiGraphicsExtractor g, int mouseX, int mouseY, int screenHeight) {
             if (!open || !active) return;
             OverlayGeometry geometry = overlayGeometry(screenHeight);
-            int left = getX();
+            int left = valueLeft();
             int right = getRight();
             int bottom = geometry.top + geometry.height;
             g.fill(left + 2, geometry.top + 3, right + 3, bottom + 3, 0x90000000);
             g.fill(left, geometry.top, right, bottom, 0xF0181818);
-            g.outline(left, geometry.top, getWidth(), geometry.height, 0xD0FFFFFF);
+            g.outline(left, geometry.top, right - left, geometry.height, 0xD0FFFFFF);
             T selected = getter.get();
             for (int row = 0; row < geometry.visibleItems; row++) {
                 int index = scrollOffset + row;
@@ -477,8 +483,9 @@ public final class CausticaWidgets {
                 }
                 if (current) g.fill(left + 1, rowTop, left + 3, rowTop + ITEM_HEIGHT, 0xFFFFFFFF);
                 Component value = valueLabel.apply(candidate);
-                g.text(Minecraft.getInstance().font,
-                        Component.literal(clipped(value, getWidth() - 18)), left + 8, rowTop + 6,
+                Font font = Minecraft.getInstance().font;
+                g.text(font, Component.literal(clipped(value, right - left - 18)), left + 8,
+                        rowTop + (ITEM_HEIGHT - font.lineHeight) / 2,
                         current ? 0xFFFFFFFF : 0xFFD0D0D0);
             }
             if (scrollOffset > 0) {
@@ -505,6 +512,12 @@ public final class CausticaWidgets {
             return new OverlayGeometry(top, height, visible);
         }
 
+        private int valueLeft() {
+            int minimum = Math.min(120, getWidth());
+            int maximum = Math.min(190, getWidth());
+            return getRight() - Math.clamp(getWidth() / 2, minimum, maximum);
+        }
+
         private record OverlayGeometry(int top, int height, int visibleItems) {
         }
 
@@ -515,22 +528,24 @@ public final class CausticaWidgets {
             setTooltip(controlTooltip(this.tooltip, reason, this.active, this.resetAction != null));
             refreshMessage();
             Component value = this.valueLabel.apply(this.getter.get());
-            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
-            g.fill(getX(), getY(), getRight(), getBottom(), color);
+            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : 0;
+            if (color != 0) g.fill(getX(), getY(), getRight(), getBottom(), color);
+            g.fill(getX(), getBottom() - 1, getRight(), getBottom(), 0x28777777);
             focusOutline(g, this);
             Font font = Minecraft.getInstance().font;
-            int markerWidth = this.resetAction == null ? 0 : 12;
-            int contentWidth = Math.max(0, getWidth() - 38 - markerWidth);
-            int valueWidth = Math.min(font.width(value), contentWidth / 2);
-            int labelWidth = Math.max(0, contentWidth - valueWidth - 6);
+            int valueLeft = valueLeft();
+            g.fill(valueLeft, getY() + 2, getRight(), getBottom() - 2,
+                    this.active ? 0x24000000 : 0x14000000);
+            int contentWidth = Math.max(0, getRight() - valueLeft - 30);
+            int valueWidth = Math.min(font.width(value), contentWidth);
+            int labelWidth = Math.max(0, valueLeft - getX() - 14);
             Component clippedValue = Component.literal(clipped(value, valueWidth));
             int renderedValueWidth = font.width(clippedValue);
             int textY = centeredTextY(this, font);
             g.text(font, Component.literal(clipped(this.label, labelWidth)),
                     getX() + 9, textY, this.active ? TEXT : DISABLED);
-            g.text(font, clippedValue, getRight() - renderedValueWidth - 20 - markerWidth, textY,
+            g.text(font, clippedValue, getRight() - renderedValueWidth - 20, textY,
                     this.active ? ACCENT : DISABLED);
-            if (this.resetAction != null) resetMarker(g, this, getRight() - 27, this.active ? MUTED : DISABLED);
             g.text(font, Component.literal(this.open ? "\u25b2" : "\u25bc"),
                     getRight() - 12, textY, this.active ? MUTED : DISABLED);
         }
@@ -711,21 +726,31 @@ public final class CausticaWidgets {
                     updateMessage();
                 }
             }
-            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
-            g.fill(getX(), getY(), getRight(), getBottom(), color);
-            int trackY = getBottom() - 5;
-            g.fill(getX() + 8, trackY, getRight() - 8, trackY + 2, 0xFF555555);
-            int handle = getX() + 8 + (int)Math.round((getWidth() - 16) * this.value);
+            int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : 0;
+            if (color != 0) g.fill(getX(), getY(), getRight(), getBottom(), color);
+            g.fill(getX(), getBottom() - 1, getRight(), getBottom(), 0x28777777);
+            Font font = Minecraft.getInstance().font;
+            double current = this.fromUnit.applyAsDouble(this.value);
+            Component formatted = Component.literal(this.formatter.apply(current));
+            int valueWidth = Math.clamp(font.width(formatted) + 4, 48, 72);
+            Component displayedValue = Component.literal(clipped(formatted, valueWidth));
+            int trackWidth = Math.clamp(getWidth() / 3, 80, 168);
+            int trackRight = getRight() - valueWidth - 8;
+            int trackLeft = Math.max(getX() + 72, trackRight - trackWidth);
+            int trackY = getY() + getHeight() / 2 - 2;
+            g.fill(trackLeft, trackY, trackRight, trackY + 4, 0xFF555555);
+            int handle = trackLeft + (int)Math.round((trackRight - trackLeft) * this.value);
             int progressColor = this.active ? ACCENT : DISABLED;
-            g.fill(getX() + 8, trackY, handle, trackY + 2, progressColor);
-            g.fill(handle - 2, trackY - 3, handle + 3, trackY + 5,
+            g.fill(trackLeft, trackY, handle, trackY + 4, progressColor);
+            g.fill(handle - 3, trackY - 4, handle + 4, trackY + 8,
                     this.active && isHoveredOrFocused() ? 0xFFFFFFFF : progressColor);
             focusOutline(g, this);
-            Font font = Minecraft.getInstance().font;
-            int markerWidth = this.resetAction == null ? 0 : 14;
-            g.text(font, Component.literal(clipped(getMessage(), getWidth() - 16 - markerWidth)),
-                    getX() + 8, centeredTextY(this, font), this.active ? TEXT : DISABLED);
-            if (this.resetAction != null) resetMarker(g, this, getRight() - 12, this.active ? MUTED : DISABLED);
+            int textY = centeredTextY(this, font);
+            int labelWidth = Math.max(0, trackLeft - getX() - 14);
+            g.text(font, Component.literal(clipped(this.label, labelWidth)),
+                    getX() + 8, textY, this.active ? TEXT : DISABLED);
+            g.text(font, displayedValue, getRight() - valueWidth, textY,
+                    this.active ? ACCENT : DISABLED);
         }
 
         @Override

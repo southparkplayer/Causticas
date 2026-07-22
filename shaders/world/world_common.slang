@@ -90,6 +90,7 @@ public struct WorldPush {
     public uint64_t entityTableAddr;  // entity geometry table
     public uint     flags;            // bit0 camera submerged, bit1 PBR BRDF, bit4 water waves
     public uint     maxBounces;
+    // ABI lane retained for backward-compatible payload layout; currently fed from maxBounces.
     [vk::offset(204)] public uint celestialMaxBounces;
     [vk::offset(208)] public float4   sunDir;
     [vk::offset(224)] public float4   lightDir;
@@ -218,6 +219,9 @@ public static const uint PAYLOAD_LAVA_SURFACE = 1u << 16u;
 public static const uint PAYLOAD_FIBER_SURFACE = 1u << 17u;
 public static const uint PAYLOAD_ENCHANTED = 1u << 18u;
 public static const uint PAYLOAD_EMITTER_IN_LIST = 1u << 19u;
+// Camera-connected reflection/refraction misses need the visible below-horizon sky fallback, but are
+// not primary rays: keeping this separate preserves the direct-sky star compositing contract.
+public static const uint PAYLOAD_PRESENTATION_SKY = 1u << 20u;
 
 public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 public static const uint MATERIAL_OPAQUE = 0u;

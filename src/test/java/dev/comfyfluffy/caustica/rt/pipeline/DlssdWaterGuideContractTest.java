@@ -65,7 +65,7 @@ final class DlssdWaterGuideContractTest {
         assertFalse(validPath.contains("gv_specAlb = destinationSpecularAlbedo"));
         assertTrue(raygen.contains("gv_opticalGuideMode = OPTICAL_GUIDE_TRANSMISSION"));
         assertTrue(raygen.contains("gv_opticalGuideIor = surfaceWaterEntering ? WATER_IOR : 1.0"));
-        assertTrue(raygen.contains("gSpecAlbedo[pix] = float4(specSurfaceAlbedo, 1.0)"));
+        assertTrue(raygen.contains("gSpecAlbedo[pix] = float4(resolvedSpecularAlbedo, 1.0)"));
         assertTrue(raygen.contains("bool interfaceSpecMotionRequired = debugSpecMotion || writeRrGuides"));
         assertFalse(raygen.contains("if (writeRrGuides && gv_motionUseRefracted) specMotion = motion"));
         assertFalse(raygen.contains("if (encounteredAnimatedWater) gv_animatedGuide = 1.0"));

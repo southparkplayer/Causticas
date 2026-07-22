@@ -1,7 +1,7 @@
 package dev.comfyfluffy.caustica.rt.pipeline;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -10,63 +10,51 @@ import org.junit.jupiter.api.Test;
 
 final class ResponsiveOptionsMenuContractTest {
     @Test
-    void workstationIsCompactSearchFirstAndPersonalized() throws IOException {
+    void workstationUsesBoundedResponsiveGeometryAndDeterministicState() throws IOException {
         String entry = source("src/main/java/dev/comfyfluffy/caustica/client/CausticaOptionsScreen.java");
         String workstation = source("src/main/java/dev/comfyfluffy/caustica/client/CausticaSettingsScreen.java");
-        String usage = source("src/main/java/dev/comfyfluffy/caustica/client/CausticaMenuUsage.java");
+        String catalog = source("src/main/java/dev/comfyfluffy/caustica/client/settings/SettingsCatalog.java");
+        String metrics = source("src/main/java/dev/comfyfluffy/caustica/client/ui/SettingsUiMetrics.java");
 
         assertTrue(entry.contains("extends CausticaSettingsScreen"));
-        assertTrue(workstation.contains("OVERVIEW(CategoryGroup.ESSENTIALS, \"overview\")"));
-        assertTrue(workstation.contains("IMAGE(\"image\")"));
-        assertTrue(workstation.contains("WORLD(\"world\")"));
-        assertTrue(workstation.contains("ADVANCED(\"advanced\")"));
-        assertTrue(workstation.contains("MAX_CONTENT_WIDTH = 1400"));
-        assertTrue(workstation.contains("TARGET_CELL_WIDTH = 280"));
-        assertTrue(workstation.contains("MAX_GRID_COLUMNS = 3"));
-        assertTrue(workstation.contains("CONTROL_HEIGHT = 34"));
-        assertTrue(workstation.contains("computeRailWidth()"));
-        assertTrue(workstation.contains("widest + 32"));
-        assertTrue(workstation.contains("columnsFor(controls)"));
-        assertTrue(workstation.contains("font.width(control.getMessage())"));
+        assertTrue(workstation.contains("SettingsUiMetrics.calculate(width, height"));
+        assertTrue(workstation.contains("ReserveStrategy.RIGHT"));
+        assertTrue(workstation.contains("new SectionColumnsLayout"));
+        assertTrue(workstation.contains("SettingsUiState.PageBookmark"));
+        assertTrue(workstation.contains("setNavigationOpen(true)"));
+        assertTrue(workstation.contains("insideBody"));
         assertTrue(workstation.contains("new EditBox"));
         assertTrue(workstation.contains("setResponder(this::searchChanged)"));
         assertTrue(workstation.contains("setInitialFocus(targetWidget != null ? targetWidget : searchBox)"));
         assertTrue(workstation.contains("addSearchResults()"));
-        assertTrue(workstation.contains("matchesSearch"));
-        assertTrue(workstation.contains("addQuickLinks"));
-        assertTrue(workstation.contains("recent(itemLimit)"));
-        assertTrue(workstation.contains("frequent(itemLimit, recent)"));
-        assertTrue(workstation.contains("Math.clamp((available - 32) / 36, 0, 8)"));
-        assertTrue(workstation.contains("selectedCategoryButton"));
-        assertTrue(workstation.contains("addBundle(\"exposure.intent\""));
-        assertTrue(workstation.contains("addBundle(\"exposure.metering\""));
-        assertTrue(workstation.contains("addBundle(\"output.frameGeneration\""));
-        assertTrue(workstation.contains("List.of(\"synchronized\", \"parallel\")"));
-        assertTrue(workstation.contains("CausticaConfig.Rt.Fg.QUEUE_PARALLELISM::set"));
-        assertTrue(workstation.contains("addBundle(\"sharc.transport\""));
-        assertTrue(workstation.contains("new CollapsibleLayout(contentWidth"));
-        assertTrue(workstation.contains("new CollapsibleLayout.TreeHeader(railWidth"));
-        assertTrue(workstation.contains("group."));
-        assertTrue(workstation.contains("CausticaTreeState.INSTANCE.save()"));
-        String treeState = source("src/main/java/dev/comfyfluffy/caustica/client/CausticaTreeState.java");
-        assertTrue(treeState.contains("caustica-menu-tree.json"));
-        assertTrue(treeState.contains("setCollapsed"));
-        assertTrue(workstation.contains("lineLeft"));
-        assertTrue(workstation.contains("revealControl(item)"));
-        assertTrue(workstation.contains("pendingTargetId"));
-        assertTrue(workstation.contains("TARGET_FLASH_MILLIS"));
-        assertTrue(workstation.contains("bodyScrollArea.setScrollAmount"));
-        assertTrue(workstation.contains("usageCategories"));
-        assertTrue(workstation.contains("addGrid(controls.subList(0, 4))"));
-        assertTrue(workstation.contains("addGrid(controls.subList(4, 6))"));
-        assertTrue(workstation.contains("addGrid(controls.subList(6, 9))"));
-        assertFalse(workstation.contains("ordered(rendering,"));
-        assertFalse(workstation.contains("throw new IllegalArgumentException(\"Incomplete menu order\")"));
-        assertTrue(usage.contains("FREQUENCY_HALF_LIFE_DAYS = 30.0"));
-        assertTrue(usage.contains("caustica-menu-usage.json"));
-        assertTrue(usage.contains("lastCategory"));
-        assertTrue(usage.contains("scrollPositions"));
-        assertTrue(usage.contains("setMenuPosition"));
+        assertTrue(workstation.contains("new CollapsibleLayout(sectionWidth"));
+        assertTrue(workstation.contains("new CollapsibleLayout.TreeHeader(navigationContentWidth"));
+        assertTrue(workstation.contains("restoreBookmark"));
+        assertTrue(workstation.contains("revealControl(Control control)"));
+        assertTrue(workstation.contains("SettingsRevealPlanner.planReveal"));
+        assertFalse(workstation.contains("prepareToneControl"));
+        assertFalse(workstation.contains("RtResolutionScale.ensurePresetSelection"));
+        assertTrue(workstation.contains("migrateLegacyExpansionState"));
+        assertTrue(workstation.contains("uiState.save()"));
+        assertTrue(workstation.contains("addEssentialsGrid(controls)"));
+        assertTrue(workstation.contains("case WIDE -> 3"));
+        assertTrue(workstation.contains("essentialsColumns(contentWidth"));
+        assertTrue(workstation.contains("caustica.options.navigation.pages"));
+        assertTrue(workstation.contains("controls.addAll(hdrBrightnessControls())"));
+        assertFalse(workstation.contains("dlssInputRatioControl()"));
+        assertFalse(workstation.contains("RtResolutionScale.CUSTOM_QUALITY"));
+        assertFalse(workstation.contains("|| category.group() == group"));
+        assertFalse(workstation.contains("setGroupExpanded(groupStateId(target.group()), true)"));
+        assertFalse(workstation.contains("SettingsCatalog.byLocalizedLabel"));
+        assertTrue(metrics.contains("enum Mode"));
+        assertTrue(metrics.contains("WIDE_MIN_WIDTH = 1080"));
+        assertTrue(metrics.contains("STANDARD_MIN_WIDTH = 760"));
+        assertTrue(metrics.contains("SCROLLBAR_RESERVE"));
+        assertTrue(catalog.contains("ESSENTIALS(null, \"essentials\""));
+        assertTrue(catalog.contains("DISPLAY_HDR(Group.DISPLAY_PERFORMANCE"));
+        assertTrue(catalog.contains("SHARC(Group.ADVANCED"));
+        assertTrue(catalog.contains("essentialsProjection()"));
+        assertTrue(catalog.contains("allControls()"));
     }
 
     @Test

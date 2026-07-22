@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
 public final class CausticaConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
-    static final int CONFIG_SCHEMA_VERSION = 13;
+    static final int CONFIG_SCHEMA_VERSION = 14;
 
     private static final Path CONFIG_PATH = resolveConfigPath();
     private static final CommentedFileConfig FILE = loadAndMigrateFile(CONFIG_PATH);
@@ -79,7 +79,7 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Composite.CELESTIAL_LIGHT_BOUNCES,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES,
             Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Terrain.COMPLETION_RESULTS_PER_PASS,
             Rt.Terrain.MAX_INFLIGHT_SECTIONS, Rt.Terrain.STREAM_BUDGET_MS,
             Rt.Terrain.STREAM_BUDGET_MAX_MS, Rt.Terrain.STREAM_FALLBACK_BUDGET_MS, Rt.Omm.ENABLED,
@@ -370,8 +370,16 @@ public final class CausticaConfig {
         if (version < 13) {
             applySchema13Defaults(config);
         }
+        if (version < 14) {
+            applySchema14Defaults(config);
+        }
         config.set("config-version", CONFIG_SCHEMA_VERSION);
         return true;
+    }
+
+    private static void applySchema14Defaults(CommentedConfig config) {
+        migrateExactNumber(config, "composite.max-bounces", 8.0, 64.0);
+        config.remove("composite.celestial-light-bounces");
     }
 
     private static boolean isNrdBackend(CommentedConfig config) {
@@ -867,10 +875,9 @@ public final class CausticaConfig {
             public static final int DEBUG_VIEW_TONEMAP_COMPARISON = 8;
             public static final IntSetting DEBUG_VIEW = intValue("caustica.rt.debugView", "composite.debug-view", 0);
             public static final IntSetting SPP = intAtLeast("caustica.rt.spp", "composite.spp", 1, 1);
+            // One depth limit controls both indirect path traversal and direct celestial transport depth.
             public static final IntSetting MAX_BOUNCES =
-                    clampedInt("caustica.rt.maxBounces", "composite.max-bounces", 8, 2, 8);
-            public static final IntSetting CELESTIAL_LIGHT_BOUNCES =
-                    clampedInt("caustica.rt.celestialLightBounces", "composite.celestial-light-bounces", 8, 0, 8);
+                    clampedInt("caustica.rt.maxBounces", "composite.max-bounces", 8, 2, 64);
             public static final BooleanSetting WATER_WAVES =
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting TORCH_EMISSION_MULTIPLIER = clampedFloat(

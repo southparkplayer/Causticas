@@ -28,15 +28,16 @@ import net.minecraft.network.chat.Component;
  * Builds the RT option widgets shown from the vanilla Video Settings screen.
  */
 public final class RtVideoOptions {
-    private static final List<Integer> DLSS_QUALITY_ORDER = List.of(3, 0, 1, 2, 5, RtResolutionScale.CUSTOM_QUALITY);
+    private static final List<Integer> DLSS_QUALITY_ORDER = List.of(5, 4, 2, 1, 0, 3);
     private static final List<Integer> DEBUG_VIEW_ORDER = List.of(
             0, 1, 2, 3, 4, 5, 6, 7,
             CausticaConfig.Rt.Composite.DEBUG_VIEW_TONEMAP_COMPARISON, 9, 10, 11, 12, 13, 14, 15, 16);
 
     /** A tone-mapping widget plus the value it should restore when Shift+Left-clicked. */
-    public record TonemapControl(OptionInstance<?> option, Runnable reset, NumericEditor numericEditor) {
-        public TonemapControl(OptionInstance<?> option, Runnable reset) {
-            this(option, reset, null);
+    public record TonemapControl(String labelKey, OptionInstance<?> option, Runnable reset,
+                                 NumericEditor numericEditor) {
+        public TonemapControl(String labelKey, OptionInstance<?> option, Runnable reset) {
+            this(labelKey, option, reset, null);
         }
 
         public void resetToDefault() {
@@ -53,14 +54,14 @@ public final class RtVideoOptions {
     private RtVideoOptions() {
     }
 
-    private static <T> TonemapControl control(OptionInstance<T> option, T defaultValue) {
-        return new TonemapControl(option, () -> option.set(defaultValue));
+    private static <T> TonemapControl control(String labelKey, OptionInstance<T> option, T defaultValue) {
+        return new TonemapControl(labelKey, option, () -> option.set(defaultValue));
     }
 
-    private static TonemapControl numericControl(OptionInstance<Integer> option, int defaultValue,
-                                                  DoubleSupplier getter, DoubleConsumer setter,
-                                                  double minimum, double maximum) {
-        return new TonemapControl(option, () -> option.set(defaultValue),
+    private static TonemapControl numericControl(String labelKey, OptionInstance<Integer> option, int defaultValue,
+                                                   DoubleSupplier getter, DoubleConsumer setter,
+                                                   double minimum, double maximum) {
+        return new TonemapControl(labelKey, option, () -> option.set(defaultValue),
                 new NumericEditor(getter, setter, minimum, maximum));
     }
 
@@ -96,9 +97,11 @@ public final class RtVideoOptions {
     public static TonemapControl[] exposureWorkstationControls() {
         TonemapControl[] expert = exposureControls();
         TonemapControl[] controls = new TonemapControl[expert.length + 3];
-        controls[0] = control(exposureMode(), CausticaConfig.Rt.Exposure.MODE.defaultValue());
-        controls[1] = control(manualEv(), Math.round(CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV.defaultValue() * 10.0f));
-        controls[2] = control(exposureCompensation(),
+        controls[0] = control("caustica.options.rt.exposureMode", exposureMode(),
+                CausticaConfig.Rt.Exposure.MODE.defaultValue());
+        controls[1] = control("caustica.options.rt.manualEv", manualEv(),
+                Math.round(CausticaConfig.Rt.Exposure.MANUAL_EXPOSURE_EV.defaultValue() * 10.0f));
+        controls[2] = control("caustica.options.rt.exposureCompensation", exposureCompensation(),
                 Math.round(CausticaConfig.Rt.Exposure.COMPENSATION_EV.defaultValue() * 10.0f));
         System.arraycopy(expert, 0, controls, 3, expert.length);
         return controls;
@@ -201,7 +204,6 @@ public final class RtVideoOptions {
         return new OptionInstance<?>[] {
             spp(),
             maxBounces(),
-            celestialLightBounces(),
             sunSize(),
             moonSize(),
             sunlightIntensity(),
@@ -425,7 +427,7 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Sdr.TONEMAP_PSYCHOV23), Codec.STRING),
             setting.configuredValue(),
             setting::set);
-        return control(option, setting.defaultValue());
+        return control("caustica.options.rt.sdrTonemap", option, setting.defaultValue());
     }
 
     private static OptionInstance<Integer> spp() {
@@ -445,8 +447,8 @@ public final class RtVideoOptions {
             "caustica.options.rt.maxBounces",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.maxBounces.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption, value),
-            new OptionInstance.IntRange(2, 8),
-            Math.clamp(setting.configuredValue(), 2, 8),
+            new OptionInstance.IntRange(2, 64),
+            Math.clamp(setting.configuredValue(), 2, 64),
             setting::set);
     }
 
@@ -687,23 +689,9 @@ public final class RtVideoOptions {
             initialPosition,
             position -> {
                 int quality = DLSS_QUALITY_ORDER.get(position);
-                if (quality != RtResolutionScale.CUSTOM_QUALITY) {
-                    RtResolutionScale.selectQuality(quality);
-                    RtComposite.INSTANCE.requestResolutionScaleCommit();
-                }
+                RtResolutionScale.selectQuality(quality);
+                RtComposite.INSTANCE.requestResolutionScaleCommit();
             });
-    }
-
-    private static OptionInstance<Integer> celestialLightBounces() {
-        IntSetting setting = CausticaConfig.Rt.Composite.CELESTIAL_LIGHT_BOUNCES;
-        return new OptionInstance<>(
-            "caustica.options.rt.celestialLightBounces",
-            OptionInstance.cachedConstantTooltip(Component.translatable(
-                    "caustica.options.rt.celestialLightBounces.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption, value),
-            new OptionInstance.IntRange(0, 8),
-            Math.clamp(setting.configuredValue(), 0, 8),
-            setting::set);
     }
 
     private static OptionInstance<Boolean> dlssRrEnabled() {
@@ -719,7 +707,8 @@ public final class RtVideoOptions {
 
     private static TonemapControl hdrEnabled() {
         BooleanSetting setting = CausticaConfig.Rt.Hdr.ENABLED;
-        return control(bool("caustica.options.rt.hdr", setting), setting.defaultValue());
+        return control("caustica.options.rt.hdr", bool("caustica.options.rt.hdr", setting),
+                setting.defaultValue());
     }
 
     private static TonemapControl hdrTonemap() {
@@ -735,7 +724,7 @@ public final class RtVideoOptions {
                     CausticaConfig.Rt.Hdr.TONEMAP_CAUSTICA), Codec.STRING),
             setting.configuredValue(),
             setting::set);
-        return control(option, setting.defaultValue());
+        return control("caustica.options.rt.hdrTonemap", option, setting.defaultValue());
     }
 
     private static TonemapControl psychoWhiteCurve() {
@@ -747,7 +736,7 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of("naka-rushton", "neutwo"), Codec.STRING),
             setting.configuredValue(),
             setting::set);
-        return control(option, setting.defaultValue());
+        return control("caustica.options.rt.hdrPsychoWhiteCurve", option, setting.defaultValue());
     }
 
     private static TonemapControl hdrPaperWhite() {
@@ -759,7 +748,8 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(80, 1000),
             Math.clamp(Math.round(setting.configuredValue()), 80, 1000),
             nits -> setting.set(nits.floatValue()));
-        return numericControl(option, Math.clamp(Math.round(setting.defaultValue()), 80, 1000),
+        return numericControl("caustica.options.rt.hdrPaperWhite", option,
+                Math.clamp(Math.round(setting.defaultValue()), 80, 1000),
                 setting::configuredValue, value -> setting.set((float)value), 80, 1000);
     }
 
@@ -772,7 +762,8 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(80, 10000),
             Math.clamp(Math.round(setting.configuredValue()), 80, 10000),
             nits -> setting.set(nits.floatValue()));
-        return numericControl(option, Math.clamp(Math.round(setting.defaultValue()), 80, 10000),
+        return numericControl("caustica.options.rt.hdrPeak", option,
+                Math.clamp(Math.round(setting.defaultValue()), 80, 10000),
                 setting::configuredValue, value -> setting.set((float)value), 80, 10000);
     }
 
@@ -785,7 +776,8 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(40, 1000),
             Math.clamp(Math.round(setting.configuredValue()), 40, 1000),
             nits -> setting.set(nits.floatValue()));
-        return numericControl(option, Math.clamp(Math.round(setting.defaultValue()), 40, 1000),
+        return numericControl("caustica.options.rt.hdrUiBrightness", option,
+                Math.clamp(Math.round(setting.defaultValue()), 40, 1000),
                 setting::configuredValue, value -> setting.set((float)value), 40, 1000);
     }
 
@@ -825,7 +817,8 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(min, max),
             Math.clamp(Math.round(setting.configuredValue() * scale), min, max),
             value -> setting.set(value / (float) scale));
-        return numericControl(option, Math.clamp(Math.round(setting.defaultValue() * scale), min, max),
+        return numericControl(captionKey, option,
+                Math.clamp(Math.round(setting.defaultValue() * scale), min, max),
                 setting::configuredValue, value -> setting.set((float)value), min / (double)scale, max / (double)scale);
     }
 
@@ -843,7 +836,8 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(min, max),
             Math.clamp(Math.round(setting.configuredValue() * scale), min, max),
             value -> setting.set(value / (float) scale));
-        return numericControl(option, Math.clamp(Math.round(setting.defaultValue() * scale), min, max),
+        return numericControl(captionKey, option,
+                Math.clamp(Math.round(setting.defaultValue() * scale), min, max),
                 setting::configuredValue, value -> setting.set((float)value), min / (double)scale, max / (double)scale);
     }
 

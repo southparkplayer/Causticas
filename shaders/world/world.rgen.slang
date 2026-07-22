@@ -1510,6 +1510,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     float3 finalMotion = float3(0.0, 0.0, 0.0);
     float finalRoughness = 1.0;
     float3 finalDiffuse = SKY_DIFF_ALBEDO;
+    // Material guide for the terminal PSR surface. Mirror-chain Fresnel remains transport in
+    // the noisy radiance and must not be folded into this value.
+    float3 finalSpecular = float3(0.0, 0.0, 0.0);
     bool finalIsSky = false;
     float travelled = length(surfacePos - pc.camOffset);
 
@@ -1558,6 +1561,26 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
         if (material == MATERIAL_OPAQUE) {
             finalMotion = payload.motionPrev;
             finalDiffuse = payload.albedo * (1.0 - destinationMetal);
+
+            // Metalness has no dedicated DLSSD guide. For a fully metallic endpoint
+            // finalDiffuse is zero, so this is the guide that carries its conductor color.
+            //
+            // Compute NoV before unfolding. The accumulated mirror transform is orthogonal,
+            // so transforming both the terminal normal and view vector preserves their dot product.
+            float3 terminalNormal = normalize(payload.normal);
+            float terminalNoV = abs(dot(terminalNormal, -rayDir));
+            float3 terminalF0 = payload.f0;
+            if (payloadEnchanted()) {
+                terminalF0 = enchantedF0(terminalF0, terminalNoV);
+            }
+
+            // Match the ordinary primary-surface DLSSD contract exactly:
+            // alpha = squared perceptual roughness, with the same finite GGX floor.
+            float terminalGuideRoughness = max(destinationRoughness, MIN_ROUGH);
+            finalSpecular = rrSpecularAlbedo(
+                    terminalF0,
+                    terminalGuideRoughness * terminalGuideRoughness,
+                    terminalNoV);
         } else {
             finalDiffuse = material == MATERIAL_GLASS ? payload.albedo : float3(0.0, 0.0, 0.0);
         }
@@ -1574,9 +1597,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     gv_normal = finalNormal;
     gv_rough = finalRoughness;
     gv_albedo = finalDiffuse;
-    // The mirror chain itself has been replaced. A further specular lobe on the terminal surface would
-    // require another correctly transformed specular-motion chain, so keep this bounded PSR pass diffuse.
-    gv_specAlb = float3(0.0, 0.0, 0.0);
+    // PSR replaces the complete material tuple. Do not leave the foreground mirror's
+    // specular reflectance paired with the terminal normal/roughness/albedo.
+    gv_specAlb = finalSpecular;
     // A reflected environment has no finite surface identity for the depth-only disocclusion test.
     // Bias reconstruction toward current deterministic radiance so stale LUT/history tiles cannot linger.
     if (finalIsSky) gv_animatedGuide = 1.0;
@@ -1885,6 +1908,8 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // diffuse-sampled continuation rays — those are already covered by the sun NEE, so the tiny disc
     // would be a double-counted firefly. Reset true on every specular/water bounce, false on a diffuse one.
     bool showCelestial = true;
+    // Camera-connected specular/transmissive misses remain presentation sky until a diffuse lobe is sampled.
+    bool presentationSkyPath = CAUSTICA_SHARC_UPDATE == 0;
     // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
     // candidate count is non-zero. Off => emitters are gathered only on path hits (legacy behaviour).
 #if !CAUSTICA_OFFLINE
@@ -1906,6 +1931,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #endif
         payloadSetTraceState(showCelestial, exactMirrorDepth > 0, primaryVisibilityRay,
                 rayConeWidth, rayConeSpread);
+        payload.flags |= presentationSkyPath ? PAYLOAD_PRESENTATION_SKY : 0u;
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
         // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles and the first-person body,
@@ -2275,6 +2301,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 gv_diffuseGuidePending = true;
             }
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
+            presentationSkyPath = false;
             showCelestial = false; // diffuse receiver: direct sun/moon was handled by NEE above
             ++scatteringDepth;
             continue;
@@ -2608,12 +2635,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         // extent (pc.lightDir.w half-angle) so the shadow ray samples the light's quad — soft penumbrae
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
-#if CAUSTICA_OFFLINE
-        bool celestialNeeEligible = true;
-#else
-        bool celestialNeeEligible =
-                scatteringDepth <= int(pc.celestialMaxBounces);
-#endif
+        bool celestialNeeEligible = scatteringDepth <= maxBounces;
         float3 lightDir = pc.lightDir.w > 0.0
                 ? sampleCelestialDisk(pc.lightDir.xyz, pc.lightDir.w, sampler) : pc.lightDir.xyz;
         float3 directRadiance = pc.lightRadiance.xyz;
@@ -2934,6 +2956,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                     gv_diffuseGuidePending = true;
                 }
                 rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
+                presentationSkyPath = false;
                 showCelestial = false; // diffuse lobe: disc covered by NEE, hide it (anti-firefly)
             }
         } else {
@@ -2948,6 +2971,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             sharcPreviousGlossyAlpha = 0.0;
 #endif
             throughput *= diffAlb;
+            presentationSkyPath = false;
             showCelestial = false; // diffuse bounce: hide the disc (covered by NEE)
             rd = cosineDir(n, sampler);
             if (dot(geometricNormal, rd) <= 0.0) {
@@ -3438,13 +3462,28 @@ void main() {
         }
         motion = (prevNdc - curNdc) * 0.5 * size;
     }
+
+    // Refraction keeps the physical foreground interface's specular guide while its ordinary
+    // tuple follows the transmitted destination. PSR is different: it replaces the complete
+    // G-buffer material with the terminal reflected surface.
+    float3 resolvedSpecularAlbedo = gv_psrMirror
+            ? gv_specAlb
+            : specSurfaceAlbedo;
+
+    // A precise terminal-surface reflection MV would require another reflected guide ray and
+    // another unfolded chain. Use virtual ordinary motion as the bounded fallback instead of
+    // claiming that a camera-moving PSR pixel has zero specular motion.
+    float2 resolvedSpecMotion = gv_psrMirror
+            ? motion
+            : specMotion;
+
     if (writeRrGuides) {
         gNormal[pix] = float4(gv_normal, gv_rough);
         gAlbedo[pix] = float4(gv_albedo, 1.0);
         gDepth[pix] = gv_depth;
         gMotion[pix] = motion;
-        gSpecAlbedo[pix] = float4(specSurfaceAlbedo, 1.0);
-        gSpecMotion[pix] = specMotion;
+        gSpecAlbedo[pix] = float4(resolvedSpecularAlbedo, 1.0);
+        gSpecMotion[pix] = resolvedSpecMotion;
 #if !CAUSTICA_NRD
         gAnimatedGuide[pix] = gv_animatedGuide;
 #endif
@@ -3487,9 +3526,10 @@ void main() {
         } else if (pc.debugView == 4u) {
             dbg = float3(gv_rough, gv_rough, gv_rough); // roughness
         } else if (pc.debugView == 6u) {
-            dbg = gv_specAlb;                       // specular albedo
+            // Show the exact value bound to DLSSD, not an intermediate guide value.
+            dbg = resolvedSpecularAlbedo;
         } else if (pc.debugView == 7u) {
-            dbg = float3(clamp(0.5 + specMotion * 0.05, 0.0, 1.0), 0.5); // reflection motion
+            dbg = float3(clamp(0.5 + resolvedSpecMotion * 0.05, 0.0, 1.0), 0.5); // reflection motion
         }
 #if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
         else if (pc.debugView == 9u) {

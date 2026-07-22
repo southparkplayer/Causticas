@@ -58,7 +58,7 @@ final class FirstPersonVisibilityContractTest {
 
         assertTrue(raygen.contains("uint cameraVisibilityMask = CULL_PRIMARY;"));
         assertTrue(raygen.contains(
-                "traceRadiance(cameraVisibilityMask, ro, 0.0, rd, 10000.0);"));
+                "traceRadiance(cameraVisibilityMask, ro, RAY_TMIN, rd, 10000.0);"));
         assertTrue(raygen.contains("uint guideVisibilityMask = CULL_PRIMARY;"));
         assertTrue(raygen.contains(
                 "traceGuide(RAY_FLAG_NONE, guideVisibilityMask, ro, RAY_TMIN, direction, 10000.0);"));

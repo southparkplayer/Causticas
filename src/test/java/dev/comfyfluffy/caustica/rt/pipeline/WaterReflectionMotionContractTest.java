@@ -32,7 +32,7 @@ final class WaterReflectionMotionContractTest {
         assertTrue(raygen.contains("length(n - previousWaterNormal)"));
         assertTrue(raygen.contains("gv_animatedGuide = max(gv_animatedGuide, waveHistoryBias)"));
         assertTrue(raygen.contains("bool interfaceSpecMotionRequired = debugSpecMotion || writeRrGuides"));
-        assertTrue(raygen.contains("gSpecAlbedo[pix] = float4(specSurfaceAlbedo, 1.0)"));
+        assertTrue(raygen.contains("gSpecAlbedo[pix] = float4(resolvedSpecularAlbedo, 1.0)"));
         assertFalse(raygen.contains("if (writeRrGuides && gv_motionUseRefracted) specMotion = motion"));
         int waterBranch = raygen.indexOf("if (material == MATERIAL_WATER)");
         int waterSpecularGuide = raygen.indexOf("gv_specAlb = float3(F, F, F)", waterBranch);

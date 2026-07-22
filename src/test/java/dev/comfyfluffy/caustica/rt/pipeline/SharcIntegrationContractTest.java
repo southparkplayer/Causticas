@@ -88,9 +88,9 @@ final class SharcIntegrationContractTest {
         String categoryLayout = read("src/main/java/dev/comfyfluffy/caustica/client/ui/CategoryLayout.java");
         String gridLayout = read("src/main/java/dev/comfyfluffy/caustica/client/ui/WidgetGridLayout.java");
         assertTrue(entry.contains("extends CausticaSettingsScreen"));
-        assertTrue(screen.contains("SHARC(CategoryGroup.ADVANCED, \"sharc\")"));
+        assertTrue(screen.contains("case SHARC -> addSharc()"));
         assertTrue(screen.contains("new ScrollableLayout"));
-        assertTrue(screen.contains("Math.clamp((contentWidth + GRID_GAP)"));
+        assertTrue(screen.contains("ReserveStrategy.RIGHT"));
         assertTrue(screen.contains("restoreSharcParityDefaults"));
         assertFalse(screen.contains("new RtSharcOptionsScreen(this, options)"));
         assertTrue(categoryLayout.contains("Deterministic vertical layout"));
@@ -134,8 +134,8 @@ final class SharcIntegrationContractTest {
         assertTrue(screen.contains("extends Screen"));
         assertTrue(screen.contains("restoreParityDefaults"));
         assertTrue(screen.contains("CausticaConfig.Rt.Sharc.ENABLED.set(true)"));
-        assertTrue(widgets.contains("public static final int PANEL = 0x28000000"));
-        assertTrue(widgets.contains("public static final int PANEL_2 = 0x44000000"));
+        assertTrue(widgets.contains("public static final int PANEL = 0x50000000"));
+        assertTrue(widgets.contains("public static final int PANEL_2 = 0x30000000"));
         assertTrue(config.contains("\"sharc.enabled\", true"));
         assertTrue(config.contains("\"sharc.cache-exponent\", 24, 16, 28"));
         assertTrue(screen.contains("27, 28)"));
