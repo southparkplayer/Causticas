@@ -90,6 +90,7 @@ public struct WorldPush {
     public uint64_t entityTableAddr;  // entity geometry table
     public uint     flags;            // bit0 camera submerged, bit1 PBR BRDF, bit4 water waves
     public uint     maxBounces;
+    // ABI lane retained for backward-compatible payload layout; currently fed from maxBounces.
     [vk::offset(204)] public uint celestialMaxBounces;
     [vk::offset(208)] public float4   sunDir;
     [vk::offset(224)] public float4   lightDir;

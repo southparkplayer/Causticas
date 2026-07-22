@@ -275,12 +275,6 @@ public final class RtComposite {
                 : CausticaConfig.Rt.Composite.MAX_BOUNCES.value();
     }
 
-    private static int celestialLightBounces() {
-        return OfflineGroundTruth.INSTANCE.active()
-                ? OfflineGroundTruth.INSTANCE.maxBounces()
-                : CausticaConfig.Rt.Composite.CELESTIAL_LIGHT_BOUNCES.value();
-    }
-
     private static boolean waterWaves() {
         return CausticaConfig.Rt.Composite.WATER_WAVES.value();
     }
@@ -491,7 +485,7 @@ public final class RtComposite {
     private boolean rrProducedPreviousFrame;
     private int lastDebugView = Integer.MIN_VALUE;
     private float lastEmissiveIntensity = Float.NaN;
-    private int lastCelestialLightBounces = Integer.MIN_VALUE;
+    private int lastPathBounces = Integer.MIN_VALUE;
     private float lastSkySunX = Float.NaN, lastSkySunY = Float.NaN, lastSkySunZ = Float.NaN;
     private long lastPacketDayTime = Long.MIN_VALUE;
     private long lastPacketGameTime = Long.MIN_VALUE;
@@ -2122,10 +2116,10 @@ public final class RtComposite {
             float emissiveIntensity = CausticaConfig.Rt.Composite.TORCH_EMISSION_MULTIPLIER.value();
             boolean emissiveIntensityChanged = !Float.isNaN(lastEmissiveIntensity)
                     && Float.floatToIntBits(emissiveIntensity) != Float.floatToIntBits(lastEmissiveIntensity);
-            int celestialBounces = celestialLightBounces();
-            boolean celestialBouncesChanged = lastCelestialLightBounces != Integer.MIN_VALUE
-                    && celestialBounces != lastCelestialLightBounces;
-            boolean lightingPathChanged = emissiveIntensityChanged || celestialBouncesChanged;
+            int pathBounces = maxBounces();
+            boolean pathBouncesChanged = lastPathBounces != Integer.MIN_VALUE
+                    && pathBounces != lastPathBounces;
+            boolean lightingPathChanged = emissiveIntensityChanged || pathBouncesChanged;
             if (lightingPathChanged) {
                 // Lighting changed discontinuously. Do not let RR/FG retain history from the previous
                 // radiance scale, which made live intensity edits appear ineffective or respond slowly.
@@ -2133,11 +2127,11 @@ public final class RtComposite {
                 rrProducedPreviousFrame = false;
                 RtReconstruction.requestHistoryReset();
                 requestSharcReset(emissiveIntensityChanged
-                        ? "emissive radiance changed" : "celestial light bounce limit changed");
+                        ? "emissive radiance changed" : "path depth changed");
                 exposure.resetAutoHistory();
             }
             lastEmissiveIntensity = emissiveIntensity;
-            lastCelestialLightBounces = celestialBounces;
+            lastPathBounces = pathBounces;
             if (lastDebugView != Integer.MIN_VALUE && debugView != lastDebugView) {
                 fgReset = true;
                 rrProducedPreviousFrame = false;
@@ -2323,8 +2317,8 @@ public final class RtComposite {
                     new Float2(jitterX, jitterY),
                     fe.geomTableAddr(),
                     flags,
-                    maxBounces(),
-                    celestialBounces,
+                    pathBounces,
+                    pathBounces,
                     sky.sunDir(),
                     sky.lightDir(),
                     sky.lightRadiance(),

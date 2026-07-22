@@ -2608,12 +2608,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         // extent (pc.lightDir.w half-angle) so the shadow ray samples the light's quad — soft penumbrae
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
-#if CAUSTICA_OFFLINE
-        bool celestialNeeEligible = true;
-#else
-        bool celestialNeeEligible =
-                scatteringDepth <= int(pc.celestialMaxBounces);
-#endif
+        bool celestialNeeEligible = scatteringDepth <= maxBounces;
         float3 lightDir = pc.lightDir.w > 0.0
                 ? sampleCelestialDisk(pc.lightDir.xyz, pc.lightDir.w, sampler) : pc.lightDir.xyz;
         float3 directRadiance = pc.lightRadiance.xyz;

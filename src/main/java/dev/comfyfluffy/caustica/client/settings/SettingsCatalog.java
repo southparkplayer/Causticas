@@ -90,7 +90,6 @@ public final class SettingsCatalog {
         RENDERER_ENABLED("renderer.enabled", "caustica.options.enabled", Page.GEOMETRY_SCENE, "pathTracer", Tier.ESSENTIAL, ChangeEffect.LIVE, "renderer", "ray tracing"),
         SAMPLES_PER_PIXEL("rt.spp", "caustica.options.rt.spp", Page.GEOMETRY_SCENE, "pathTracer", Tier.ESSENTIAL, ChangeEffect.TEMPORAL_RESET, "spp", "samples"),
         MAX_BOUNCES("rt.maxBounces", "caustica.options.rt.maxBounces", Page.GEOMETRY_SCENE, "pathTracer", Tier.ESSENTIAL, ChangeEffect.TEMPORAL_RESET, "ray depth", "bounces"),
-        CELESTIAL_BOUNCES("rt.celestialBounces", "caustica.options.rt.celestialLightBounces", Page.GEOMETRY_SCENE, "pathTracer", Tier.ESSENTIAL, ChangeEffect.TEMPORAL_RESET, "light bounces"),
         RECONSTRUCTION_BACKEND("reconstruction.backend", "caustica.options.rt.reconstructionBackend", Page.RECONSTRUCTION, "backend", Tier.ESSENTIAL, ChangeEffect.RESOLUTION_REBUILD, "dlss", "nrd"),
         DLSS_RR_ENABLED("reconstruction.dlss.enabled", "caustica.options.rt.dlssRr", Page.RECONSTRUCTION, "dlss", Tier.ESSENTIAL, ChangeEffect.TEMPORAL_RESET, "ray reconstruction"),
         DLSS_QUALITY("reconstruction.dlss.quality", "caustica.options.rt.dlssQuality", Page.RECONSTRUCTION, "dlss", Tier.ESSENTIAL, ChangeEffect.RESOLUTION_REBUILD, "quality", "balanced", "performance"),

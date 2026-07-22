@@ -362,6 +362,27 @@ final class CausticaConfigSceneMigrationTest {
     }
 
     @Test
+    void schema14UnifiesCelestialLightBouncesIntoMaxBounces() {
+        CommentedConfig defaults = CommentedConfig.inMemory();
+        defaults.set("config-version", 13);
+        defaults.set("composite.max-bounces", 8.0);
+        defaults.set("composite.celestial-light-bounces", 4.0);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(defaults));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) defaults.get("config-version")).intValue());
+        assertEquals(64.0, ((Number) defaults.get("composite.max-bounces")).doubleValue());
+        assertFalse(defaults.contains("composite.celestial-light-bounces"));
+
+        CommentedConfig custom = CommentedConfig.inMemory();
+        custom.set("config-version", 13);
+        custom.set("composite.max-bounces", 16.0);
+        custom.set("composite.celestial-light-bounces", 4.0);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(custom));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) custom.get("config-version")).intValue());
+        assertEquals(16.0, ((Number) custom.get("composite.max-bounces")).doubleValue());
+        assertFalse(custom.contains("composite.celestial-light-bounces"));
+    }
+
+    @Test
     void schemaElevenPreservesUserCustomizations() {
         CommentedConfig custom = CommentedConfig.inMemory();
         custom.set("config-version", 10);

@@ -201,7 +201,6 @@ public final class RtVideoOptions {
         return new OptionInstance<?>[] {
             spp(),
             maxBounces(),
-            celestialLightBounces(),
             sunSize(),
             moonSize(),
             sunlightIntensity(),
@@ -445,8 +444,8 @@ public final class RtVideoOptions {
             "caustica.options.rt.maxBounces",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.maxBounces.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption, value),
-            new OptionInstance.IntRange(2, 8),
-            Math.clamp(setting.configuredValue(), 2, 8),
+            new OptionInstance.IntRange(2, 64),
+            Math.clamp(setting.configuredValue(), 2, 64),
             setting::set);
     }
 
@@ -692,18 +691,6 @@ public final class RtVideoOptions {
                     RtComposite.INSTANCE.requestResolutionScaleCommit();
                 }
             });
-    }
-
-    private static OptionInstance<Integer> celestialLightBounces() {
-        IntSetting setting = CausticaConfig.Rt.Composite.CELESTIAL_LIGHT_BOUNCES;
-        return new OptionInstance<>(
-            "caustica.options.rt.celestialLightBounces",
-            OptionInstance.cachedConstantTooltip(Component.translatable(
-                    "caustica.options.rt.celestialLightBounces.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption, value),
-            new OptionInstance.IntRange(0, 8),
-            Math.clamp(setting.configuredValue(), 0, 8),
-            setting::set);
     }
 
     private static OptionInstance<Boolean> dlssRrEnabled() {

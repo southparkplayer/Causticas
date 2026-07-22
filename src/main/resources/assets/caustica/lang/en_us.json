@@ -258,9 +258,7 @@
 	"caustica.options.rt.spp.tooltip": "Path-tracing samples taken per pixel each frame. Higher is cleaner but more demanding.",
 
 	"caustica.options.rt.maxBounces": "Path Bounces",
-	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
-	"caustica.options.rt.celestialLightBounces": "Celestial Light Bounces",
-	"caustica.options.rt.celestialLightBounces.tooltip": "Maximum secondary scattering depth at which direct Sun or Moon lighting is sampled. Zero keeps celestial lighting on camera-visible surfaces only; the visible discs and mirror or refraction visibility are unaffected.",
+	"caustica.options.rt.maxBounces.tooltip": "Maximum path depth for both indirect transport and direct Sun/Moon sampling. Higher is more complete but more expensive.",
 
 	"caustica.options.rt.sunSize": "Sun Size",
 	"caustica.options.rt.sunSize.tooltip": "Angular radius used when sampling direct sunlight. Earth's mean value is approximately 0.267 degrees; larger values cast softer penumbrae.",
