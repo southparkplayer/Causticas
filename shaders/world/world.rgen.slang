@@ -1510,6 +1510,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     float3 finalMotion = float3(0.0, 0.0, 0.0);
     float finalRoughness = 1.0;
     float3 finalDiffuse = SKY_DIFF_ALBEDO;
+    // Material guide for the terminal PSR surface. Mirror-chain Fresnel remains transport in
+    // the noisy radiance and must not be folded into this value.
+    float3 finalSpecular = float3(0.0, 0.0, 0.0);
     bool finalIsSky = false;
     float travelled = length(surfacePos - pc.camOffset);
 
@@ -1558,6 +1561,26 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
         if (material == MATERIAL_OPAQUE) {
             finalMotion = payload.motionPrev;
             finalDiffuse = payload.albedo * (1.0 - destinationMetal);
+
+            // Metalness has no dedicated DLSSD guide. For a fully metallic endpoint
+            // finalDiffuse is zero, so this is the guide that carries its conductor color.
+            //
+            // Compute NoV before unfolding. The accumulated mirror transform is orthogonal,
+            // so transforming both the terminal normal and view vector preserves their dot product.
+            float3 terminalNormal = normalize(payload.normal);
+            float terminalNoV = abs(dot(terminalNormal, -rayDir));
+            float3 terminalF0 = payload.f0;
+            if (payloadEnchanted()) {
+                terminalF0 = enchantedF0(terminalF0, terminalNoV);
+            }
+
+            // Match the ordinary primary-surface DLSSD contract exactly:
+            // alpha = squared perceptual roughness, with the same finite GGX floor.
+            float terminalGuideRoughness = max(destinationRoughness, MIN_ROUGH);
+            finalSpecular = rrSpecularAlbedo(
+                    terminalF0,
+                    terminalGuideRoughness * terminalGuideRoughness,
+                    terminalNoV);
         } else {
             finalDiffuse = material == MATERIAL_GLASS ? payload.albedo : float3(0.0, 0.0, 0.0);
         }
@@ -1574,9 +1597,9 @@ float2 recursivePrimarySurfaceReplacement(float3 surfacePos, float3 surfaceNorma
     gv_normal = finalNormal;
     gv_rough = finalRoughness;
     gv_albedo = finalDiffuse;
-    // The mirror chain itself has been replaced. A further specular lobe on the terminal surface would
-    // require another correctly transformed specular-motion chain, so keep this bounded PSR pass diffuse.
-    gv_specAlb = float3(0.0, 0.0, 0.0);
+    // PSR replaces the complete material tuple. Do not leave the foreground mirror's
+    // specular reflectance paired with the terminal normal/roughness/albedo.
+    gv_specAlb = finalSpecular;
     // A reflected environment has no finite surface identity for the depth-only disocclusion test.
     // Bias reconstruction toward current deterministic radiance so stale LUT/history tiles cannot linger.
     if (finalIsSky) gv_animatedGuide = 1.0;
@@ -3414,6 +3437,20 @@ void main() {
                 specSurfaceRoughness, specSurfaceAlbedo, dir, jndc, size, rayConeSpread);
     }
 
+    // Refraction keeps the physical foreground interface's specular guide while its ordinary
+    // tuple follows the transmitted destination. PSR is different: it replaces the complete
+    // G-buffer material with the terminal reflected surface.
+    float3 resolvedSpecularAlbedo = gv_psrMirror
+            ? gv_specAlb
+            : specSurfaceAlbedo;
+
+    // A precise terminal-surface reflection MV would require another reflected guide ray and
+    // another unfolded chain. Use virtual ordinary motion as the bounded fallback instead of
+    // claiming that a camera-moving PSR pixel has zero specular motion.
+    float2 resolvedSpecMotion = gv_psrMirror
+            ? motion
+            : specMotion;
+
     // Hardware (non-linear, reversed-Z) depth for DLSS-RR + Frame Generation: project the camera-relative
     // primary hit through the forward view-projection and take ndc z/w — exactly the value a rasterizer
     // would write. Reversed-Z (near=1, far=0), so DLSS gets the DepthInverted flag; sky's far hit -> ~0.
@@ -3444,8 +3481,8 @@ void main() {
         gAlbedo[pix] = float4(gv_albedo, 1.0);
         gDepth[pix] = gv_depth;
         gMotion[pix] = motion;
-        gSpecAlbedo[pix] = float4(specSurfaceAlbedo, 1.0);
-        gSpecMotion[pix] = specMotion;
+        gSpecAlbedo[pix] = float4(resolvedSpecularAlbedo, 1.0);
+        gSpecMotion[pix] = resolvedSpecMotion;
 #if !CAUSTICA_NRD
         gAnimatedGuide[pix] = gv_animatedGuide;
 #endif
@@ -3488,9 +3525,10 @@ void main() {
         } else if (pc.debugView == 4u) {
             dbg = float3(gv_rough, gv_rough, gv_rough); // roughness
         } else if (pc.debugView == 6u) {
-            dbg = gv_specAlb;                       // specular albedo
+            // Show the exact value bound to DLSSD, not an intermediate guide value.
+            dbg = resolvedSpecularAlbedo;
         } else if (pc.debugView == 7u) {
-            dbg = float3(clamp(0.5 + specMotion * 0.05, 0.0, 1.0), 0.5); // reflection motion
+            dbg = float3(clamp(0.5 + resolvedSpecMotion * 0.05, 0.0, 1.0), 0.5); // reflection motion
         }
 #if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
         else if (pc.debugView == 9u) {
