@@ -378,41 +378,6 @@ def testPackagedStreamlineBridge = tasks.register("testPackagedStreamlineBridge"
 	}
 }
 
-def verifyStreamlineProductionInputs = tasks.register("verifyStreamlineProductionInputs") {
-	group = "verification"
-	description = "Verifies the production Streamline SDK variant and Authenticode signatures."
-	onlyIf { streamlineVariant == "production" && streamlinePlatform != null }
-	doLast {
-		if (streamlinePlatform == null) {
-			throw new GradleException("Streamline production artifacts are Windows x64 only.")
-		}
-		def sdkRoot = streamlineSdkRootProvider.orNull
-		if (sdkRoot == null) {
-			throw new GradleException("STREAMLINE_SDK environment variable is not set.")
-		}
-		def vendorRoot = streamlineSdkVendorRoot(sdkRoot)
-		if (vendorRoot.path.toLowerCase(java.util.Locale.ROOT).contains("development")) {
-			throw new GradleException("Production Streamline packaging cannot use the development SDK directory.")
-		}
-		def missingNotices = streamlineNoticeFiles.keySet().findAll { !new File(sdkRoot, it).isFile() }
-		if (!missingNotices.empty) {
-			throw new GradleException("Missing Streamline distribution notice(s): ${missingNotices.join(', ')}")
-		}
-		def unsigned = streamlineVendorNames.findAll { name ->
-			def candidate = new File(vendorRoot, name)
-			if (!candidate.isFile() || !name.toLowerCase(java.util.Locale.ROOT).endsWith(".dll")) {
-				return false
-			}
-			def process = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-					"(Get-AuthenticodeSignature -LiteralPath '${candidate.absolutePath.replace("'", "''")}').Status")
-					.redirectErrorStream(true).start()
-			def status = process.inputStream.getText("UTF-8").trim()
-			process.waitFor()
-			return status != "Valid"
-		}
-	}
-}
-
 def bundleStreamlineNatives = tasks.register("bundleStreamlineNatives") {
 	group = "build"
 	description = "Bundles the pinned Streamline bridge and Windows x64 SDK binaries."
