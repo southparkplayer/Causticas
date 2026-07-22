@@ -3437,20 +3437,6 @@ void main() {
                 specSurfaceRoughness, specSurfaceAlbedo, dir, jndc, size, rayConeSpread);
     }
 
-    // Refraction keeps the physical foreground interface's specular guide while its ordinary
-    // tuple follows the transmitted destination. PSR is different: it replaces the complete
-    // G-buffer material with the terminal reflected surface.
-    float3 resolvedSpecularAlbedo = gv_psrMirror
-            ? gv_specAlb
-            : specSurfaceAlbedo;
-
-    // A precise terminal-surface reflection MV would require another reflected guide ray and
-    // another unfolded chain. Use virtual ordinary motion as the bounded fallback instead of
-    // claiming that a camera-moving PSR pixel has zero specular motion.
-    float2 resolvedSpecMotion = gv_psrMirror
-            ? motion
-            : specMotion;
-
     // Hardware (non-linear, reversed-Z) depth for DLSS-RR + Frame Generation: project the camera-relative
     // primary hit through the forward view-projection and take ndc z/w — exactly the value a rasterizer
     // would write. Reversed-Z (near=1, far=0), so DLSS gets the DepthInverted flag; sky's far hit -> ~0.
@@ -3476,6 +3462,21 @@ void main() {
         }
         motion = (prevNdc - curNdc) * 0.5 * size;
     }
+
+    // Refraction keeps the physical foreground interface's specular guide while its ordinary
+    // tuple follows the transmitted destination. PSR is different: it replaces the complete
+    // G-buffer material with the terminal reflected surface.
+    float3 resolvedSpecularAlbedo = gv_psrMirror
+            ? gv_specAlb
+            : specSurfaceAlbedo;
+
+    // A precise terminal-surface reflection MV would require another reflected guide ray and
+    // another unfolded chain. Use virtual ordinary motion as the bounded fallback instead of
+    // claiming that a camera-moving PSR pixel has zero specular motion.
+    float2 resolvedSpecMotion = gv_psrMirror
+            ? motion
+            : specMotion;
+
     if (writeRrGuides) {
         gNormal[pix] = float4(gv_normal, gv_rough);
         gAlbedo[pix] = float4(gv_albedo, 1.0);
