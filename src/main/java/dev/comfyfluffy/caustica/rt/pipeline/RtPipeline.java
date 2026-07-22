@@ -48,6 +48,7 @@ import static org.lwjgl.vulkan.KHRRayTracingPipeline.VK_SHADER_STAGE_MISS_BIT_KH
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.VK_SHADER_UNUSED_KHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkCmdTraceRaysKHR;
+import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkCmdTraceRaysIndirectKHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkCreateRayTracingPipelinesKHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkGetRayTracingShaderGroupHandlesKHR;
 
@@ -554,6 +555,35 @@ public final class RtPipeline {
                     .deviceAddress(sbt.deviceAddress + (1L + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
             vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
+        }
+    }
+
+    /** Record an indirect ray dispatch using a device address containing VkTraceRaysIndirectCommandKHR. */
+    public void traceIndirect(VkCommandBuffer cmd, long indirectDeviceAddress, java.nio.ByteBuffer pushConstants) {
+        if (!RtDeviceBringup.traceRaysIndirectSupported()) {
+            throw new UnsupportedOperationException("vkCmdTraceRaysIndirectKHR is unavailable");
+        }
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "trace rays indirect")) {
+            VK10.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
+            java.nio.LongBuffer boundSets = bindlessSet != 0L
+                    ? stack.longs(descriptorSets[currentSet], bindlessSet)
+                    : stack.longs(descriptorSets[currentSet]);
+            VK10.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                    pipelineLayout, 0, boundSets, null);
+            if (pushConstants != null && pushConstantSize > 0) {
+                VK10.vkCmdPushConstants(cmd, pipelineLayout, pushConstantStages, 0, pushConstants);
+            }
+            VkStridedDeviceAddressRegionKHR raygen = VkStridedDeviceAddressRegionKHR.calloc(stack)
+                    .deviceAddress(sbt.deviceAddress).stride(sbtStride).size(sbtStride);
+            VkStridedDeviceAddressRegionKHR miss = VkStridedDeviceAddressRegionKHR.calloc(stack)
+                    .deviceAddress(sbt.deviceAddress + sbtStride).stride(sbtStride)
+                    .size((long) missCount * sbtStride);
+            VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
+                    .deviceAddress(sbt.deviceAddress + (1L + missCount) * sbtStride).stride(sbtStride)
+                    .size((long) hitGroupCount * sbtStride);
+            VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
+            vkCmdTraceRaysIndirectKHR(cmd, raygen, miss, hit, callable, indirectDeviceAddress);
         }
     }
 

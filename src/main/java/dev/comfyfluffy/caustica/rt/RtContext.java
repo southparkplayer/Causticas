@@ -561,8 +561,23 @@ public final class RtContext {
     }
 
     public static void check(int rc, String what) {
-        if (rc != VK10.VK_SUCCESS) {
-            throw new IllegalStateException(what + " failed: " + rc);
+        if (rc == VK10.VK_SUCCESS) {
+            return;
         }
+
+        if (rc == VK10.VK_ERROR_DEVICE_LOST) {
+            RtContext context = currentOrNull();
+            try {
+                VulkanDiagnostics.reportDeviceLost(context != null ? context.device : null, what);
+            } catch (Throwable diagnosticFailure) {
+                CausticaMod.LOGGER.error(
+                        "Failed to collect Vulkan device-loss diagnostics for {}",
+                        what,
+                        diagnosticFailure
+                );
+            }
+        }
+
+        throw new IllegalStateException(what + " failed: " + rc);
     }
 }

@@ -18,19 +18,21 @@ final class OfflineGroundTruthContractTest {
                 "src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java"));
 
         assertTrue(mode.contains("GLFW.GLFW_KEY_F7"));
-        assertTrue(mode.contains("beginBenchmark(System.nanoTime())"));
+        assertTrue(mode.contains("OfflineBatchController"));
+        assertTrue(mode.contains("completedOfflineGpuFrameSerial"));
         assertTrue(shader.contains("throughput /= q"));
         assertTrue(composite.contains("boolean rrOperational = !offlineGroundTruth"));
         assertTrue(composite.contains("boolean fgGuidesRequired = !offlineGroundTruth"));
         assertTrue(composite.contains("VK10.VK_FORMAT_R32G32B32A32_SFLOAT"));
         assertTrue(shader.contains("[format(\"rgba32f\")] RWTexture2D<float4> groundTruthAccum"));
-        assertTrue(shader.contains("runningMean += (sampleRadiance - runningMean) / float(runningCount)"));
+        assertTrue(shader.contains("float3 batchSum = float3(0.0)"));
+        assertTrue(shader.contains("offlineSampleCount[pix]"));
         assertTrue(!shader.contains("offlineMaxSamples"));
         assertTrue(!shader.contains("InterlockedAdd(groundTruthConverged"));
         assertTrue(shader.contains("offlinePilotRead"));
         assertTrue(shader.contains("pilotSample"));
         assertTrue(shader.contains("max(1u, uint(predictedError"));
-        assertTrue(shader.contains("groundTruthAccum[pix] = float4(runningMean, float(runningCount))"));
+        assertTrue(shader.contains("groundTruthAccum[pix] = float4(runningMean, 1.0)"));
         assertTrue(composite.contains("clearOfflineAccumulation(cmd, stack)"));
         assertTrue(composite.contains("exposure.beginOfflineSession(ctx)"));
         assertTrue(exposure.contains("offlineFixedScale"));
@@ -136,6 +138,10 @@ final class OfflineGroundTruthContractTest {
         assertTrue(composite.contains("BASE_GUIDE_COUNT = 11"));
         assertTrue(composite.contains("NRD_GUIDE_COUNT = 17"));
         assertTrue(raygen.contains("vk::binding(12, 0)"));
+        assertTrue(raygen.contains("vk::binding(10, 0)"));
+        assertTrue(composite.contains("VK10.VK_FORMAT_R32_UINT"));
+        assertTrue(composite.contains("setExtraStorageImage(7, offlineSampleCount.view)"));
+        assertTrue(composite.contains("zeroCount.uint32(0, 0)"));
         assertTrue(hit.contains("vk::binding(1, 1)"));
         assertTrue(hit.contains("vk::binding(2, 1)"));
         assertTrue(hit.contains("vk::binding(3, 1)"));

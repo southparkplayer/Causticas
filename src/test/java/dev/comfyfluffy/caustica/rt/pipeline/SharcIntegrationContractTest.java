@@ -134,18 +134,18 @@ final class SharcIntegrationContractTest {
         assertTrue(screen.contains("extends Screen"));
         assertTrue(screen.contains("restoreParityDefaults"));
         assertTrue(screen.contains("CausticaConfig.Rt.Sharc.ENABLED.set(true)"));
-        assertTrue(widgets.contains("public static final int PANEL = 0x00000000"));
-        assertTrue(widgets.contains("public static final int PANEL_2 = 0x24000000"));
+        assertTrue(widgets.contains("public static final int PANEL = 0x28000000"));
+        assertTrue(widgets.contains("public static final int PANEL_2 = 0x44000000"));
         assertTrue(config.contains("\"sharc.enabled\", true"));
-        assertTrue(config.contains("\"sharc.cache-exponent\", 23, 16, 28"));
+        assertTrue(config.contains("\"sharc.cache-exponent\", 24, 16, 28"));
         assertTrue(screen.contains("27, 28)"));
         assertTrue(lang.contains("RTX 5090 Maximum (10 GiB)"));
         assertTrue(config.contains("\"sharc.scene-scale\", 32.0f, 1.0f, 100.0f"));
-        assertTrue(config.contains("\"sharc.accumulation-frames\", 256, 1, 1024"));
+        assertTrue(config.contains("\"sharc.accumulation-frames\", 128, 1, 1024"));
         assertTrue(config.contains("\"sharc.stale-frames\", 1024, 8, 1024"));
         assertTrue(config.contains("\"sharc.update-tile-size\", 2, 2, 64"));
         assertTrue(config.contains("\"sharc.update-max-bounces\", 8, 1, 8"));
-        assertTrue(config.contains("\"sharc.min-segment-ratio\", 1.0f, 0.25f, 4.0f"));
+        assertTrue(config.contains("\"sharc.min-segment-ratio\", 0.2f, 0.25f, 4.0f"));
         assertTrue(config.contains("\"sharc.glossy-query\", false"));
         assertTrue(config.contains("\"sharc.live-secondary-direct\", true"));
     }

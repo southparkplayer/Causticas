@@ -109,6 +109,8 @@ public final class RtDeviceBringup {
     private static volatile boolean rtRequested;
     private static volatile SerBackend serBackend = SerBackend.NONE;
     private static volatile boolean ommEnabled; // VK_EXT_opacity_micromap actually enabled on the device
+    private static volatile boolean traceRaysIndirectSupported;
+    private static volatile int maxRayDispatchInvocationCount;
     private static volatile boolean wideLinesEnabled; // VkPhysicalDeviceFeatures.wideLines actually enabled
     private static volatile boolean sharcInt64AtomicsEnabled;
     private static volatile float maxLineWidth = 1.0f; // device's lineWidthRange[1]; 1.0 unless wideLinesEnabled
@@ -217,6 +219,22 @@ public final class RtDeviceBringup {
         };
     }
 
+    public static String offlinePilotWorldRaygenShader() {
+        return switch (serBackend) {
+            case NV -> "world_offline_pilot_nv.rgen.spv";
+            case EXT -> "world_offline_pilot.rgen.spv";
+            case NONE -> "world_offline_pilot_base.rgen.spv";
+        };
+    }
+
+    public static String offlineIndirectWorldRaygenShader() {
+        return switch (serBackend) {
+            case NV -> "world_offline_indirect_nv.rgen.spv";
+            case EXT -> "world_offline_indirect.rgen.spv";
+            case NONE -> "world_offline_indirect_base.rgen.spv";
+        };
+    }
+
     public static String sharcQueryRaygenShader() {
         return backendShader("world_sharc.rgen.spv", "world_sharc_nv.rgen.spv", "world_sharc_base.rgen.spv");
     }
@@ -303,6 +321,14 @@ public final class RtDeviceBringup {
     /** True if {@code VK_EXT_opacity_micromap} was enabled on the device (gate on + device support). */
     public static boolean ommEnabled() {
         return ommEnabled;
+    }
+
+    public static boolean traceRaysIndirectSupported() {
+        return traceRaysIndirectSupported;
+    }
+
+    public static long maxRayDispatchInvocationCount() {
+        return Integer.toUnsignedLong(maxRayDispatchInvocationCount);
     }
 
     /** Hardware limit for 4-state opacity micromaps, populated by {@link #probe(VkDevice)}. */
@@ -516,6 +542,8 @@ public final class RtDeviceBringup {
         if (!rtRequested) {
             CausticaMod.LOGGER.info("Ray tracing not requested; skipping RT probe");
             maxOpacity4StateSubdivisionLevel = 0;
+            traceRaysIndirectSupported = false;
+            maxRayDispatchInvocationCount = 0;
             return;
         }
         try {
@@ -523,6 +551,7 @@ public final class RtDeviceBringup {
             boolean rtPipeline = caps.vkCreateRayTracingPipelinesKHR != 0L;
             boolean asBuild = caps.vkCmdBuildAccelerationStructuresKHR != 0L;
             boolean traceRays = caps.vkCmdTraceRaysKHR != 0L;
+            traceRaysIndirectSupported = caps.vkCmdTraceRaysIndirectKHR != 0L;
             if (!(rtPipeline && asBuild && traceRays)) {
                 CausticaMod.LOGGER.error(
                         "RT extensions enabled but entry points missing (rtPipeline={}, asBuild={}, traceRays={}) — RT bring-up FAILED",
@@ -545,6 +574,7 @@ public final class RtDeviceBringup {
                 VkPhysicalDeviceProperties2 props2 = VkPhysicalDeviceProperties2.calloc(stack).sType$Default();
                 props2.pNext(rtProps.address());
                 VK12.vkGetPhysicalDeviceProperties2(device.getPhysicalDevice(), props2);
+                maxRayDispatchInvocationCount = rtProps.maxRayDispatchInvocationCount();
 
                 CausticaMod.LOGGER.info(
                         "RT bring-up OK — shaderGroupHandleSize={}, shaderGroupBaseAlignment={}, maxRayRecursionDepth={}; "

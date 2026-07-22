@@ -3,6 +3,11 @@ param(
     [string]$Mode = 'Test',
     [switch]$WithSharc,
     [switch]$WithoutSharc,
+    [ValidateRange(30, 3600)]
+    [int]$TimeoutSeconds = 600,
+    [ValidateRange(5, 300)]
+    [int]$HeartbeatSeconds = 15,
+    [string[]]$TestFilter = @(),
     [string]$Instance = 'C:\Users\Administrator\AppData\Roaming\PrismLauncher\instances\26.2(2)\minecraft'
 )
 
@@ -84,7 +89,15 @@ $tasks = @(switch ($Mode) {
     'Deploy'  { @('test', 'jar', 'verifyProductionArtifact') }
     'Full'    { @('build', 'verifyProductionArtifact') }
 })
-$gradleArguments = @($tasks)
+$gradleArguments = @()
+foreach ($task in $tasks) {
+    $gradleArguments += $task
+    if ($task -eq 'test') {
+        foreach ($filter in $TestFilter) {
+            $gradleArguments += @('--tests', $filter)
+        }
+    }
+}
 if ($artifactMode -and $WithoutSharc) {
     $gradleArguments += '-PwithoutSharc=true'
 }
@@ -95,6 +108,7 @@ Write-Host "Pinned Vulkan:    $vulkanSdk"
 Write-Host "Pinned Streamline:$streamlineSdk"
 Write-Host "Pinned SHaRC:     $(if ($includeSharc) { $sharcSdk } else { 'off (explicit for artifact modes with -WithoutSharc)' })"
 Write-Host "Gradle tasks:     $($tasks -join ' ')"
+Write-Host "Build timeout:    $TimeoutSeconds seconds"
 
 if ($Mode -eq 'Deploy') {
     Remove-Item -LiteralPath "$deployedJar.tmp" -Force -ErrorAction SilentlyContinue
@@ -107,8 +121,31 @@ if ($Mode -eq 'Deploy') {
 
 Push-Location $repo
 try {
-    & $gradle @gradleArguments '--console=plain'
-    if ($LASTEXITCODE -ne 0) { throw "Gradle failed with exit code $LASTEXITCODE" }
+    $processArguments = @($gradleArguments + @('--console=plain', '--no-daemon')) |
+        ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }
+    $commandLine = (Split-Path -Leaf $gradle) + ' ' + ($processArguments -join ' ')
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $process = Start-Process -NoNewWindow -PassThru -FilePath $env:ComSpec `
+        -ArgumentList @('/d', '/c', $commandLine)
+    # PowerShell 5.1 can lose ExitCode unless the native process handle is opened before it exits.
+    $null = $process.Handle
+    $nextHeartbeat = $HeartbeatSeconds
+    while (-not $process.WaitForExit(1000)) {
+        $elapsed = [int]$timer.Elapsed.TotalSeconds
+        if ($elapsed -ge $TimeoutSeconds) {
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            throw "Gradle timed out after $elapsed seconds; process tree $($process.Id) was terminated"
+        }
+        if ($elapsed -ge $nextHeartbeat) {
+            Write-Host "Gradle still running: ${elapsed}s elapsed, $($TimeoutSeconds - $elapsed)s remaining"
+            $nextHeartbeat += $HeartbeatSeconds
+        }
+    }
+    $process.WaitForExit()
+    $process.Refresh()
+    $timer.Stop()
+    Write-Host "Gradle finished in $([Math]::Round($timer.Elapsed.TotalSeconds, 1))s with exit code $($process.ExitCode)"
+    if ($process.ExitCode -ne 0) { throw "Gradle failed with exit code $($process.ExitCode)" }
 
     if ($Mode -in @('Jar', 'Deploy', 'Full')) {
         Require-File $builtJar 'Built Caustica JAR'

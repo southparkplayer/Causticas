@@ -28,8 +28,8 @@ import org.lwjgl.glfw.GLFW;
 public final class CausticaWidgets {
     public static final int ACCENT = 0xFFF0F0F0;
     public static final int ACCENT_DIM = 0xFF777B80;
-    public static final int PANEL = 0x00000000;
-    public static final int PANEL_2 = 0x24000000;
+    public static final int PANEL = 0x28000000;
+    public static final int PANEL_2 = 0x44000000;
     public static final int PANEL_HOVER = 0x48FFFFFF;
     public static final int TEXT = 0xFFF0F0F0;
     public static final int MUTED = 0xFFAAAAAA;
@@ -57,11 +57,45 @@ public final class CausticaWidgets {
         return font.plainSubstrByWidth(value, Math.max(0, width - font.width("..."))) + "...";
     }
 
+    private static int centeredTextY(AbstractWidget widget, Font font) {
+        return widget.getY() + (widget.getHeight() - font.lineHeight) / 2;
+    }
+
+    private static void focusOutline(GuiGraphicsExtractor g, AbstractWidget widget) {
+        if (widget.isFocused()) {
+            g.outline(widget.getX(), widget.getY(), widget.getWidth(), widget.getHeight(), 0xFFFFFFFF);
+            if (widget.getWidth() > 4 && widget.getHeight() > 4) {
+                g.outline(widget.getX() + 2, widget.getY() + 2,
+                        widget.getWidth() - 4, widget.getHeight() - 4, 0xB0FFFFFF);
+            }
+        } else if (widget.isHovered()) {
+            g.outline(widget.getX(), widget.getY(), widget.getWidth(), widget.getHeight(), 0x90FFFFFF);
+        }
+    }
+
+    private static Tooltip controlTooltip(Component tooltip, Component disabledReason, boolean active,
+                                            boolean resettable) {
+        Component result = tooltip;
+        if (!active && disabledReason != null) {
+            result = result == null ? disabledReason : result.copy().append("\n").append(disabledReason);
+        }
+        if (resettable) {
+            Component resetHint = Component.translatable("caustica.options.widget.resetHint");
+            result = result == null ? resetHint : result.copy().append("\n").append(resetHint);
+        }
+        return result == null ? null : Tooltip.create(result);
+    }
+
+    private static void resetMarker(GuiGraphicsExtractor g, AbstractWidget widget, int x, int color) {
+        g.text(Minecraft.getInstance().font, Component.literal("R"), x,
+                centeredTextY(widget, Minecraft.getInstance().font), color);
+    }
+
     public static final class SectionHeader extends AbstractWidget {
         private final Component subtitle;
 
         public SectionHeader(int width, Component title, Component subtitle) {
-            super(0, 0, width, 31, title);
+            super(0, 0, width, 46, title);
             this.subtitle = subtitle;
             this.active = false;
         }
@@ -71,9 +105,17 @@ public final class CausticaWidgets {
             int x = getX();
             int y = getY();
             g.fill(x, getBottom() - 1, getRight(), getBottom(), 0x70FFFFFF);
-            g.text(Minecraft.getInstance().font, getMessage(), x + 2, y + 6, TEXT);
-            g.text(Minecraft.getInstance().font, Component.literal(clipped(this.subtitle, getWidth() - 24)),
-                    x + 2, y + 18, MUTED);
+            Font font = Minecraft.getInstance().font;
+            g.text(font, getMessage(), x + 2, y + 6, TEXT);
+            List<net.minecraft.util.FormattedCharSequence> lines = font.split(this.subtitle, getWidth() - 8);
+            for (int index = 0; index < Math.min(2, lines.size()); index++) {
+                g.text(font, lines.get(index), x + 2, y + 20 + index * 10, MUTED);
+            }
+            if (lines.size() > 2) {
+                g.fill(getRight() - font.width("...") - 4, y + 30, getRight() - 2, y + 40, PANEL);
+                g.text(font, Component.literal("..."), getRight() - font.width("...") - 2, y + 30, MUTED);
+                setTooltip(Tooltip.create(this.subtitle));
+            }
         }
 
         @Override
@@ -108,7 +150,7 @@ public final class CausticaWidgets {
         private final Supplier<Component> text;
 
         public InfoStrip(int width, Supplier<Component> text) {
-            super(0, 0, width, 22, Component.empty());
+            super(0, 0, width, 48, Component.empty());
             this.text = Objects.requireNonNull(text);
             this.active = false;
         }
@@ -117,9 +159,20 @@ public final class CausticaWidgets {
         protected void extractWidgetRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             Component message = this.text.get();
             setMessage(message);
-            g.fill(getX(), getBottom() - 1, getRight(), getBottom(), 0x50777777);
-            g.text(Minecraft.getInstance().font, Component.literal(clipped(message, getWidth() - 16)),
-                    getX() + 2, getY() + 7, MUTED);
+            g.fill(getX(), getY(), getRight(), getBottom(), PANEL_2);
+            Font font = Minecraft.getInstance().font;
+            List<net.minecraft.util.FormattedCharSequence> lines = font.split(message, getWidth() - 16);
+            for (int index = 0; index < Math.min(3, lines.size()); index++) {
+                g.text(font, lines.get(index), getX() + 8, getY() + 8 + index * 11, MUTED);
+            }
+            if (lines.size() > 3) {
+                int ellipsisX = getRight() - font.width("...") - 8;
+                g.fill(ellipsisX - 2, getY() + 30, getRight() - 6, getY() + 41, PANEL_2);
+                g.text(font, Component.literal("..."), ellipsisX, getY() + 30, MUTED);
+                setTooltip(Tooltip.create(message));
+            } else {
+                setTooltip(null);
+            }
         }
 
         @Override
@@ -156,13 +209,12 @@ public final class CausticaWidgets {
             int color = !this.active ? 0x18000000 : this.accent ? 0x34FFFFFF
                     : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
             g.fill(getX(), getY(), getRight(), getBottom(), color);
-            if (isHoveredOrFocused()) {
-                g.outline(getX(), getY(), getWidth(), getHeight(), 0x90FFFFFF);
-            }
+            focusOutline(g, this);
             int textColor = this.active ? TEXT : DISABLED;
+            Font font = Minecraft.getInstance().font;
             g.centeredText(Minecraft.getInstance().font,
                     Component.literal(clipped(getMessage(), getWidth() - 16)),
-                    getX() + getWidth() / 2, getY() + 7, textColor);
+                    getX() + getWidth() / 2, centeredTextY(this, font), textColor);
         }
 
         @Override
@@ -176,6 +228,8 @@ public final class CausticaWidgets {
         private final BooleanSupplier getter;
         private final Consumer<Boolean> setter;
         private BooleanSupplier activeWhen = () -> true;
+        private Supplier<Component> disabledReason;
+        private Component tooltip;
         private Runnable resetAction;
 
         public Toggle(int width, Component label, BooleanSupplier getter, Consumer<Boolean> setter) {
@@ -192,7 +246,12 @@ public final class CausticaWidgets {
         }
 
         public Toggle tooltip(Component tooltip) {
-            setTooltip(Tooltip.create(tooltip));
+            this.tooltip = Objects.requireNonNull(tooltip);
+            return this;
+        }
+
+        public Toggle disabledReason(Supplier<Component> disabledReason) {
+            this.disabledReason = Objects.requireNonNull(disabledReason);
             return this;
         }
 
@@ -223,27 +282,35 @@ public final class CausticaWidgets {
         @Override
         protected void extractContents(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             this.active = this.activeWhen.getAsBoolean();
+            Component reason = !this.active && this.disabledReason != null ? this.disabledReason.get() : null;
+            setTooltip(controlTooltip(this.tooltip, reason, this.active, this.resetAction != null));
             refreshMessage();
             boolean enabled = this.getter.getAsBoolean();
             int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
             g.fill(getX(), getY(), getRight(), getBottom(), color);
             int switchX = getRight() - 30;
-            int switchY = getY() + 7;
+            int switchY = getY() + (getHeight() - 8) / 2;
             g.fill(switchX, switchY, switchX + 22, switchY + 8, enabled ? 0xFFB8B8B8 : 0xFF555555);
             int knobX = enabled ? switchX + 14 : switchX + 2;
             g.fill(knobX, switchY - 2, knobX + 6, switchY + 10, enabled ? 0xFFFFFFFF : 0xFF999999);
-            if (isHoveredOrFocused()) {
-                g.outline(getX(), getY(), getWidth(), getHeight(), 0x90FFFFFF);
-            }
-            int available = Math.max(0, getWidth() - 48);
-            g.text(Minecraft.getInstance().font,
-                    Component.literal(clipped(this.label, available)), getX() + 9, getY() + 7,
+            focusOutline(g, this);
+            Font font = Minecraft.getInstance().font;
+            int available = Math.max(0, getWidth() - (this.resetAction == null ? 48 : 58));
+            g.text(font,
+                    Component.literal(clipped(this.label, available)), getX() + 9, centeredTextY(this, font),
                     this.active ? TEXT : DISABLED);
+            if (this.resetAction != null) resetMarker(g, this, switchX - 10, this.active ? MUTED : DISABLED);
         }
 
         @Override
         protected void updateWidgetNarration(NarrationElementOutput output) {
             defaultButtonNarrationText(output);
+            if (!this.active && this.disabledReason != null) {
+                output.add(NarratedElementType.HINT, this.disabledReason.get());
+            }
+            if (this.resetAction != null) {
+                output.add(NarratedElementType.HINT, Component.translatable("caustica.options.widget.resetHint"));
+            }
         }
     }
 
@@ -258,6 +325,8 @@ public final class CausticaWidgets {
         private final Function<T, Component> valueLabel;
         private final Runnable changed;
         private BooleanSupplier activeWhen = () -> true;
+        private Supplier<Component> disabledReason;
+        private Component tooltip;
         private Runnable resetAction;
         private boolean open;
         private int scrollOffset;
@@ -284,7 +353,12 @@ public final class CausticaWidgets {
         }
 
         public Dropdown<T> tooltip(Component tooltip) {
-            setTooltip(Tooltip.create(tooltip));
+            this.tooltip = Objects.requireNonNull(tooltip);
+            return this;
+        }
+
+        public Dropdown<T> disabledReason(Supplier<Component> disabledReason) {
+            this.disabledReason = Objects.requireNonNull(disabledReason);
             return this;
         }
 
@@ -437,26 +511,46 @@ public final class CausticaWidgets {
         @Override
         protected void extractContents(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             this.active = this.activeWhen.getAsBoolean();
+            Component reason = !this.active && this.disabledReason != null ? this.disabledReason.get() : null;
+            setTooltip(controlTooltip(this.tooltip, reason, this.active, this.resetAction != null));
             refreshMessage();
             Component value = this.valueLabel.apply(this.getter.get());
             int color = !this.active ? 0x18000000 : isHoveredOrFocused() ? PANEL_HOVER : PANEL_2;
             g.fill(getX(), getY(), getRight(), getBottom(), color);
-            if (isHoveredOrFocused()) {
-                g.outline(getX(), getY(), getWidth(), getHeight(), 0x90FFFFFF);
-            }
-            int valueWidth = Minecraft.getInstance().font.width(value);
-            int labelWidth = Math.max(0, getWidth() - valueWidth - 38);
-            g.text(Minecraft.getInstance().font, Component.literal(clipped(this.label, labelWidth)),
-                    getX() + 9, getY() + 7, this.active ? TEXT : DISABLED);
-            g.text(Minecraft.getInstance().font, value, getRight() - valueWidth - 20, getY() + 7,
+            focusOutline(g, this);
+            Font font = Minecraft.getInstance().font;
+            int markerWidth = this.resetAction == null ? 0 : 12;
+            int contentWidth = Math.max(0, getWidth() - 38 - markerWidth);
+            int valueWidth = Math.min(font.width(value), contentWidth / 2);
+            int labelWidth = Math.max(0, contentWidth - valueWidth - 6);
+            Component clippedValue = Component.literal(clipped(value, valueWidth));
+            int renderedValueWidth = font.width(clippedValue);
+            int textY = centeredTextY(this, font);
+            g.text(font, Component.literal(clipped(this.label, labelWidth)),
+                    getX() + 9, textY, this.active ? TEXT : DISABLED);
+            g.text(font, clippedValue, getRight() - renderedValueWidth - 20 - markerWidth, textY,
                     this.active ? ACCENT : DISABLED);
-            g.text(Minecraft.getInstance().font, Component.literal(this.open ? "\u25b2" : "\u25bc"),
-                    getRight() - 12, getY() + 7, this.active ? MUTED : DISABLED);
+            if (this.resetAction != null) resetMarker(g, this, getRight() - 27, this.active ? MUTED : DISABLED);
+            g.text(font, Component.literal(this.open ? "\u25b2" : "\u25bc"),
+                    getRight() - 12, textY, this.active ? MUTED : DISABLED);
         }
 
         @Override
         protected void updateWidgetNarration(NarrationElementOutput output) {
             defaultButtonNarrationText(output);
+            if (!this.active && this.disabledReason != null) {
+                output.add(NarratedElementType.HINT, this.disabledReason.get());
+            } else if (this.open) {
+                output.add(NarratedElementType.HINT, Component.translatable(
+                        "caustica.options.widget.dropdown.open",
+                        this.valueLabel.apply(this.values.get(this.highlightedIndex))));
+            } else {
+                output.add(NarratedElementType.HINT,
+                        Component.translatable("caustica.options.widget.dropdown.closed"));
+            }
+            if (this.resetAction != null) {
+                output.add(NarratedElementType.HINT, Component.translatable("caustica.options.widget.resetHint"));
+            }
         }
     }
 
@@ -473,6 +567,8 @@ public final class CausticaWidgets {
         private final DoubleUnaryOperator toUnit;
         private final DoubleFunction<String> formatter;
         private BooleanSupplier activeWhen = () -> true;
+        private Supplier<Component> disabledReason;
+        private Component tooltip;
         private Runnable resetAction;
         private Runnable releaseAction;
         private java.util.List<Integer> snapPoints;
@@ -503,7 +599,12 @@ public final class CausticaWidgets {
         }
 
         public Slider tooltip(Component tooltip) {
-            setTooltip(Tooltip.create(tooltip));
+            this.tooltip = Objects.requireNonNull(tooltip);
+            return this;
+        }
+
+        public Slider disabledReason(Supplier<Component> disabledReason) {
+            this.disabledReason = Objects.requireNonNull(disabledReason);
             return this;
         }
 
@@ -601,6 +702,8 @@ public final class CausticaWidgets {
         @Override
         public void extractWidgetRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
             this.active = this.activeWhen.getAsBoolean();
+            Component reason = !this.active && this.disabledReason != null ? this.disabledReason.get() : null;
+            setTooltip(controlTooltip(this.tooltip, reason, this.active, this.resetAction != null));
             if (!isHoveredOrFocused()) {
                 double modelValue = Math.clamp(this.toUnit.applyAsDouble(this.getter.getAsDouble()), 0.0, 1.0);
                 if (Math.abs(modelValue - this.value) > 1.0e-6) {
@@ -617,12 +720,23 @@ public final class CausticaWidgets {
             g.fill(getX() + 8, trackY, handle, trackY + 2, progressColor);
             g.fill(handle - 2, trackY - 3, handle + 3, trackY + 5,
                     this.active && isHoveredOrFocused() ? 0xFFFFFFFF : progressColor);
-            if (isHoveredOrFocused()) {
-                g.outline(getX(), getY(), getWidth(), getHeight(), 0x90FFFFFF);
+            focusOutline(g, this);
+            Font font = Minecraft.getInstance().font;
+            int markerWidth = this.resetAction == null ? 0 : 14;
+            g.text(font, Component.literal(clipped(getMessage(), getWidth() - 16 - markerWidth)),
+                    getX() + 8, centeredTextY(this, font), this.active ? TEXT : DISABLED);
+            if (this.resetAction != null) resetMarker(g, this, getRight() - 12, this.active ? MUTED : DISABLED);
+        }
+
+        @Override
+        public void updateWidgetNarration(NarrationElementOutput output) {
+            super.updateWidgetNarration(output);
+            if (!this.active && this.disabledReason != null) {
+                output.add(NarratedElementType.HINT, this.disabledReason.get());
             }
-            g.text(Minecraft.getInstance().font,
-                    Component.literal(clipped(getMessage(), getWidth() - 16)),
-                    getX() + 8, getY() + 5, this.active ? TEXT : DISABLED);
+            if (this.resetAction != null) {
+                output.add(NarratedElementType.HINT, Component.translatable("caustica.options.widget.resetHint"));
+            }
         }
     }
 }

@@ -411,7 +411,10 @@ public final class RtGpuExecutor {
             }
             VkSemaphoreSubmitInfo.Buffer signal = VkSemaphoreSubmitInfo.calloc(1, stack)
                     .sType$Default().semaphore(buildTimeline).value(signalValue)
-                    .stageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+                    // Jobs also contain pure transfer uploads (for example the device-local light
+                    // proposal tables). Signal only after every command in the batch, not merely the
+                    // AS-build stage, so a graphics wait cannot overtake such a copy.
+                    .stageMask(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR);
             synchronized (asLaneOrderLock) {
                 long priorGraphicsUse = latestGraphicsUseValue.get();
                 VkSemaphoreSubmitInfo.Buffer wait = null;

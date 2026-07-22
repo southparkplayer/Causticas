@@ -9,6 +9,7 @@ param(
     [int]$ExpectedRenderWidth = 1920,
     [int]$ExpectedRenderHeight = 1080,
     [string]$Label = 'capture',
+    [string]$BenchmarkKind = 'steady-state',
     [string]$OutputDirectory = 'build/performance-loops'
 )
 
@@ -121,6 +122,7 @@ Require ([int]$initial.windowWidth -eq $ExpectedWidth -and [int]$initial.windowH
     "Expected ${ExpectedWidth}x${ExpectedHeight}, got $($initial.windowWidth)x$($initial.windowHeight)."
 Require ([int]$initial.renderWidth -eq $ExpectedRenderWidth -and [int]$initial.renderHeight -eq $ExpectedRenderHeight) `
     "Expected internal ${ExpectedRenderWidth}x${ExpectedRenderHeight}, got $($initial.renderWidth)x$($initial.renderHeight)."
+Require ($initial.screenWidth -gt 0 -and $initial.screenHeight -gt 0) 'Display is not reporting a valid screen size.'
 Set-MinecraftForeground
 if ($ExpectedArtifactSha256) {
     Require ($initial.artifactSha256 -eq $ExpectedArtifactSha256.ToUpperInvariant()) `
@@ -141,6 +143,8 @@ while ((Get-Date) -lt $deadline) {
         'Capture instrumentation changed during capture.'
     Require ([int]$state.renderWidth -eq $ExpectedRenderWidth -and [int]$state.renderHeight -eq $ExpectedRenderHeight) `
         'Internal render resolution changed during capture.'
+    Require ($state.screenWidth -eq $initial.screenWidth -and $state.screenHeight -eq $initial.screenHeight) `
+        'Display resolution changed during capture.'
     Require-MinecraftForeground
     $samples += $state
 }
@@ -160,6 +164,13 @@ $metrics = [ordered]@{
     exposureMs = Metric-Summary $samples 'exposureGpuNanos' 0.000001
     displayMs = Metric-Summary $samples 'displayGpuNanos' 0.000001
     copyMs = Metric-Summary $samples 'copyGpuNanos' 0.000001
+    pilotMs = Metric-Summary $samples 'pilotGpuNanos' 0.000001
+    mainTraceMs = Metric-Summary $samples 'mainTraceGpuNanos' 0.000001
+    scheduleMs = Metric-Summary $samples 'scheduleGpuNanos' 0.000001
+    offlineMainPaths = Metric-Summary $samples 'offlineMainPaths' 1.0
+    offlinePilotPaths = Metric-Summary $samples 'offlinePilotPaths' 1.0
+    offlineActiveTiles = Metric-Summary $samples 'offlineActiveTiles' 1.0
+    offlineTotalTiles = Metric-Summary $samples 'offlineTotalTiles' 1.0
 }
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -169,14 +180,21 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 $base = Join-Path $output "$stamp-$safeLabel"
 $samples | Export-Csv -LiteralPath "$base.csv" -NoTypeInformation
 $report = [pscustomobject][ordered]@{
+    schemaVersion = 2
     capturedAt = (Get-Date).ToUniversalTime().ToString('o')
     label = $Label
+    benchmarkKind = $BenchmarkKind
     artifactSha256 = $initial.artifactSha256
+    backend = $initial.backend
+    rtStatus = $initial.rtStatus
     resolution = "$ExpectedWidth`x$ExpectedHeight"
     internalResolution = "$ExpectedRenderWidth`x$ExpectedRenderHeight"
     sharcActive = $initial.sharcActive
     sampleCount = $samples.Count
     intervalMilliseconds = $IntervalMilliseconds
+    warmupSeconds = $WarmupSeconds
+    sampleSeconds = $SampleSeconds
+    rawSamples = "$base.csv"
     metrics = $metrics
 }
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$base.json" -Encoding UTF8

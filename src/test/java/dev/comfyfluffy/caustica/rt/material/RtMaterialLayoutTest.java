@@ -35,10 +35,11 @@ final class RtMaterialLayoutTest {
 
     @Test
     void reflectedWorldPushConstantsIncludeMaterialTableAndDebugView() {
-        assertEquals(48, WorldPushConstantsData.BYTE_SIZE);
+        assertEquals(72, WorldPushConstantsData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5, 6, -2.5f, 512).write(data);
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5, 6, -2.5f, 512,
+                0L, 0, 0, 0, 0).write(data);
         assertEquals(4L, data.getLong(24));
         assertEquals(5, data.getInt(32));
         assertEquals(6, data.getInt(36));

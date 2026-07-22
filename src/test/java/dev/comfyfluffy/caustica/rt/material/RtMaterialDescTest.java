@@ -34,11 +34,11 @@ final class RtMaterialDescTest {
     void glassRetainsAllAuthoredShadingFeatures() {
         int authoredFeatures = RtMaterialRegistry.FEATURE_SPEC
                 | RtMaterialRegistry.FEATURE_NORMAL
-                | RtMaterialRegistry.FEATURE_OVERRIDE_EMISSION;
+                | RtMaterialRegistry.FEATURE_HEURISTIC_EMISSION;
         RtMaterialDesc glass = new RtMaterialDesc(RtMaterialRegistry.MODEL_GLASS,
                 RtMaterialDesc.Source.OVERRIDE, authoredFeatures,
                 0.12f, 0.0f, 1.52f, 0.85f, RtMaterials.Profile.GLASS, 0.0f, 0.0f,
-                RtMaterialDesc.EmissionSource.OVERRIDE,
+                RtMaterialDesc.EmissionSource.HEURISTIC_MASK,
                 1.5f, new RtMaterialDesc.EmissionSummary(0.2f, 0.3f, 0.4f, 0.25f, 0.5f));
 
         assertEquals(authoredFeatures, glass.features());
@@ -47,6 +47,6 @@ final class RtMaterialDescTest {
         assertEquals(0.12f, glass.roughness());
         assertEquals(1.52f, glass.ior());
         assertEquals(0.85f, glass.transmission());
-        assertEquals(RtMaterialDesc.EmissionSource.OVERRIDE, glass.emissionSource());
+        assertEquals(RtMaterialDesc.EmissionSource.HEURISTIC_MASK, glass.emissionSource());
     }
 }

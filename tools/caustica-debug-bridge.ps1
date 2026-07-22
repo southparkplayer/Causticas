@@ -28,7 +28,9 @@ param(
     [bool]$SharcDetailedStats,
     [bool]$Fullscreen,
     [bool]$OpenCausticaSettings,
-    [ValidateSet('Output','Rendering','SHaRC','Image','View','Diagnostics')]
+    [ValidateSet('Essentials','DisplayHdr','FrameGeneration','Reconstruction','ExposureTonemap',
+        'Lighting','SkyAtmosphere','GeometryScene','FirstPerson','Denoising','Materials','SHaRC','Diagnostics',
+        'Overview','Output','View')]
     [string]$CausticaCategory,
     [bool]$OpenSharcSettings,
     [bool]$CloseScreen,

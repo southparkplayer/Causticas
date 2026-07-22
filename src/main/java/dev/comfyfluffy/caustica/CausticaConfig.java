@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Locale;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -31,7 +32,7 @@ import org.slf4j.LoggerFactory;
 public final class CausticaConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
-    static final int CONFIG_SCHEMA_VERSION = 11;
+    static final int CONFIG_SCHEMA_VERSION = 13;
 
     private static final Path CONFIG_PATH = resolveConfigPath();
     private static final CommentedFileConfig FILE = loadAndMigrateFile(CONFIG_PATH);
@@ -87,7 +88,7 @@ public final class CausticaConfig {
             Rt.Reconstruction.BACKEND, Rt.DlssRr.ENABLED, Rt.DlssRr.DIFFUSE_PATH_GUIDE,
             Rt.DlssRr.SUBPIXEL_DETAIL,
             Rt.DlssRr.HIGH_QUALITY_TRANSPARENCY, Rt.DlssRr.PARTICLE_TEMPORAL_HISTORY,
-            Rt.DlssRr.PRESET, Rt.DlssRr.QUALITY, Rt.DlssRr.INPUT_SCALE_PERCENT, Rt.OutputScale.PERCENT,
+            Rt.DlssRr.PRESET, Rt.DlssRr.QUALITY, Rt.DlssRr.INPUT_RATIO_TENTHS, Rt.OutputScale.PERCENT,
             Rt.Nrd.DENOISER, Rt.Nrd.SPHERICAL_HARMONICS, Rt.Nrd.MAX_ACCUMULATED_FRAMES,
             Rt.Nrd.MAX_FAST_ACCUMULATED_FRAMES, Rt.Nrd.HISTORY_FIX_FRAMES,
             Rt.Nrd.PREPASS_BLUR_RADIUS, Rt.Nrd.MAX_BLUR_RADIUS, Rt.Nrd.ANTI_FIREFLY,
@@ -178,6 +179,14 @@ public final class CausticaConfig {
                 " Streamline Reflex Low Latency. DLSS-G forces effective On while generation is active.\n"
                         + " minimum-interval-us applies only while DLSS-G is off; DLSS-G always submits 0 (unlimited).\n"
                         + " PCL markers and sleep still run when Reflex is Off.");
+        FILE.setComment("lights",
+                " RIS direct lighting from block emitters (torches, glowstone, lava, ...): per diffuse\n"
+                        + " vertex, resample ris-candidates power-weighted proposals and spend one shadow ray on\n"
+                        + " the survivor. ris-candidates = 0 disables it entirely (emitters just gather on direct\n"
+                        + " hit, same as with no NEE). Power-weighted sampling and the local per-section light\n"
+                        + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
+                        + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
+                        + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("offline-renderer",
                 " Uncapped progressive native-resolution rendering started with F7.\n"
                         + " The scene, camera, water time, and exposure are frozen for the session.\n"
@@ -346,10 +355,38 @@ public final class CausticaConfig {
             migrateExactNumber(config, "hdr.ui-brightness-nits", 200.0, 100.0);
             migrateExactNumber(config, "hdr.peak-nits", 1000.0, 800.0);
         }
+        if (version < 12) {
+            Object rawOutput = config.get("output-scale.percent");
+            Object rawInput = config.get("dlss-rr.input-scale-percent");
+            int outputPercent = rawOutput instanceof Number rawOutputPercent
+                    ? Math.clamp(rawOutputPercent.intValue(), 10, 200)
+                    : 100;
+            int inputPercent = rawInput instanceof Number rawInputPercent
+                    ? Math.clamp(rawInputPercent.intValue(), 10, 200)
+                    : 50;
+            int ratioTenths = Math.clamp(Math.round(10.0 * outputPercent / (double) inputPercent), 10, 40);
+            config.set("dlss-rr.input-scale-percent", ratioTenths);
+        }
+        if (version < 13) {
+            applySchema13Defaults(config);
+        }
         config.set("config-version", CONFIG_SCHEMA_VERSION);
         return true;
     }
 
+    private static boolean isNrdBackend(CommentedConfig config) {
+        Object rawBackend = config.get("reconstruction.backend");
+        return rawBackend instanceof String value && "nrd".equalsIgnoreCase(value.trim());
+    }
+
+    private static void applySchema13Defaults(CommentedConfig config) {
+        if (!isNrdBackend(config)) {
+            config.set("reconstruction.backend", "dlss-rr");
+            config.set("dlss-rr.enabled", true);
+            config.set("dlss-rr.preset", "D");
+            config.set("dlss-rr.input-scale-percent", 20);
+        }
+    }
     private static void migrateExactNumber(CommentedConfig config, String path, double obsolete, double replacement) {
         Object value = config.get(path);
         if (value instanceof Number number && Math.abs(number.doubleValue() - obsolete) <= 1.0e-6) {
@@ -845,11 +882,11 @@ public final class CausticaConfig {
             public static final FloatSetting MOONLIGHT_INTENSITY_EV = clampedFloat(
                     "caustica.rt.moonlightIntensityEv", "composite.moonlight-intensity-ev", 6.02f, -4.0f, 8.0f);
             public static final FloatSetting NIGHT_AIRGLOW_EV = clampedFloat(
-                    "caustica.rt.nightAirglowEv", "composite.night-airglow-ev", -8.0f, -8.0f, 8.0f);
+                    "caustica.rt.nightAirglowEv", "composite.night-airglow-ev", 0.0f, -8.0f, 8.0f);
             public static final IntSetting PSR_MAX_MIRRORS = clampedInt(
                     "caustica.rt.psrMaxMirrors", "composite.psr-max-mirrors", 32, 1, 32);
             public static final IntSetting POINT_SAMPLE_MAX_SIZE = clampedInt(
-                    "caustica.rt.pointSampleMaxSize", "composite.point-sample-max-size", 512, 0, 8192);
+                    "caustica.rt.pointSampleMaxSize", "composite.point-sample-max-size", 2048, 0, 8192);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
                     radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 1.5f);
             public static final FloatSetting MOON_ANGULAR_RADIUS =
@@ -931,11 +968,11 @@ public final class CausticaConfig {
             public static final FloatSetting FOLIAGE_BACKLIGHTING = clampedFloat(
                     "caustica.rt.materials.foliageBacklighting", "materials.foliage-backlighting", 0.66f, 0.0f, 1.0f);
             public static final FloatSetting SOIL_ROUGHNESS = clampedFloat(
-                    "caustica.rt.materials.soilRoughness", "materials.soil-roughness", 1.0f, 0.55f, 1.0f);
+                    "caustica.rt.materials.soilRoughness", "materials.soil-roughness", 0.9f, 0.55f, 1.0f);
             public static final FloatSetting STONE_ROUGHNESS = clampedFloat(
-                    "caustica.rt.materials.stoneRoughness", "materials.stone-roughness", 1.0f, 0.45f, 1.0f);
+                    "caustica.rt.materials.stoneRoughness", "materials.stone-roughness", 0.6f, 0.45f, 1.0f);
             public static final FloatSetting WOOD_ROUGHNESS = clampedFloat(
-                    "caustica.rt.materials.woodRoughness", "materials.wood-roughness", 1.0f, 0.4f, 1.0f);
+                    "caustica.rt.materials.woodRoughness", "materials.wood-roughness", 0.8f, 0.4f, 1.0f);
             public static final FloatSetting METAL_ROUGHNESS = clampedFloat(
                     "caustica.rt.materials.metalRoughness", "materials.metal-roughness", 0.05f, 0.0f, 0.7f);
             public static final FloatSetting GLASS_ROUGHNESS = clampedFloat(
@@ -956,7 +993,7 @@ public final class CausticaConfig {
             public static final IntSetting MAX_INFLIGHT_SECTIONS =
                     intAtLeast("caustica.rt.maxInflightSections", "terrain.max-inflight-sections", 32, 0);
             public static final IntSetting GPU_BUILD_BATCH_SIZE =
-                    clampedInt("caustica.rt.gpuBuildBatchSize", "terrain.gpu-build-batch-size", 4, 1, 4);
+                    clampedInt("caustica.rt.gpuBuildBatchSize", "terrain.gpu-build-batch-size", 1, 1, 4);
             public static final FloatSetting STREAM_BUDGET_MS =
                     clampedFloat("caustica.rt.streamBudgetMs", "terrain.stream-budget-ms", 1.5f, 0.0f, 100.0f);
             public static final FloatSetting STREAM_BUDGET_MAX_MS =
@@ -969,6 +1006,21 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.rebaseDistanceBlocks", "terrain.rebase-distance-blocks", 128, 0);
 
             private Terrain() {
+            }
+        }
+
+        /** RIS block-emitter lights. {@code ris-candidates = 0} disables everything. */
+        public static final class Lights {
+            public static final IntSetting RIS_CANDIDATES =
+                    intAtLeast("caustica.rt.risCandidates", "lights.ris-candidates", 0, 0);
+            public static final FloatSetting MIN_FILL_RATIO =
+                    finiteFloat("caustica.rt.lightMinFillRatio", "lights.min-fill-ratio", 0.25f);
+            public static final BooleanSetting STATS = bool("caustica.rt.lightStats", "lights.stats", false);
+            public static final BooleanSetting DUMP = bool("caustica.rt.lightDump", "lights.dump", false);
+            public static final IntSetting DUMP_RADIUS =
+                    intAtLeast("caustica.rt.lightDumpRadius", "lights.dump-radius", 12, 1);
+
+            private Lights() {
             }
         }
 
@@ -985,13 +1037,13 @@ public final class CausticaConfig {
         public static final class Sharc {
             public static final BooleanSetting ENABLED = bool("caustica.rt.sharc", "sharc.enabled", true);
             public static final IntSetting CACHE_EXPONENT =
-                      clampedInt("caustica.rt.sharcCacheExponent", "sharc.cache-exponent", 23, 16, 28);
+                      clampedInt("caustica.rt.sharcCacheExponent", "sharc.cache-exponent", 24, 16, 28);
             public static final FloatSetting SCENE_SCALE =
                     clampedFloat("caustica.rt.sharcSceneScale", "sharc.scene-scale", 32.0f, 1.0f, 100.0f);
             public static final FloatSetting RADIANCE_SCALE =
                     clampedFloat("caustica.rt.sharcRadianceScale", "sharc.radiance-scale", 10000.0f, 50.0f, 10000.0f);
             public static final IntSetting ACCUMULATION_FRAMES =
-                    clampedInt("caustica.rt.sharcAccumulationFrames", "sharc.accumulation-frames", 256, 1, 1024);
+                    clampedInt("caustica.rt.sharcAccumulationFrames", "sharc.accumulation-frames", 128, 1, 1024);
             public static final IntSetting STALE_FRAMES =
                     clampedInt("caustica.rt.sharcStaleFrames", "sharc.stale-frames", 1024, 8, 1024);
             public static final BooleanSetting ANTI_FIREFLY =
@@ -1001,7 +1053,7 @@ public final class CausticaConfig {
             public static final IntSetting UPDATE_MAX_BOUNCES =
                     clampedInt("caustica.rt.sharcUpdateMaxBounces", "sharc.update-max-bounces", 8, 1, 8);
             public static final FloatSetting MIN_SEGMENT_RATIO =
-                    clampedFloat("caustica.rt.sharcMinSegmentRatio", "sharc.min-segment-ratio", 1.0f, 0.25f, 4.0f);
+                    clampedFloat("caustica.rt.sharcMinSegmentRatio", "sharc.min-segment-ratio", 0.2f, 0.25f, 4.0f);
             public static final BooleanSetting GLOSSY_QUERY =
                     bool("caustica.rt.sharcGlossyQuery", "sharc.glossy-query", false);
             public static final BooleanSetting LIVE_SECONDARY_DIRECT =
@@ -1101,10 +1153,10 @@ public final class CausticaConfig {
             public static final BooleanSetting PARTICLE_TEMPORAL_HISTORY = bool(
                     "caustica.rt.dlssRr.particleTemporalHistory",
                     "dlss-rr.particle-temporal-history", true);
-            public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 4);
-            public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 2);
-            public static final IntSetting INPUT_SCALE_PERCENT = clampedInt(
-                    "caustica.rt.dlssRr.inputScale", "dlss-rr.input-scale-percent", 50, 10, 200);
+            public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 5);
+            public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0);
+            public static final IntSetting INPUT_RATIO_TENTHS = clampedInt(
+                    "caustica.rt.dlssRr.inputScale", "dlss-rr.input-scale-percent", 20, 10, 40);
 
             private DlssRr() {
             }
@@ -1212,11 +1264,11 @@ public final class CausticaConfig {
             public static final IntSetting RELAX_ATROUS_ITERATIONS = clampedInt(
                     "caustica.rt.nrd.relaxAtrousIterations", "nrd.relax-atrous-iterations", 5, 2, 8);
             public static final FloatSetting RELAX_HISTORY_NORMAL_POWER = clampedFloat(
-                    "caustica.rt.nrd.relaxHistoryNormalPower", "nrd.relax-history-normal-power", 8.0f, 0.1f, 64.0f);
+                    "caustica.rt.nrd.relaxHistoryNormalPower", "nrd.relax-history-normal-power", 64.0f, 0.1f, 64.0f);
             public static final FloatSetting RELAX_DIFFUSE_PHI_LUMINANCE = clampedFloat(
-                    "caustica.rt.nrd.relaxDiffusePhiLuminance", "nrd.relax-diffuse-phi-luminance", 2.0f, 0.1f, 10.0f);
+                    "caustica.rt.nrd.relaxDiffusePhiLuminance", "nrd.relax-diffuse-phi-luminance", 10.0f, 0.1f, 10.0f);
             public static final FloatSetting RELAX_SPECULAR_PHI_LUMINANCE = clampedFloat(
-                    "caustica.rt.nrd.relaxSpecularPhiLuminance", "nrd.relax-specular-phi-luminance", 0.1f, 0.1f, 10.0f);
+                    "caustica.rt.nrd.relaxSpecularPhiLuminance", "nrd.relax-specular-phi-luminance", 10.0f, 0.1f, 10.0f);
             public static final FloatSetting RELAX_DEPTH_THRESHOLD = clampedFloat(
                     "caustica.rt.nrd.relaxDepthThreshold", "nrd.relax-depth-threshold", 0.003f, 0.0001f, 0.1f);
             public static final FloatSetting RELAX_SPECULAR_VARIANCE_BOOST = clampedFloat(
@@ -1226,9 +1278,9 @@ public final class CausticaConfig {
             public static final BooleanSetting RELAX_ROUGHNESS_EDGE_STOPPING = bool(
                     "caustica.rt.nrd.relaxRoughnessEdgeStopping", "nrd.relax-roughness-edge-stopping", true);
             public static final FloatSetting RELAX_ANTILAG_ACCELERATION = clampedFloat(
-                    "caustica.rt.nrd.relaxAntilagAcceleration", "nrd.relax-antilag-acceleration", 0.3f, 0.0f, 1.0f);
+                    "caustica.rt.nrd.relaxAntilagAcceleration", "nrd.relax-antilag-acceleration", 1.0f, 0.0f, 1.0f);
             public static final FloatSetting RELAX_ANTILAG_TEMPORAL_SIGMA = clampedFloat(
-                    "caustica.rt.nrd.relaxAntilagTemporalSigma", "nrd.relax-antilag-temporal-sigma", 0.5f, 0.01f, 10.0f);
+                    "caustica.rt.nrd.relaxAntilagTemporalSigma", "nrd.relax-antilag-temporal-sigma", 0.0f, 0.01f, 10.0f);
             public static final FloatSetting RELAX_ANTILAG_RESET = clampedFloat(
                     "caustica.rt.nrd.relaxAntilagReset", "nrd.relax-antilag-reset", 0.5f, 0.0f, 1.0f);
 
@@ -1251,7 +1303,7 @@ public final class CausticaConfig {
             public static final StringSetting MODE = string(
                     "caustica.rt.fg.mode", "frame-generation.mode", "off", Fg::sanitizeMode);
             public static final IntSetting MULTI_FRAME_COUNT =
-                    clampedInt("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 2, 1, 5);
+                    clampedInt("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1, 5);
             public static final FloatSetting DYNAMIC_TARGET_FPS = clampedFloat(
                     "caustica.rt.fg.dynamicTargetFps", "frame-generation.dynamic-target-fps", 0.0f, 0.0f, 1000.0f);
             /** Desired physical display cadence for Vulkan fixed MFG's Parallel queue policy. */
@@ -1326,14 +1378,14 @@ public final class CausticaConfig {
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final FloatSetting MANUAL_EXPOSURE_EV =
-                    finiteFloat("caustica.rt.exposure.manualExposureEv", "exposure.manual-exposure-ev", 3.0f);
+                    finiteFloat("caustica.rt.exposure.manualExposureEv", "exposure.manual-exposure-ev", -1.5f);
             public static final FloatSetting COMPENSATION_EV = clampedFloat(
                     "caustica.rt.exposure.compensationEv", "exposure.compensation-ev", 0.0f, -4.0f, 4.0f);
             public static final FloatSetting KEY = exposureScale("caustica.rt.exposure.key", "exposure.key", 0.18f);
             public static final FloatSetting MIN_EV =
-                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -20.0f);
+                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -24.0f);
             public static final FloatSetting MAX_EV =
-                    clampedFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 4.42f, 0.0f, 12.0f);
+                    clampedFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 4.0f, 0.0f, 12.0f);
             public static final FloatSetting ADAPT_UP =
                     clampedFloat("caustica.rt.exposure.adaptUp", "exposure.adapt-up", 3.0f, 0.05f, 20.0f);
             public static final FloatSetting ADAPT_DOWN =
@@ -1345,13 +1397,13 @@ public final class CausticaConfig {
             public static final FloatSetting HIGHLIGHT_PERCENTILE = clampedFloat(
                     "caustica.rt.exposure.highlightPercentile", "exposure.highlight-percentile", 0.99f, 0.5f, 1.0f);
             public static final FloatSetting HIGHLIGHT_HEADROOM = clampedFloat(
-                    "caustica.rt.exposure.highlightHeadroom", "exposure.highlight-headroom", 1.0f, 0.18f, 64.0f);
+                    "caustica.rt.exposure.highlightHeadroom", "exposure.highlight-headroom", 4.0f, 0.18f, 64.0f);
             public static final FloatSetting CENTER_WEIGHT = clampedFloat(
                     "caustica.rt.exposure.centerWeight", "exposure.center-weight", 3.0f, 0.0f, 8.0f);
             public static final FloatSetting LOG_MIN = clampedFloat(
                     "caustica.rt.exposure.logMin", "exposure.histogram-min-ev", -20.0f, -32.0f, 8.0f);
             public static final FloatSetting LOG_MAX = clampedFloat(
-                    "caustica.rt.exposure.logMax", "exposure.histogram-max-ev", 30.0f, -8.0f, 32.0f);
+                    "caustica.rt.exposure.logMax", "exposure.histogram-max-ev", 32.0f, -8.0f, 32.0f);
 
             private Exposure() {
             }
@@ -1487,7 +1539,7 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.sdr.psychov.peak", "sdr.psychov.peak", 1.0f, 0.5f, 8.0f);
             public static final FloatSetting PSYCHOV23_PEAK =
                     clampedFloat("caustica.rt.sdr.psychov23.peak", "sdr.psychov23.peak",
-                            4.0f, 0.5f, 64.0f);
+                            1.0f, 0.5f, 64.0f);
 
             private Sdr() {
             }
@@ -1602,7 +1654,7 @@ public final class CausticaConfig {
         /** PsychoV23 stages that are mathematically shared by SDR and HDR output transforms. */
         public static final class PsychoV23 {
             public static final FloatSetting COMPRESSION = clampedFloat(
-                    "caustica.rt.psychov23.compression", "psychov23.compression", 0.57f, 0.0f, 8.0f);
+                    "caustica.rt.psychov23.compression", "psychov23.compression", 0.0f, 0.0f, 8.0f);
             public static final FloatSetting GAMUT_COMPRESSION = clampedFloat(
                     "caustica.rt.psychov23.gamutCompression", "psychov23.gamut-compression", 1.0f, 0.0f, 1.0f);
 

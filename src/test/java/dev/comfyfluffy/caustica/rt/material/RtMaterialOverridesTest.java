@@ -28,9 +28,9 @@ final class RtMaterialOverridesTest {
                 0.8f, 0.0f, 1.0f, 0.0f, RtMaterials.Profile.NEUTRAL, 0.0f, 0.0f,
                 RtMaterialDesc.EmissionSource.LAB_PBR,
                 1.0f, new RtMaterialDesc.EmissionSummary(0.2f, 0.1f, 0.05f, 0.1f, 0.5f));
-        RtMaterialDesc applied = rule.apply(base, RtMaterialDesc.EmissionSummary.NONE);
+        RtMaterialDesc applied = rule.apply(base);
         assertEquals(RtMaterialDesc.Source.OVERRIDE, applied.source());
-        assertEquals(RtMaterialDesc.EmissionSource.NONE, applied.emissionSource());
+        assertEquals(RtMaterialDesc.EmissionSource.LAB_PBR, applied.emissionSource());
         assertEquals(0.06f, applied.roughness());
         assertEquals(1.0f, applied.transmission());
     }
@@ -73,7 +73,7 @@ final class RtMaterialOverridesTest {
                 RtMaterials.Profile.WOOL, 0.0f, 0.30f,
                 RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE);
 
-        RtMaterialDesc applied = rule.apply(base, RtMaterialDesc.EmissionSummary.NONE);
+        RtMaterialDesc applied = rule.apply(base);
         assertEquals(RtMaterials.Profile.WOOL, applied.profile());
         assertEquals(0.35f, applied.fiberWeight());
         assertEquals(0.96f, applied.roughness());

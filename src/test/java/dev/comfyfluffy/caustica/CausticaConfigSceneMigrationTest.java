@@ -146,14 +146,14 @@ final class CausticaConfigSceneMigrationTest {
         quality.set("config-version", 7);
         quality.set("dlss-rr.quality", 2);
         assertTrue(CausticaConfig.migrateLegacySceneConfig(quality));
-        assertEquals(66, ((Number) quality.get("dlss-rr.input-scale-percent")).intValue());
+        assertEquals(15, ((Number) quality.get("dlss-rr.input-scale-percent")).intValue());
 
         CommentedConfig custom = CommentedConfig.inMemory();
         custom.set("config-version", 7);
         custom.set("dlss-rr.quality", 2);
         custom.set("dlss-rr.input-scale-percent", 20);
         assertTrue(CausticaConfig.migrateLegacySceneConfig(custom));
-        assertEquals(20, ((Number) custom.get("dlss-rr.input-scale-percent")).intValue());
+        assertEquals(40, ((Number) custom.get("dlss-rr.input-scale-percent")).intValue());
     }
 
     @Test
@@ -255,6 +255,110 @@ final class CausticaConfigSceneMigrationTest {
                 ((Number) oldDefaults.get("hdr.ui-brightness-nits")).doubleValue(), 1.0e-6);
         assertEquals(800.0,
                 ((Number) oldDefaults.get("hdr.peak-nits")).doubleValue(), 1.0e-6);
+    }
+
+    @Test
+    void schemaTwelveConvertsLegacyAbsoluteInputScaleToRatioTenths() {
+        CommentedConfig nativeOutput = CommentedConfig.inMemory();
+        nativeOutput.set("config-version", 11);
+        nativeOutput.set("output-scale.percent", 100);
+        nativeOutput.set("dlss-rr.input-scale-percent", 50);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(nativeOutput));
+        assertEquals(20, ((Number) nativeOutput.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig source33 = CommentedConfig.inMemory();
+        source33.set("config-version", 11);
+        source33.set("output-scale.percent", 100);
+        source33.set("dlss-rr.input-scale-percent", 33);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(source33));
+        assertEquals(30, ((Number) source33.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig double200To67 = CommentedConfig.inMemory();
+        double200To67.set("config-version", 11);
+        double200To67.set("output-scale.percent", 200);
+        double200To67.set("dlss-rr.input-scale-percent", 67);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(double200To67));
+        assertEquals(30, ((Number) double200To67.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig double200To133 = CommentedConfig.inMemory();
+        double200To133.set("config-version", 11);
+        double200To133.set("output-scale.percent", 200);
+        double200To133.set("dlss-rr.input-scale-percent", 133);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(double200To133));
+        assertEquals(15, ((Number) double200To133.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig single200To200 = CommentedConfig.inMemory();
+        single200To200.set("config-version", 11);
+        single200To200.set("output-scale.percent", 10);
+        single200To200.set("dlss-rr.input-scale-percent", 200);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(single200To200));
+        assertEquals(10, ((Number) single200To200.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig double200To10 = CommentedConfig.inMemory();
+        double200To10.set("config-version", 11);
+        double200To10.set("output-scale.percent", 200);
+        double200To10.set("dlss-rr.input-scale-percent", 10);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(double200To10));
+        assertEquals(40, ((Number) double200To10.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig missingValues = CommentedConfig.inMemory();
+        missingValues.set("config-version", 11);
+        missingValues.set("output-scale.percent", 100);
+        missingValues.set("dlss-rr.input-scale-percent", "invalid");
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(missingValues));
+        assertEquals(20, ((Number) missingValues.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig missingBoth = CommentedConfig.inMemory();
+        missingBoth.set("config-version", 11);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(missingBoth));
+        assertEquals(20, ((Number) missingBoth.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig badInputZero = CommentedConfig.inMemory();
+        badInputZero.set("config-version", 11);
+        badInputZero.set("output-scale.percent", 200);
+        badInputZero.set("dlss-rr.input-scale-percent", 0);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(badInputZero));
+        assertEquals(40, ((Number) badInputZero.get("dlss-rr.input-scale-percent")).intValue());
+    }
+
+    @Test
+    void schema13ForcesNewDlssdDefaults() {
+        CommentedConfig nonNrd = CommentedConfig.inMemory();
+        nonNrd.set("config-version", 12);
+        nonNrd.set("reconstruction.backend", "dlss-rr");
+        nonNrd.set("dlss-rr.preset", "A");
+        nonNrd.set("dlss-rr.quality", 3);
+        nonNrd.set("dlss-rr.input-scale-percent", 30);
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(nonNrd));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) nonNrd.get("config-version")).intValue());
+        assertEquals("dlss-rr", nonNrd.get("reconstruction.backend"));
+        assertEquals(true, nonNrd.get("dlss-rr.enabled"));
+        assertEquals("D", nonNrd.get("dlss-rr.preset"));
+        assertEquals(20, ((Number) nonNrd.get("dlss-rr.input-scale-percent")).intValue());
+
+        CommentedConfig defaultsAdded = CommentedConfig.inMemory();
+        defaultsAdded.set("config-version", 12);
+        defaultsAdded.set("reconstruction.backend", "off");
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(defaultsAdded));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) defaultsAdded.get("config-version")).intValue());
+        assertEquals("dlss-rr", defaultsAdded.get("reconstruction.backend"));
+        assertEquals(true, defaultsAdded.get("dlss-rr.enabled"));
+        assertEquals("D", defaultsAdded.get("dlss-rr.preset"));
+        assertEquals(20, ((Number) defaultsAdded.get("dlss-rr.input-scale-percent")).intValue());
+    }
+
+    @Test
+    void schema13DoesNotReplaceNrdBackend() {
+        CommentedConfig nrd = CommentedConfig.inMemory();
+        nrd.set("config-version", 12);
+        nrd.set("reconstruction.backend", "nrd");
+        assertTrue(CausticaConfig.migrateLegacySceneConfig(nrd));
+        assertEquals(CausticaConfig.CONFIG_SCHEMA_VERSION, ((Number) nrd.get("config-version")).intValue());
+        assertFalse(nrd.contains("dlss-rr.enabled"));
+        assertFalse(nrd.contains("dlss-rr.quality"));
+        assertFalse(nrd.contains("dlss-rr.preset"));
+        assertFalse(nrd.contains("dlss-rr.input-scale-percent"));
+        assertEquals("nrd", nrd.get("reconstruction.backend"));
     }
 
     @Test

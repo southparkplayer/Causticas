@@ -24,6 +24,11 @@ public struct WorldPushConstants {
     public uint debugView;
     public float textureMipBias;
     public uint pointSampleMaxSize;
+    public uint64_t offlineWorkAddress;
+    public uint offlineTileWidth;
+    public uint offlineImageWidth;
+    public uint offlineImageHeight;
+    public uint offlineIndirect;
 };
 
 // Fork transport modules historically call this exact ABI PushAddr.
@@ -115,6 +120,48 @@ public struct WorldPush {
     [vk::offset(752)] public float4 skyStarTint; // linear BT.709 RGB multiplier
     [vk::offset(768)] public float4 skyAirglowHorizon; // linear BT.709 RGB multiplier
     [vk::offset(784)] public float4 skyAirglowZenith; // linear BT.709 RGB multiplier
+    // RIS emitter-NEE light buffer fields. These follow the sky parameters at offset 800.
+    // Bytes 824–831 are implicit padding for float4 16-byte alignment.
+    [vk::offset(800)] public uint64_t lightBufAddr;     // RIS emitter-NEE global light buffer (0 = none published)
+    [vk::offset(808)] public uint64_t lightAliasAddr;   // power-weighted O(1) alias table (0 = uniform fallback)
+    [vk::offset(816)] public uint64_t lightLocalAliasAddr; // power aliases relative to each section's range
+    [vk::offset(832)] public float4   lightRebase;      // xyz hierarchy-to-current rebase, w inverse total light power
+    [vk::offset(848)] public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
+    [vk::offset(856)] public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
+    [vk::offset(864)] public float4   lightGridOrigin;     // xyz minimum cell origin in rebased blocks, w cell size
+    [vk::offset(880)] public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
+    [vk::offset(896)] public uint     lightCount;       // packed Light records in lightBufAddr
+    [vk::offset(900)] public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+};
+
+// 48-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
+// uses three unsigned 10-bit coordinates; the geometric normal is reconstructed from the half axes.
+public struct Light {
+    public float4 posArea;
+    public float4 halfULe;       // xyz world half-axis U, w bitcast R11G11B10 radiance
+    public float4 halfVSection;  // xyz half-axis V, w bitcast 10:10:10 section + normal-flip bit
+};
+
+// Eight-byte Vose alias-table column. PDFs are reconstructed from the selected Light.
+public struct LightAlias {
+    public uint  aliasIndex;
+    public float accept;
+};
+
+// Dense light grid cell entry. Empty coordinates have spanCount=0; populated section cells point into
+// an immutable list of weighted section light ranges built and published alongside this grid.
+public struct LightGridCell {
+    public uint spanOffset;
+    public uint spanCount;
+    public float invWeightSum;
+};
+
+// One 16-byte Vose alias column for a cell's section distribution. The two light counts are uint16s.
+public struct LightGridSpan {
+    public uint firstLight;
+    public uint aliasFirstLight;
+    public uint packedLightCounts; // low16 self, high16 alias
+    public float accept;
 };
 
 // Realtime primary sky stars are composited once at reconstruction output resolution. Offline ground
@@ -170,6 +217,7 @@ public static const uint PAYLOAD_PRIMARY_RAY = 1u << 11u;
 public static const uint PAYLOAD_LAVA_SURFACE = 1u << 16u;
 public static const uint PAYLOAD_FIBER_SURFACE = 1u << 17u;
 public static const uint PAYLOAD_ENCHANTED = 1u << 18u;
+public static const uint PAYLOAD_EMITTER_IN_LIST = 1u << 19u;
 
 public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 public static const uint MATERIAL_OPAQUE = 0u;
@@ -206,6 +254,7 @@ public struct TerrainPrim {
 
 public static const uint TERRAIN_PRIM_TORCH = 1u;
 public static const uint TERRAIN_PRIM_LAVA = 1u << 1u;
+public static const uint TERRAIN_PRIM_IN_LIGHT_BUFFER = 1u << 2u;
 
 // Compiled material record (80 B). Source-format data has already been decoded into canonical pages;
 // texturePage indexes the dedicated canonical page arrays. materialUv maps sprite-local UV into the packed
@@ -242,8 +291,8 @@ public static const uint MATERIAL_FAMILY_RAW_IRON = 16u;
 public static const uint MATERIAL_FAMILY_RAW_GOLD = 17u;
 public static const uint MATERIAL_FAMILY_RAW_COPPER = 18u;
 public static const uint MATERIAL_EMISSION_STRENGTH_SHIFT = 8u;
-public static const uint MATERIAL_EMISSION_STRENGTH_MASK = 255u;
-public static const float MATERIAL_MAX_OVERRIDE_EMISSION_STRENGTH = 4.0;
+public static const uint MATERIAL_EMISSION_STRENGTH_MASK = 65535u;
+public static const float MATERIAL_MAX_OVERRIDE_EMISSION_STRENGTH = 32.0;
 public static const uint MATERIAL_MAX_LOD_SHIFT = 24u;
 public static const uint MATERIAL_MAX_LOD_MASK = 255u;
 

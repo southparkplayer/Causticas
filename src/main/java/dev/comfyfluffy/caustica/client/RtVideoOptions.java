@@ -23,7 +23,6 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import org.lwjgl.glfw.GLFW;
 
 /**
  * Builds the RT option widgets shown from the vanilla Video Settings screen.
@@ -214,8 +213,6 @@ public final class RtVideoOptions {
             waterWaves(),
             torchIntensity(),
             psrMirrorDepth(),
-            outputScale(),
-            inputScale(),
             dlssRrEnabled(),
             dlssQuality(),
             debugView(),
@@ -707,38 +704,6 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 8),
             Math.clamp(setting.configuredValue(), 0, 8),
             setting::set);
-    }
-
-    public static OptionInstance<Integer> outputScale() {
-        IntSetting setting = CausticaConfig.Rt.OutputScale.PERCENT;
-        return new OptionInstance<>(
-                "caustica.options.rt.outputScale",
-                OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.outputScale.tooltip")),
-                (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
-                new OptionInstance.IntRange(10, 200),
-                Math.clamp(setting.configuredValue(), 10, 200),
-                percent -> setting.set(shiftDown() ? setting.defaultValue() : percent));
-    }
-
-    public static OptionInstance<Integer> inputScale() {
-        return percentScale("caustica.options.rt.inputScale", CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT,
-                10, 200);
-    }
-
-    private static OptionInstance<Integer> percentScale(String key, IntSetting setting, int min, int max) {
-        return new OptionInstance<>(
-                key,
-                OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
-                (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
-                new OptionInstance.IntRange(min, max),
-                Math.clamp(setting.configuredValue(), min, max),
-                percent -> setting.set(shiftDown() ? setting.defaultValue() : percent));
-    }
-
-    private static boolean shiftDown() {
-        long window = Minecraft.getInstance().getWindow().handle();
-        return GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS
-                || GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
     }
 
     private static OptionInstance<Boolean> dlssRrEnabled() {

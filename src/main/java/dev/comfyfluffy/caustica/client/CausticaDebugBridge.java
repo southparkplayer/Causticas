@@ -191,6 +191,29 @@ final class CausticaDebugBridge {
         state.setProperty("exposureGpuNanos", Long.toString(RtComposite.INSTANCE.exposureGpuNanos()));
         state.setProperty("displayGpuNanos", Long.toString(RtComposite.INSTANCE.displayGpuNanos()));
         state.setProperty("copyGpuNanos", Long.toString(RtComposite.INSTANCE.copyGpuNanos()));
+        state.setProperty("pilotGpuNanos", Long.toString(RtComposite.INSTANCE.pilotGpuNanos()));
+        state.setProperty("mainTraceGpuNanos", Long.toString(RtComposite.INSTANCE.mainTraceGpuNanos()));
+        state.setProperty("scheduleGpuNanos", Long.toString(RtComposite.INSTANCE.scheduleGpuNanos()));
+        state.setProperty("offlineActive", Boolean.toString(OfflineGroundTruth.INSTANCE.active()));
+        state.setProperty("offlinePhase", OfflineGroundTruth.INSTANCE.phaseLabel());
+        state.setProperty("offlineConfiguredBatchLimit", Integer.toString(
+                OfflineGroundTruth.INSTANCE.samplesPerBatch()));
+        state.setProperty("offlineSubmittedMainPaths", Long.toString(
+                OfflineGroundTruth.INSTANCE.submittedSamples()));
+        state.setProperty("offlineScheduledSpp", Double.toString(
+                OfflineGroundTruth.INSTANCE.scheduledSamplesPerPixel()));
+        state.setProperty("offlineScheduledSppPerSecond", Double.toString(
+                OfflineGroundTruth.INSTANCE.scheduledSamplesPerPixelPerSecond()));
+        var offlineMetadata = RtComposite.INSTANCE.completedOfflineDispatchMetadata();
+        state.setProperty("offlineGpuFrameSerial", Integer.toString(
+                RtComposite.INSTANCE.completedOfflineGpuFrameSerial()));
+        state.setProperty("offlineMainPaths", Long.toString(offlineMetadata.mainPaths()));
+        state.setProperty("offlinePilotPaths", Long.toString(offlineMetadata.pilotPaths()));
+        state.setProperty("offlineActiveTiles", Integer.toString(offlineMetadata.activeTiles()));
+        state.setProperty("offlineTotalTiles", Integer.toString(offlineMetadata.totalTiles()));
+        state.setProperty("offlineIndirectInvocations", Integer.toString(
+                offlineMetadata.indirectInvocations()));
+        state.setProperty("offlineIndirect", Boolean.toString(offlineMetadata.indirect()));
         state.setProperty("dlssgBeforePresentCpuNanos",
                 Long.toString(dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg.INSTANCE.beforePresentCpuNanos()));
         state.setProperty("dlssgAfterPresentCpuNanos",
@@ -202,7 +225,18 @@ final class CausticaDebugBridge {
         state.setProperty("renderWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
         state.setProperty("renderHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
         state.setProperty("outputScalePercent", Integer.toString(RtComposite.INSTANCE.outputScalePercent()));
+        state.setProperty("traceWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
+        state.setProperty("traceHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
+        state.setProperty("finalOutputWidth", Integer.toString(RtComposite.INSTANCE.outputWidth()));
+        state.setProperty("finalOutputHeight", Integer.toString(RtComposite.INSTANCE.outputHeight()));
+        state.setProperty("inputRatioTenths", Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("inputUpscaleRatio",
+                Float.toString(RtComposite.INSTANCE.inputScalePercent() / 10.0f));
         state.setProperty("inputScalePercent", Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("requestedInputRatioTenths",
+                Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
+        state.setProperty("appliedInputRatioTenths",
+                Integer.toString(RtComposite.INSTANCE.appliedInputScalePercent()));
         state.setProperty("requestedInputScalePercent",
                 Integer.toString(RtComposite.INSTANCE.inputScalePercent()));
         state.setProperty("appliedInputScalePercent",
@@ -214,10 +248,15 @@ final class CausticaDebugBridge {
             state.setProperty("dlssdQuality", Integer.toString(dlssdPlan.quality()));
             state.setProperty("dlssdOutputWidth", Integer.toString(dlssdPlan.dlssdOutputWidth()));
             state.setProperty("dlssdOutputHeight", Integer.toString(dlssdPlan.dlssdOutputHeight()));
+            state.setProperty("dlssdIntermediateWidth", Integer.toString(dlssdPlan.dlssdOutputWidth()));
+            state.setProperty("dlssdIntermediateHeight", Integer.toString(dlssdPlan.dlssdOutputHeight()));
             state.setProperty("dlssdRenderWidthMin", Integer.toString(dlssdPlan.renderWidthMin()));
             state.setProperty("dlssdRenderHeightMin", Integer.toString(dlssdPlan.renderHeightMin()));
             state.setProperty("dlssdRenderWidthMax", Integer.toString(dlssdPlan.renderWidthMax()));
             state.setProperty("dlssdRenderHeightMax", Integer.toString(dlssdPlan.renderHeightMax()));
+        } else {
+            state.setProperty("dlssdIntermediateWidth", Integer.toString(RtComposite.INSTANCE.renderWidth()));
+            state.setProperty("dlssdIntermediateHeight", Integer.toString(RtComposite.INSTANCE.renderHeight()));
         }
         state.setProperty("dlssdLastEvaluateResult", Integer.toString(
                 dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr.INSTANCE.lastEvaluateResult()));

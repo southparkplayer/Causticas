@@ -80,6 +80,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtPathSampleSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtOutputScalePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBlueNoiseSequence;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtOfflineSchedulePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSharcResolvePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyViewPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyStarLayerPipeline;
@@ -182,10 +183,22 @@ public final class RtComposite {
     public long exposureGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.exposureNanos(); }
     public long displayGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.displayNanos(); }
     public long copyGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.copyNanos(); }
+    public long pilotGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.pilotGpuNanos(); }
+    public long mainTraceGpuNanos() {
+        return traceGpuProfiler == null ? 0L : traceGpuProfiler.mainTraceGpuNanos();
+    }
+    public long scheduleGpuNanos() { return traceGpuProfiler == null ? 0L : traceGpuProfiler.scheduleGpuNanos(); }
+    public int completedOfflineGpuFrameSerial() {
+        return traceGpuProfiler == null ? 0 : traceGpuProfiler.completedOfflineFrameSerial();
+    }
+    public OfflineDispatchMetadata completedOfflineDispatchMetadata() {
+        return traceGpuProfiler == null
+                ? OfflineDispatchMetadata.NONE : traceGpuProfiler.completedOfflineMetadata();
+    }
     public int renderWidth() { return renderW; }
     public int renderHeight() { return renderH; }
     public int outputScalePercent() { return outputScalePercent; }
-    public int inputScalePercent() { return CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value(); }
+    public int inputScalePercent() { return CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value(); }
     public int appliedInputScalePercent() {
         return appliedInputScalePercent == Integer.MIN_VALUE ? inputScalePercent() : appliedInputScalePercent;
     }
@@ -302,6 +315,9 @@ public final class RtComposite {
     private RtPipeline worldPipeline;
     private boolean worldPipelineNrd;
     private RtPipeline offlinePipeline;
+    private RtPipeline offlinePilotPipeline;
+    private RtPipeline offlineIndirectPipeline;
+    private RtOfflineSchedulePipeline offlineSchedulePipeline;
     private RtPipeline sharcUpdatePipeline;
     private RtPipeline sharcQueryPipeline;
     private RtPipeline sharcDiffuseQueryPipeline;
@@ -404,6 +420,7 @@ public final class RtComposite {
     private RtImage gSpecMotion;
     private RtImage gPrimarySkyMask;
     private RtImage groundTruthAccum;
+    private RtImage offlineSampleCount;
     private RtImage offlinePilotA;
     private RtImage offlinePilotB;
     private RtImage gAnimatedGuide;
@@ -845,6 +862,9 @@ public final class RtComposite {
             refreshTransparencyPipelineIfNeeded(ctx);
             boolean offlineGroundTruth = OfflineGroundTruth.INSTANCE.active();
             RtPipeline active = offlineGroundTruth ? ensureOfflineWorld(ctx) : ensureWorld(ctx);
+            if (offlineGroundTruth && shouldUseOfflineIndirect()) {
+                active = offlineIndirectPipeline;
+            }
             // A reload quiesces the old terrain epoch. Pipeline/material rebind above releases the pause;
             // let the next frame rebuild residency before attempting to record a world trace.
             if (!offlineGroundTruth && RtTerrain.currentOrNull() == null) return false;
@@ -872,6 +892,12 @@ public final class RtComposite {
             CausticaMod.LOGGER.error("RT composite failed; reverting to vanilla path", t);
             return false;
         }
+    }
+
+    private boolean shouldUseOfflineIndirect() {
+        // Keep reference accumulation uniform until adaptive scheduling has GPU-read sample counts
+        // and a measured image-error stopping rule. Nominal path totals are not a convergence signal.
+        return false;
     }
 
     /**
@@ -976,12 +1002,25 @@ public final class RtComposite {
                     new String[]{"world.rmiss.spv", "world_guide.rmiss.spv", "world_shadow.rmiss.spv"},
                     "world.rchit.spv", RtDeviceBringup.shadowClosestHitShader(), "world.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, true, BASE_GUIDE_COUNT, bindlessTextureCapacity, true, true);
+            offlinePilotPipeline = RtPipeline.create(ctx, RtDeviceBringup.offlinePilotWorldRaygenShader(),
+                    new String[]{"world.rmiss.spv", "world_guide.rmiss.spv", "world_shadow.rmiss.spv"},
+                    "world.rchit.spv", RtDeviceBringup.shadowClosestHitShader(), "world.rahit.spv",
+                    WorldPushConstantsData.BYTE_SIZE, true, BASE_GUIDE_COUNT, bindlessTextureCapacity, true, true);
+            offlineIndirectPipeline = RtPipeline.create(ctx, RtDeviceBringup.offlineIndirectWorldRaygenShader(),
+                    new String[]{"world.rmiss.spv", "world_guide.rmiss.spv", "world_shadow.rmiss.spv"},
+                    "world.rchit.spv", RtDeviceBringup.shadowClosestHitShader(), "world.rahit.spv",
+                    WorldPushConstantsData.BYTE_SIZE, true, BASE_GUIDE_COUNT, bindlessTextureCapacity, true, true);
+            offlineSchedulePipeline = RtOfflineSchedulePipeline.create(ctx, (renderW + 7) / 8, (renderH + 7) / 8);
             pathSampleSequence = RtPathSampleSequence.create(ctx);
             if (output != null) {
                 offlinePipeline.setStorageImage(output.view);
+                offlinePilotPipeline.setStorageImage(output.view);
+                offlineIndirectPipeline.setStorageImage(output.view);
                 bindGuideImages();
             }
             bindPipelineTextures(ctx, offlinePipeline);
+            bindPipelineTextures(ctx, offlinePilotPipeline);
+            bindPipelineTextures(ctx, offlineIndirectPipeline);
         }
         return offlinePipeline;
     }
@@ -990,6 +1029,18 @@ public final class RtComposite {
         if (offlinePipeline != null) {
             offlinePipeline.destroy();
             offlinePipeline = null;
+        }
+        if (offlinePilotPipeline != null) {
+            offlinePilotPipeline.destroy();
+            offlinePilotPipeline = null;
+        }
+        if (offlineIndirectPipeline != null) {
+            offlineIndirectPipeline.destroy();
+            offlineIndirectPipeline = null;
+        }
+        if (offlineSchedulePipeline != null) {
+            offlineSchedulePipeline.destroy();
+            offlineSchedulePipeline = null;
         }
         if (pathSampleSequence != null) {
             pathSampleSequence.destroy();
@@ -1135,7 +1186,8 @@ public final class RtComposite {
     }
 
     private RtPipeline[] worldPipelines() {
-        return new RtPipeline[]{worldPipeline, offlinePipeline, sharcUpdatePipeline, sharcQueryPipeline,
+        return new RtPipeline[]{worldPipeline, offlinePipeline, offlinePilotPipeline, offlineIndirectPipeline,
+                sharcUpdatePipeline, sharcQueryPipeline,
                 sharcDiffuseQueryPipeline, sharcPrimaryQueryPipeline, sharcDiagnosticUpdatePipeline,
                 sharcDiagnosticQueryPipeline, sharcPrimaryDiagnosticQueryPipeline};
     }
@@ -1147,7 +1199,7 @@ public final class RtComposite {
     }
 
     private void syncTraceGpuProfiler(RtContext ctx) {
-        boolean wanted = sharcCache != null || RtFrameStats.enabled();
+        boolean wanted = sharcCache != null || RtFrameStats.enabled() || OfflineGroundTruth.INSTANCE.active();
         if (wanted && traceGpuProfiler == null) {
             try {
                 traceGpuProfiler = RtTraceGpuProfiler.create(ctx);
@@ -1402,11 +1454,21 @@ public final class RtComposite {
                 worldPipeline.setExtraStorageImage(16, gNrdViewDirection.view);
             }
         }
-        if (offlinePipeline != null && groundTruthAccum != null
-                && offlinePilotA != null && offlinePilotB != null) {
+        if (offlinePipeline != null && offlinePilotPipeline != null && offlineIndirectPipeline != null && groundTruthAccum != null
+                && offlineSampleCount != null && offlinePilotA != null && offlinePilotB != null) {
             offlinePipeline.setExtraStorageImage(6, groundTruthAccum.view);
+            // Extra slot 7 maps to descriptor binding 10 (binding 3 is slot 0).
+            offlinePipeline.setExtraStorageImage(7, offlineSampleCount.view);
             offlinePipeline.setExtraStorageImage(8, offlinePilotA.view);
             offlinePipeline.setExtraStorageImage(9, offlinePilotB.view);
+            offlinePilotPipeline.setExtraStorageImage(6, groundTruthAccum.view);
+            offlinePilotPipeline.setExtraStorageImage(7, offlineSampleCount.view);
+            offlinePilotPipeline.setExtraStorageImage(8, offlinePilotA.view);
+            offlinePilotPipeline.setExtraStorageImage(9, offlinePilotB.view);
+            offlineIndirectPipeline.setExtraStorageImage(6, groundTruthAccum.view);
+            offlineIndirectPipeline.setExtraStorageImage(7, offlineSampleCount.view);
+            offlineIndirectPipeline.setExtraStorageImage(8, offlinePilotA.view);
+            offlineIndirectPipeline.setExtraStorageImage(9, offlinePilotB.view);
         }
     }
 
@@ -1548,6 +1610,10 @@ public final class RtComposite {
             groundTruthAccum.destroy();
             groundTruthAccum = null;
         }
+        if (offlineSampleCount != null) {
+            offlineSampleCount.destroy();
+            offlineSampleCount = null;
+        }
         if (offlinePilotA != null) {
             offlinePilotA.destroy();
             offlinePilotA = null;
@@ -1559,8 +1625,8 @@ public final class RtComposite {
     }
 
     private int updateAppliedInputScalePercent() {
-        int requested = RtOutputScale.clampPercent(
-                CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.value());
+        int requested = RtResolutionScale.clampInputTenths(
+                CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.value());
         long now = System.nanoTime();
         if (appliedInputScalePercent == Integer.MIN_VALUE) {
             appliedInputScalePercent = requested;
@@ -1607,8 +1673,9 @@ public final class RtComposite {
                 && "auto".equalsIgnoreCase(CausticaConfig.Rt.Exposure.MODE.get());
         boolean exposureDepthRequired = exposureDepthRequired(autoExposure, rrOperational, fgGuidesRequired);
         boolean hdrEnabled = RtHdr.effective();
-        int configuredScalePercent = RtOutputScale.clampPercent(CausticaConfig.Rt.OutputScale.PERCENT.value());
-        int desiredScalePercent = offlineGroundTruth ? 100 : configuredScalePercent;
+        // Output scale is fixed at 100% in the active UI flow after resolution-control removal.
+        int configuredScalePercent = 100;
+        int desiredScalePercent = 100;
         boolean allocationFallback = !offlineGroundTruth
                 && outputScaleAllocationFailurePercent == configuredScalePercent
                 && outputScaleAllocationFailureW == width && outputScaleAllocationFailureH == height
@@ -1638,7 +1705,8 @@ public final class RtComposite {
                 && renderSizeDirectSkyStars == directSkyStarsRequired
                 && renderSizeGroundTruth == offlineGroundTruth
                 && (!offlineGroundTruth
-                    || (groundTruthAccum != null && offlinePilotA != null && offlinePilotB != null))) {
+                    || (groundTruthAccum != null && offlineSampleCount != null
+                        && offlinePilotA != null && offlinePilotB != null))) {
             return;
         }
         ctx.waitIdle("output resize or mode change"); // no in-flight frame may use old images/descriptors
@@ -1837,6 +1905,8 @@ public final class RtComposite {
         if (offlineGroundTruth) {
             groundTruthAccum = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
                     "offline ground-truth FP32 radiance mean " + width + "x" + height);
+            offlineSampleCount = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R32_UINT,
+                    "offline exact sample count " + width + "x" + height);
             int pilotW = (width + 7) / 8;
             int pilotH = (height + 7) / 8;
             offlinePilotA = ctx.createStorageImage(pilotW, pilotH, VK10.VK_FORMAT_R32G32B32A32_SFLOAT,
@@ -2280,7 +2350,22 @@ public final class RtComposite {
                             "relax".equals(CausticaConfig.Rt.Nrd.DENOISER.get()) ? 1.0f : 0.0f),
                     sky.skyOptical(), sky.skyShape(), sky.skyTint(), sky.skyCelestialAppearance(),
                     sky.skyStarAppearance(), sky.skySunTint(), sky.skyMoonTint(), sky.skyStarTint(),
-                    sky.skyAirglowHorizon(), sky.skyAirglowZenith()
+                    sky.skyAirglowHorizon(), sky.skyAirglowZenith(),
+                    // RIS emitter NEE: published light buffer + RIS candidate count (0 = emitter NEE off;
+                    // the shader also requires lightCount > 0, so an empty buffer degrades to legacy gather).
+                    terrain.lightBufferAddress(),
+                    terrain.lightAliasBufferAddress(),
+                    terrain.lightLocalAliasBufferAddress(),
+                    new Float4(terrain.lightRebaseOffsetX(), terrain.lightRebaseOffsetY(),
+                            terrain.lightRebaseOffsetZ(), terrain.lightInvGlobalPowerSum()),
+                    terrain.lightGridCellBufferAddress(),
+                    terrain.lightGridSpanBufferAddress(),
+                    new Float4(terrain.lightGridOriginX(), terrain.lightGridOriginY(),
+                            terrain.lightGridOriginZ(), 16f),
+                    new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(),
+                            terrain.lightGridDimZ(), 0),
+                    terrain.lightCount(),
+                    CausticaConfig.Rt.Lights.RIS_CANDIDATES.value()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             if (skyViewPipeline != null && skyViewLut != null) {
@@ -2320,6 +2405,27 @@ public final class RtComposite {
             // KEEP_FRAMES later (entity meshes/BLAS are retired by RtEntities on the same horizon).
             if (traceGpuProfiler != null) traceGpuProfiler.beginFrame(cmd,
                     sharcCache != null && !offlineGroundTruth, RtFrameStats.enabled());
+            boolean offlineIndirect = offlineGroundTruth && shouldUseOfflineIndirect();
+            if (traceGpuProfiler != null && offlineGroundTruth) {
+                int tileWidth = (renderW + 7) / 8;
+                int tileHeight = (renderH + 7) / 8;
+                long totalPixels = Math.multiplyExact((long) renderW, (long) renderH);
+                long mainPaths = Math.multiplyExact(totalPixels, (long) spp());
+                long pilotPaths = OfflineGroundTruth.INSTANCE.benchmarking()
+                        ? 0L : Math.multiplyExact((long) tileWidth * tileHeight, 2L);
+                int indirectInvocations = offlineIndirect
+                        ? Math.toIntExact(1L + Math.multiplyExact((long) tileWidth * tileHeight, 64L)) : 0;
+                OfflineDispatchMetadata metadata = new OfflineDispatchMetadata(
+                        spp(), mainPaths, pilotPaths, tileWidth * tileHeight, tileWidth * tileHeight,
+                        indirectInvocations, offlineIndirect);
+                traceGpuProfiler.setOfflineMetadata(metadata);
+                RtFrameStats.FRAME.count("configuredBatchLimit", metadata.configuredBatchLimit());
+                RtFrameStats.FRAME.count("actualMainPaths", metadata.mainPaths());
+                RtFrameStats.FRAME.count("actualPilotPaths", metadata.pilotPaths());
+                RtFrameStats.FRAME.count("activeTiles", metadata.activeTiles());
+                RtFrameStats.FRAME.count("totalTiles", metadata.totalTiles());
+                RtFrameStats.FRAME.count("indirectInvocationCount", metadata.indirectInvocations());
+            }
             if ((!offlineGroundTruth || buildOfflineSnapshot) && !fe.blas().isEmpty()) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blasRecord")) {
                     RtAccel.recordBlasBuilds(ctx, cmd, fe.blas());
@@ -2337,10 +2443,18 @@ public final class RtComposite {
             RtAccel.markTlasUsed(frameTlas, graphicsUse);
             for (RtPipeline pipeline : worldPipelines()) if (pipeline != null) pipeline.setTlas(frameTlas.accel.handle);
             currentTlasHandle = frameTlas.accel.handle;
+            long offlinePilotReadView = 0L;
             if (offlineGroundTruth) {
                 boolean evenPilotFrame = (groundTruthAccumulationFrames & 1) == 0;
-                active.setCurrentExtraStorageImage(8, evenPilotFrame ? offlinePilotA.view : offlinePilotB.view);
-                active.setCurrentExtraStorageImage(9, evenPilotFrame ? offlinePilotB.view : offlinePilotA.view);
+                long pilotRead = evenPilotFrame ? offlinePilotA.view : offlinePilotB.view;
+                long pilotWrite = evenPilotFrame ? offlinePilotB.view : offlinePilotA.view;
+                offlinePilotReadView = pilotRead;
+                active.setCurrentExtraStorageImage(8, pilotRead);
+                active.setCurrentExtraStorageImage(9, pilotWrite);
+                offlinePilotPipeline.setCurrentExtraStorageImage(8, pilotRead);
+                offlinePilotPipeline.setCurrentExtraStorageImage(9, pilotWrite);
+                offlineIndirectPipeline.setCurrentExtraStorageImage(8, pilotRead);
+                offlineIndirectPipeline.setCurrentExtraStorageImage(9, pilotWrite);
             }
             if (!offlineGroundTruth || buildOfflineSnapshot) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.recordTlas")) {
@@ -2356,6 +2470,13 @@ public final class RtComposite {
             // Push the BDA ring slot's address plus the small hot subset that rchit/rahit read on every
             // hit (tableAddr/entityTableAddr/frameIndex) as real inline push constants, so those lookups
             // don't pay for a second global-memory dereference through pcAddr.worldPushAddr first.
+            int pointSampleMaxSize =
+                    CausticaConfig.Rt.Composite.POINT_SAMPLE_MAX_SIZE.value();
+
+            if (pointSampleMaxSize == 0) {
+                pointSampleMaxSize = -1;
+            }
+
             if (sharcCache != null && !offlineGroundTruth) {
                 float sceneScale = CausticaConfig.Rt.Sharc.SCENE_SCALE.value();
                 float radianceScale = CausticaConfig.Rt.Sharc.RADIANCE_SCALE.value();
@@ -2390,7 +2511,7 @@ public final class RtComposite {
                 ByteBuffer sharcPush = stack.malloc(SharcPushAddrData.BYTE_SIZE);
                 new SharcPushAddrData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                         RtMaterialRegistry.INSTANCE.tableAddress(), (int) frameCounter, worldDebugView,
-                        textureMipBias, CausticaConfig.Rt.Composite.POINT_SAMPLE_MAX_SIZE.value(),
+                        textureMipBias, pointSampleMaxSize,
                         sharcFrame.address()).write(sharcPush);
                 boolean sharcDiagnostics = CausticaConfig.Rt.Sharc.DETAILED_STATS.value()
                         || (worldDebugView >= 9 && worldDebugView <= 16);
@@ -2431,11 +2552,44 @@ public final class RtComposite {
                 ByteBuffer pushAddr = stack.malloc(WorldPushConstantsData.BYTE_SIZE);
                 new WorldPushConstantsData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                         RtMaterialRegistry.INSTANCE.tableAddress(), (int) frameCounter, worldDebugView,
-                        textureMipBias, CausticaConfig.Rt.Composite.POINT_SAMPLE_MAX_SIZE.value()).write(pushAddr);
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world trace");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.trace")) {
-                    active.trace(cmd, renderW, renderH, pushAddr);
+                        textureMipBias, pointSampleMaxSize,
+                        offlineIndirect ? offlineSchedulePipeline.work().deviceAddress : 0L,
+                        offlineIndirect ? (renderW + 7) / 8 : 0,
+                        offlineIndirect ? renderW : 0,
+                        offlineIndirect ? renderH : 0,
+                        offlineIndirect ? 1 : 0).write(pushAddr);
+                if (offlineIndirect) {
+                    if (traceGpuProfiler != null) traceGpuProfiler.offlineScheduleBegin(cmd);
+                    offlineSchedulePipeline.dispatch(cmd, stack, offlinePilotReadView, offlineSampleCount.view,
+                            renderW, renderH, (int) frameCounter, spp(), 0.01f);
+                    if (traceGpuProfiler != null) traceGpuProfiler.offlineScheduleEnd(cmd);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                } else if (traceGpuProfiler != null && offlineGroundTruth) {
+                    traceGpuProfiler.offlineScheduleBegin(cmd);
+                    traceGpuProfiler.offlineScheduleEnd(cmd);
                 }
+                if (offlineGroundTruth && offlinePilotPipeline != null) {
+                    int pilotWidth = (renderW + 7) / 8;
+                    int pilotHeight = (renderH + 7) / 8;
+                    if (traceGpuProfiler != null) traceGpuProfiler.offlinePilotBegin(cmd);
+                    try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "offline pilot trace");
+                         RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.offlinePilot")) {
+                        offlinePilotPipeline.trace(cmd, pilotWidth, pilotHeight, pushAddr);
+                    }
+                    if (traceGpuProfiler != null) traceGpuProfiler.offlinePilotEnd(cmd);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                if (traceGpuProfiler != null && offlineGroundTruth) traceGpuProfiler.offlineMainBegin(cmd);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world trace");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage(
+                             offlineGroundTruth ? "frame.offlineMain" : "frame.trace")) {
+                    if (offlineIndirect) {
+                        active.traceIndirect(cmd, offlineSchedulePipeline.state().deviceAddress, pushAddr);
+                    } else {
+                        active.trace(cmd, renderW, renderH, pushAddr);
+                    }
+                }
+                if (traceGpuProfiler != null && offlineGroundTruth) traceGpuProfiler.offlineMainEnd(cmd);
                 if (traceGpuProfiler != null) traceGpuProfiler.baselineEnd(cmd);
             }
             if (offlineGroundTruth) {
@@ -2644,10 +2798,13 @@ public final class RtComposite {
     private void clearOfflineAccumulation(VkCommandBuffer cmd, MemoryStack stack) {
         VkClearColorValue zero = VkClearColorValue.calloc(stack);
         zero.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
+        VkClearColorValue zeroCount = VkClearColorValue.calloc(stack);
+        zeroCount.uint32(0, 0).uint32(1, 0).uint32(2, 0).uint32(3, 0);
         VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
         range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                 .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
         VK10.vkCmdClearColorImage(cmd, groundTruthAccum.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
+        VK10.vkCmdClearColorImage(cmd, offlineSampleCount.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zeroCount, range);
         VK10.vkCmdClearColorImage(cmd, offlinePilotA.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
         VK10.vkCmdClearColorImage(cmd, offlinePilotB.image, VK10.VK_IMAGE_LAYOUT_GENERAL, zero, range);
     }

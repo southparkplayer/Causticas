@@ -1,0 +1,32 @@
+# Settings Redesign Memory
+
+- The current branch postdates the audited commit and already has a unified settings screen.
+- `RuntimeSetting.configuredValue()` is persisted intent; `RuntimeSetting.get()` is effective state.
+- HDR and torch `RtVideoOptions` widget factories are private. The unified screen must share mappings or expose reusable bindings rather than duplicating ranges.
+- Frame Generation status and swapchain reconfiguration currently live in `RtFrameGenerationOptionsScreen`.
+- `RtResolutionScale.selectQuality()` does not request a resolution commit; callers must do so.
+- Existing menu usage IDs are normalized localized labels, not stable setting IDs.
+- No pre-existing project plan or memory file was present when this work began.
+- Source-contract tests encoded the old eight-column dimensions and transparent panels; update those assertions alongside intentional UI changes.
+- Stable settings navigation now persists `SettingsCatalog.Page.routeId()`; `Page.parse` remains the migration boundary for legacy `OVERVIEW`, `OUTPUT`, `VIEW`, `EXPOSURE`, `SKY`, and `GEOMETRY` routes.
+- Search must operate only on `SettingsCatalog` metadata. Constructing every page to discover widgets causes side effects, duplicate registration, and unnecessary renderer-facing control setup.
+- A localized-label lookup can assign canonical catalog IDs without changing `CausticaWidgets`; controls absent from the catalog retain normalized-label usage IDs as an explicit fallback.
+- Page reset registration must use the page currently being built, not a control's canonical detail page, because Essentials intentionally presents controls owned by several detail pages.
+- The pinned compile-only command is Gradle `compileJava` with the Java 25.0.1, Slang 2026.13, Vulkan 1.4.341.1, and Streamline dependency environment from `tools/build-fast.ps1`; the script itself has no compile-only mode.
+- Production packaging requires `SHARC_SDK` or the explicit supported `-PwithoutSharc=true` artifact mode; the redesign build succeeded in SHaRC-free mode.
+- The offline renderer lived as uncommitted work in the separate `alpha-offline` worktree at the same base as `Alpha`; it was committed as `b2a9f42` and fast-forwarded into `Alpha` before restoring the settings redesign.
+- Combined deployment targets Prism instance `26.2(2)` through `build/libs/caustica-0.1.0.jar`; always retain the live-Minecraft process guard and verify the deployed SHA-256.
+- Offline progress metadata requires `RtTraceGpuProfiler` even after offline mode disables SHaRC and frame statistics are off; profiler ownership must include `OfflineGroundTruth.INSTANCE.active()` or the HUD remains at zero paths forever.
+- Fullscreen UI validation found that `addHeader()` is used for Essentials subsection headings as well as the page heading; page-level actions must be guarded so they are inserted once per page.
+- Catalog search breadcrumbs expose every `Control.sectionLabelKey()` directly, so each page/section pair in `SettingsCatalog` needs an English translation even if the visual page bundle uses a different key family.
+- The local offline accumulator already stores an `RGBA32F` running mean and a separate exact `R32_UINT` count per pixel; the immediate quality weakness was premature tile adaptation, not float-count precision.
+- Offline tile adaptation now waits until every valid pixel in the tile has at least 64 accumulated samples and uses the tile minimum count rather than only the top-left pixel.
+- `tools/build-fast.ps1` now defaults to a 600-second hard timeout, emits 15-second elapsed-time heartbeats, kills the native process tree on timeout, uses a single-use Gradle daemon, and accepts `-TestFilter` for focused runs.
+- PowerShell 5.1 requires opening the `Start-Process -PassThru` process handle before exit or `ExitCode` can remain empty even after a successful native command.
+- The conservative 64-sample offline scheduler build was deployed to Prism instance `26.2(2)` with SHA-256 `468200F92A600E3D1A06F0B356F340467324FD84C7E52C907F05916AE631E16C`.
+- Mistake: advancing configured path estimates and nonzero GPU timings were treated as proof of visible convergence. They are not. The deployed adaptive build visibly stalled after its initial burst and displayed misleading full-image path totals.
+- Correctness-first offline mode now disables adaptive indirect dispatch, continuously runs uniform full-frame batches, reports scheduled SPP, and captures the current completed profiler serial when progress resets to avoid stale credit.
+- The correctness-first fixed-scheduler build was deployed to Prism instance `26.2(2)` with SHA-256 `60A37531DC1EE6A2D833FC2C2376747EA5C6FFE78184FFCAB09F101225C15BA5`.
+- Fixed dispatch alone was insufficient: direct raygen still reduced `pathCount` from pilot variance while CPU metadata credited the configured maximum. Direct offline raygen now always uses the requested batch, and HUD terminology says `requested` rather than claiming measured samples.
+- Raw offline fireflies are primarily expected from block emitters being reached only by rare BSDF continuations; offline block-emitter NEE/MIS is the correctness-preserving long-term fix. Radiance rays now use `RAY_TMIN` instead of zero to reduce self-intersection and thin-edge leak risk.
+- The full direct-batch plus `RAY_TMIN` build was deployed to Prism instance `26.2(2)` with SHA-256 `4D1D40DFCF4D9B3BBE146B188B636E05ABBEF29EB4D2C2B7B94DDE8C1012305F`.

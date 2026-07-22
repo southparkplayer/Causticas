@@ -42,6 +42,12 @@
 #ifndef CAUSTICA_OFFLINE
 #define CAUSTICA_OFFLINE 0
 #endif
+#ifndef CAUSTICA_OFFLINE_PILOT
+#define CAUSTICA_OFFLINE_PILOT 0
+#endif
+#ifndef CAUSTICA_OFFLINE_INDIRECT
+#define CAUSTICA_OFFLINE_INDIRECT 0
+#endif
 #ifndef CAUSTICA_SER
 #define CAUSTICA_SER 0
 #endif
@@ -103,7 +109,8 @@ static SharcRWPtr<uint> sharcStats;
 [[vk::binding(19, 0)]] [format("rgba16f")] RWTexture2D<float4> gNrdViewDirection;
 #endif
 #else
-[[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean + sample count
+[[vk::binding(9, 0)]] [format("rgba32f")] RWTexture2D<float4> groundTruthAccum; // RGB mean
+[[vk::binding(10, 0)]] [format("r32ui")] RWTexture2D<uint> offlineSampleCount;
 [[vk::binding(11, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotRead;
 [[vk::binding(12, 0)]] [format("rgba32f")] RWTexture2D<float4> offlinePilotWrite;
 #endif
@@ -286,6 +293,7 @@ static bool gv_motionUseRefracted; // true when the MV tracks the refracted hit 
 // terrain/sky, an entity's per-vertex/object motion for a dynamic hit).
 static float3 gv_motionObjDisp;
 static float3 gv_opticalGuideDir;
+static float3 gv_opticalGuideTransmissionFilter;
 static const uint OPTICAL_GUIDE_NONE = 0u;
 static const uint OPTICAL_GUIDE_TRANSMISSION = 1u;
 static uint gv_opticalGuideMode;
@@ -346,6 +354,7 @@ float3 payloadInterfaceWaterTint() {
 // Set by world.rchit only on a MATERIAL_WATER hit (see PAYLOAD_WATER_ENTERING) — whether the ray was
 // travelling into the water volume (vs. out of it) at this hit's face.
 bool payloadWaterEntering() { return (payload.flags & PAYLOAD_WATER_ENTERING) != 0u; }
+bool payloadEmitterInList() { return (payload.flags & PAYLOAD_EMITTER_IN_LIST) != 0u; }
 bool payloadTorchEmitter() { return (payload.flags & PAYLOAD_TORCH_EMITTER) != 0u; }
 bool payloadLavaSurface() { return (payload.flags & PAYLOAD_LAVA_SURFACE) != 0u; }
 bool payloadFiberSurface() { return (payload.flags & PAYLOAD_FIBER_SURFACE) != 0u; }
@@ -411,6 +420,7 @@ void setPrimaryMissGuides(float3 rayDirection) {
     gv_motionObjDisp = float3(0.0, 0.0, 0.0);
     gv_motionUseRefracted = false;
     gv_opticalGuideMode = OPTICAL_GUIDE_NONE;
+    gv_opticalGuideTransmissionFilter = float3(1.0, 1.0, 1.0);
     gv_diffuseRayDirectionHitDistance = float4(0.0);
 #if CAUSTICA_NRD
     gv_nrdPrimaryMiss = true;
@@ -936,10 +946,18 @@ inline uint owenScramble(uint x, uint seed) {
 // Driver-safe, bounce-scoped Owen-scrambled Sobol sampling for the converged offline renderer. Live mode
 // uses a compact precomputed two-dimensional Burley/Heitz sequence and does not fetch this large buffer.
 static const uint SAMPLE_SEQUENCE_DIMENSIONS = 8u;
-static const uint SAMPLE_SEQUENCE_MASK = 1048575u;
+static const uint SAMPLE_SEQUENCE_BITS = 20u;
+static const uint SAMPLE_SEQUENCE_PERIOD = 1u << SAMPLE_SEQUENCE_BITS;
+static const uint SAMPLE_SEQUENCE_MASK = SAMPLE_SEQUENCE_PERIOD - 1u;
+
+inline uint offlineSampleEpochSeed(uint sampleIndex) {
+    uint epoch = sampleIndex >> SAMPLE_SEQUENCE_BITS;
+    return epoch == 0u ? 0u : sampleHash(epoch ^ 0xa511e9b3u);
+}
 
 inline void beginBounce(inout PathSampler sampler, uint bounce) {
-    sampler.bounceHash = sampleHash(sampler.pixelHash ^ ((bounce + 1u) * 0x9e3779b9u));
+    sampler.bounceHash = sampleHash(sampler.pixelHash ^ ((bounce + 1u) * 0x9e3779b9u)
+            ^ offlineSampleEpochSeed(sampler.sampleIndex));
     sampler.dimension = 0u;
     ConstPtr<uint> sequence = ConstPtr<uint>(pc.sampleSequenceAddr);
     uint sequenceBase = (sampler.sampleIndex & SAMPLE_SEQUENCE_MASK) * SAMPLE_SEQUENCE_DIMENSIONS;
@@ -953,7 +971,15 @@ inline void beginBounce(inout PathSampler sampler, uint bounce) {
 }
 
 inline float rndf(inout PathSampler sampler) {
-    uint value = sampler.randomBits[sampler.dimension++ & (SAMPLE_SEQUENCE_DIMENSIONS - 1u)];
+    uint dimension = sampler.dimension++;
+    uint value;
+    if (dimension < SAMPLE_SEQUENCE_DIMENSIONS) {
+        value = sampler.randomBits[dimension];
+    } else {
+        // Keep paths deterministic without silently reusing one of the eight Sobol dimensions.
+        value = owenScramble(sampleHash(sampler.bounceHash ^ (dimension * 0x02e5be93u)),
+                sampleHash(sampler.bounceHash ^ (dimension * 0x9e3779b9u)));
+    }
     return float(value >> 8u) * (1.0 / 16777216.0);
 }
 #else
@@ -1060,6 +1086,308 @@ float3 sampleGGXVNDF(float3 n, float3 ve, float rough, inout PathSampler sampler
     float3 Ne = normalize(float3(a * Nh.x, a * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
     return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                 // -> world space
 }
+
+#if !CAUSTICA_OFFLINE
+// ===== RIS emitter NEE =================================================================
+// Block emitters (torches, glowstone, lava, ...) get explicit NEE: per diffuse vertex, stream M uniform
+// candidates from the global light buffer through a weighted reservoir keyed by the UNSHADOWED target
+// p-hat = luminance(f * Le * G * area), then spend ONE shadow ray on the survivor. Sun/moon NEE stays
+// separate and additive. Lights are footprint bounding RECTANGLES (RtLightCollector): sampling a point
+// uniformly over the rectangle has pdf 1/area, so `area` rides the contribution like any area light.
+// Single-frame RIS only (no temporal reservoir reuse): DLSS-RR's own history already denoises this well
+// enough that a persistent per-pixel reservoir wasn't worth the added complexity and VRAM.
+// One resample serves three mutually exclusive receiver terms (see evalSampleContrib): front BRDF,
+// two-sided particle billboards, and LabPBR SSS backscatter from lights BEHIND the surface — all share
+// the reservoir and its single shadow ray, whose origin follows the survivor's side of the surface.
+
+float risRndf(inout uint s) {
+    return float(liveRandom(s) >> 8u) * (1.0 / 16777216.0);
+}
+
+// A reservoir in registers. pos/lnrm/le/area describe the chosen emitter sample; W is its unbiased
+// contribution weight, M the effective sample count. wSum/phat are streaming scratch (not persisted).
+struct Reservoir {
+    float3 pos;  // light sample point (rebased world space)
+    float3 lnrm; // emitter outward normal
+    float3 le;   // emitter radiance
+    float area;  // emitter rectangle area (the area-light pdf factor)
+    float M;
+    float W;
+    float wSum;
+    float phat;
+};
+
+Reservoir resEmpty() {
+    Reservoir r;
+    r.pos = float3(0.0, 0.0, 0.0);
+    r.lnrm = float3(0.0, 0.0, 0.0);
+    r.le = float3(0.0, 0.0, 0.0);
+    r.area = 0.0;
+    r.M = 0.0;
+    r.W = 0.0;
+    r.wSum = 0.0;
+    r.phat = 0.0;
+    return r;
+}
+
+// Unshadowed contribution of a fixed light sample point at surface (hitPos,n,v); out p-hat = its
+// luminance (the resampling target). Evaluated from the UNBIASED hitPos — SURF_BIAS is applied only to
+// the shadow-ray origin in shadeReservoir, on whichever side the survivor sample lands. Three receiver
+// modes share one target function because they are mutually exclusive per candidate:
+//   - front hemisphere (ndl>0): the same Lambert(+GGX) BRDF split the sun NEE uses;
+//   - twoSided (particles): billboards have no back face, ndl=abs(ndl) folds both sides into the front;
+//   - back hemisphere with sss>0 (LabPBR leaves/grass): HG transmission phase — cosT = dot(wi,rd) peaks
+//     when the ray points from the light through the slab toward the camera (same as the sun SSS term).
+float3 evalSampleContrib(float3 sp, float3 lnrm, float3 le, float area, float3 hitPos, float3 n,
+                         float3 geometricNormal, float3 v, float3 rd, float3 diffAlb, float3 F0, float rough,
+                         bool pbr,
+                         bool twoSided, float sss, out float phat) {
+    phat = 0.0;
+    float3 toL = sp - hitPos;
+    float dist2 = dot(toL, toL);
+    if (dist2 < 1.0e-6) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float dist = sqrt(dist2);
+    float3 wi = toL / dist;
+    float cosL = max(0.0, dot(lnrm, -wi));
+    if (cosL <= 0.0) {
+        return float3(0.0, 0.0, 0.0); // receiver behind the emitter face
+    }
+    float ndl = dot(n, wi);
+    float geometricNdl = dot(geometricNormal, wi);
+    if (twoSided) {
+        ndl = abs(ndl);
+    }
+    float3 contrib = float3(0.0, 0.0, 0.0);
+    if (ndl > 0.0 && geometricNdl > 0.0) {
+        float G = ndl * cosL / dist2; // area-light geometry term (x area)
+        float3 brdf = diffAlb * INV_PI;
+        if (pbr) {
+            float3 h = normalize(wi + v);
+            float ndh = max(0.0, dot(n, h));
+            float ndv = max(1.0e-4, dot(n, v));
+            float vdh = max(0.0, dot(v, h));
+            float D = ggxD(ndh, rough);
+            float Gs = ggxG1(ndv, rough) * ggxG1(ndl, rough);
+            float3 Fs = fresnelSchlick(vdh, F0);
+            brdf += (D * Gs) * Fs / (4.0 * ndv * ndl);
+        }
+        contrib = brdf * le * (G * area);
+    } else if (!twoSided && sss > 0.0 && geometricNdl < 0.0) {
+        float backNdl = -ndl;
+        float G = backNdl * cosL / dist2;
+        float cosT = dot(wi, rd);
+        contrib = diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * le * (G * area);
+    }
+    phat = luminance(contrib);
+    return contrib;
+}
+
+// Select one light from the emitted-power distribution in O(1).
+void selectGlobalLight(inout uint proposalSeed, out uint lightIndex) {
+    float aliasSample = risRndf(proposalSeed) * float(pc.lightCount);
+    uint column = min(uint(aliasSample), pc.lightCount - 1u);
+    if (pc.lightAliasAddr != 0) {
+        LightAlias a = ConstPtr<LightAlias>(pc.lightAliasAddr)[column];
+        bool self = aliasSample - float(column) < a.accept;
+        lightIndex = self ? column : a.aliasIndex;
+    } else {
+        lightIndex = column;
+    }
+}
+
+bool findLightGridCell(float3 p, out LightGridCell cell, out int3 cellCoord) {
+    cell.spanOffset = 0u;
+    cell.spanCount = 0u;
+    cell.invWeightSum = 0.0;
+    cellCoord = int3(0, 0, 0);
+    if (pc.lightGridCellAddr == 0 || pc.lightGridSpanAddr == 0) return false;
+    int3 coord = int3(floor((p - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
+    if (coord.x < 0 || coord.y < 0 || coord.z < 0
+            || coord.x >= pc.lightGridDims.x
+            || coord.y >= pc.lightGridDims.y
+            || coord.z >= pc.lightGridDims.z) return false;
+    uint linear = (uint(coord.z) * uint(pc.lightGridDims.y) + uint(coord.y))
+            * uint(pc.lightGridDims.x) + uint(coord.x);
+    cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linear];
+    cellCoord = coord;
+    return cell.spanCount > 0u;
+}
+
+void selectSectionLight(uint firstLight, uint lightCount, inout uint proposalSeed,
+                        out uint lightIndex) {
+    float aliasSample = risRndf(proposalSeed) * float(lightCount);
+    uint column = min(uint(aliasSample), lightCount - 1u);
+    LightAlias alias = ConstPtr<LightAlias>(pc.lightLocalAliasAddr)[firstLight + column];
+    bool self = aliasSample - float(column) < alias.accept;
+    uint localIndex = self ? column : alias.aliasIndex;
+    lightIndex = firstLight + localIndex;
+}
+
+float unpackUnsignedFloat(uint bits, uint mantissaBits) {
+    uint mantissaMask = (1u << mantissaBits) - 1u;
+    uint mantissa = bits & mantissaMask;
+    uint exponent = (bits >> mantissaBits) & 31u;
+    if (exponent == 0u) {
+        return float(mantissa) * exp2(float(1 - 15 - int(mantissaBits)));
+    }
+    return (1.0 + float(mantissa) / float(1u << mantissaBits))
+            * exp2(float(int(exponent) - 15));
+}
+
+float3 lightRadiance(Light light) {
+    uint packed = asuint(light.halfULe.w);
+    return float3(unpackUnsignedFloat(packed & 0x7ffu, 6u),
+            unpackUnsignedFloat((packed >> 11u) & 0x7ffu, 6u),
+            unpackUnsignedFloat((packed >> 22u) & 0x3ffu, 5u));
+}
+
+int3 lightSectionCoord(Light light) {
+    uint packed = asuint(light.halfVSection.w);
+    return int3(int(packed & 0x3ffu), int((packed >> 10u) & 0x3ffu),
+            int((packed >> 20u) & 0x3ffu));
+}
+
+float3 lightGeometricNormal(Light light) {
+    float3 normal = normalize(cross(light.halfULe.xyz, light.halfVSection.xyz));
+    return (asuint(light.halfVSection.w) & 0x40000000u) != 0u ? -normal : normal;
+}
+
+float proposalPdf(Light light, float3 le, LightGridCell cell, int3 cellCoord,
+                  float localProbability) {
+    float power = max(0.0, light.posArea.w * luminance(le));
+    float globalPdf = pc.lightAliasAddr != 0
+            ? power * pc.lightRebase.w : 1.0 / float(pc.lightCount);
+    float localPdf = 0.0;
+    if (localProbability > 0.0 && power > 0.0) {
+        int3 delta = lightSectionCoord(light) - cellCoord;
+        if (all(abs(delta) <= int3(2, 2, 2))) {
+            float3 deltaF = float3(delta);
+            localPdf = power * cell.invWeightSum / max(1.0, dot(deltaF, deltaF));
+        }
+    }
+    return localProbability * localPdf + (1.0 - localProbability) * globalPdf;
+}
+
+void selectLightGridSpanLight(LightGridCell cell, inout uint proposalSeed,
+                              out uint lightIndex) {
+    ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
+    float aliasSample = risRndf(proposalSeed) * float(cell.spanCount);
+    uint column = min(uint(aliasSample), cell.spanCount - 1u);
+    LightGridSpan span = spans[cell.spanOffset + column];
+    bool self = aliasSample - float(column) < span.accept;
+    uint firstLight = self ? span.firstLight : span.aliasFirstLight;
+    uint lightCount = self ? (span.packedLightCounts & 0xffffu)
+            : (span.packedLightCounts >> 16u);
+    selectSectionLight(firstLight, lightCount, proposalSeed, lightIndex);
+}
+
+// Sample the exact mixture q = alpha*qCell + (1-alpha)*qGlobal. qCell first selects a nearby section
+// by emitted power and section distance, then its section-local power alias. Every light in
+// the neighborhood is represented without a fixed cap; qGlobal gives distant lights full support.
+// Alias spans make weighted local selection O(1). The mixture PDF is reconstructed after the single
+// Light48 load: section power cancels with the section-local light PDF.
+void selectLightGridLight(LightGridCell cell, bool useLocal, inout uint proposalSeed,
+                          out uint lightIndex) {
+    if (useLocal) {
+        selectLightGridSpanLight(cell, proposalSeed, lightIndex);
+    } else {
+        selectGlobalLight(proposalSeed, lightIndex);
+    }
+}
+
+// Initial RIS over M power-weighted candidates -> one resampled sample, no shadow ray yet. The chosen
+// sample's W = wSum / (M * p-hat); M counts every candidate, including zero-weight ones.
+Reservoir risInitial(float3 hitPos, float3 n, float3 geometricNormal, float3 v, float3 rd, float3 diffAlb, float3 F0,
+                     float rough, bool pbr, bool twoSided, float sss,
+                     inout uint seed, inout uint proposalSeed) {
+    Reservoir r = resEmpty();
+    LightGridCell gridCell;
+    int3 gridCellCoord;
+    float3 gridLookup = hitPos;
+    if (pc.lightGridCellAddr != 0) {
+        // Stochastically blend across hard section boundaries. Every cell proposal retains full global
+        // support, so conditioning on this independently jittered lookup remains unbiased.
+        gridLookup += (float3(risRndf(proposalSeed), risRndf(proposalSeed), risRndf(proposalSeed)) - 0.5)
+                * pc.lightGridOrigin.w;
+    }
+    bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
+    uint candidateCount = pc.risCandidates;
+    // Deterministically stratify the proposal mixture. At the default M=8 this schedules exactly six
+    // local and two global candidates, with every lane taking the same branch for a given candidate.
+    // Counts that are not divisible by four use the nearest practical split with at least one global
+    // candidate; M=1 is global-only so the estimator retains full support.
+    uint globalCandidateCount = hasGridCell
+            ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
+    uint localCandidateCount = candidateCount - globalCandidateCount;
+    float localProbability = float(localCandidateCount) / float(candidateCount);
+    for (uint c = 0u; c < pc.risCandidates; c++) {
+        r.M += 1.0;
+        uint li;
+        uint globalsBefore = (c * globalCandidateCount) / candidateCount;
+        uint globalsAfter = ((c + 1u) * globalCandidateCount) / candidateCount;
+        bool useLocal = hasGridCell && globalsAfter == globalsBefore;
+        selectLightGridLight(gridCell, useLocal, proposalSeed, li);
+        Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
+        // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
+        float s = risRndf(seed) * 2.0 - 1.0;
+        float t = risRndf(seed) * 2.0 - 1.0;
+        float3 sp = lg.posArea.xyz + pc.lightRebase.xyz
+                + s * lg.halfULe.xyz + t * lg.halfVSection.xyz;
+        float3 le = lightRadiance(lg);
+        float3 lightNormal = lightGeometricNormal(lg);
+        float phat;
+        evalSampleContrib(sp, lightNormal, le, lg.posArea.w, hitPos, n, geometricNormal, v, rd,
+                diffAlb, F0, rough, pbr, twoSided, sss, phat);
+        if (phat <= 0.0) {
+            continue;
+        }
+        float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
+        float w = phat / max(sourcePdf, 1.0e-20);
+        r.wSum += w;
+        if (risRndf(seed) * r.wSum < w) { // weighted reservoir update
+            r.pos = sp;
+            r.lnrm = lightNormal;
+            r.le = le;
+            r.area = lg.posArea.w;
+            r.phat = phat;
+        }
+    }
+    r.W = r.phat > 0.0 ? (r.wSum / (r.M * r.phat)) : 0.0;
+    return r;
+}
+
+// Shade a finalized reservoir: recompute the survivor's contribution at (hitPos,n,v), cast ONE shadow
+// ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
+// the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
+// sample's side of the surface.
+float3 shadeReservoir(Reservoir s, float3 hitPos, float3 n, float3 geometricNormal, float3 v, float3 rd, float3 diffAlb,
+                      float3 F0, float rough, bool pbr, bool twoSided, float sss, out float3 vis) {
+    vis = float3(0.0, 0.0, 0.0);
+    if (s.W <= 0.0 || s.phat <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float phat;
+    float3 contrib = evalSampleContrib(s.pos, s.lnrm, s.le, s.area, hitPos, n, geometricNormal, v, rd,
+            diffAlb, F0, rough, pbr, twoSided, sss, phat);
+    if (phat <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // Pick the shadow-ray origin on the sample's side of the surface FIRST, then measure the ray from
+    // that origin — measuring dist from hitPos while tracing from the biased origin shifts the ray tip
+    // up to SURF_BIAS*ndl toward the emitter plane, beating the 0.001*dist stop-short margin for lights
+    // closer than ~SURF_BIAS/0.001 blocks -> shadow ray hits the emitter's own face -> per-texel black.
+    float3 shadowNormal = twoSided ? n : geometricNormal;
+    float side = dot(shadowNormal, s.pos - hitPos) >= 0.0 ? 1.0 : -1.0;
+    float3 origin = hitPos + side * shadowNormal * RAY_ORIGIN_BIAS;
+    float3 toL = s.pos - origin;
+    float dist = length(toL);
+    // Stop just short of the sample point so the ray doesn't self-occlude on the emitter's own face.
+    vis = visibility(origin, toL / dist, dist * 0.999);
+    return contrib * vis * s.W;
+}
+#endif // !CAUSTICA_OFFLINE
 
 // TLAS instance-mask bits (set on the Java side, ANDed against these per-ray cull masks):
 //   bit 0 (0x01) — secondary rays: shadows, GI bounces, reflections.
@@ -1315,10 +1643,12 @@ float2 specularReflectionMotion(float3 surfacePos, float3 surfaceNormal, float3 
 void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNormal,
                      float3 surfaceGeometricNormal,
                      float currentIor,
+                     float3 initialTransmissionFilter,
                      float rayBias, float rayConeWidth, float rayConeSpread, float waterWaveTime,
                      out float3 hitCamRel, out float3 motionPrev, out bool transmitted,
                      out float3 normal, out float roughness,
                      out float3 diffuseAlbedo,
+                     out float3 transmissionFilter,
                      out bool encounteredAnimatedWater, out uint failure) {
     hitCamRel = surfacePos - pc.camOffset;
     motionPrev = float3(0.0, 0.0, 0.0);
@@ -1326,6 +1656,10 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
     normal = surfaceNormal;
     roughness = 1.0;
     diffuseAlbedo = float3(0.0, 0.0, 0.0);
+
+    // The primary interface was crossed before this helper starts.
+    transmissionFilter = initialTransmissionFilter;
+
     encounteredAnimatedWater = false;
     failure = OPTICAL_GUIDE_FAILURE_UNSUPPORTED;
     if (dot(transmittedDir, transmittedDir) <= 0.0) {
@@ -1375,6 +1709,7 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         float3 interfaceNormal;
         float targetIor = currentIor;
         bool straightThrough = false;
+        bool crossedGlassEntry = false;
         if (interfaceMaterial == MATERIAL_WATER) {
             bool entering = payloadWaterEntering();
             targetIor = entering ? WATER_IOR : 1.0;
@@ -1387,6 +1722,8 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
         } else if (interfaceMaterial == MATERIAL_GLASS) {
             uint opticalClass = payloadOpticalClass();
             if (opticalClass == OPTICAL_TRANSLUCENT_SURFACE) {
+                // A generic translucent surface is the visible destination, not another
+                // clear optical boundary. Its own albedo is returned directly.
                 hitCamRel = interfacePos - pc.camOffset;
                 motionPrev = payload.motionPrev;
                 normal = payload.normal;
@@ -1396,16 +1733,19 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
                 failure = OPTICAL_GUIDE_FAILURE_NONE;
                 return;
             }
+            bool interfaceEntering = payloadInterfaceEntering();
             interfaceNormal = normalize(payload.geometricNormal);
             if (opticalClass == OPTICAL_THIN_GLASS) {
-                // The transport model collapses a pane's two faces into one sheet. Secondary pane faces
-                // therefore change neither direction nor medium; advance past them deterministically.
+                // Match tracePath's collapsed-sheet model. Both geometric faces are
+                // crossed straight through, but only the entering face consumes tint.
                 straightThrough = true;
+                crossedGlassEntry = interfaceEntering;
             } else if (opticalClass == OPTICAL_SOLID_GLASS || opticalClass == OPTICAL_SOLID_ICE) {
-                bool entering = payloadInterfaceEntering();
                 float materialIor = opticalClass == OPTICAL_SOLID_ICE ? ICE_IOR : GLASS_IOR;
-                targetIor = entering ? materialIor
+                targetIor = interfaceEntering
+                        ? materialIor
                         : (payloadInterfaceExteriorWater() ? WATER_IOR : 1.0);
+                crossedGlassEntry = interfaceEntering;
             } else {
                 failure = OPTICAL_GUIDE_FAILURE_UNSUPPORTED;
                 return;
@@ -1430,6 +1770,14 @@ void opticalGuideHit(float3 surfacePos, float3 transmittedDir, float3 surfaceNor
             ro = interfacePos + rayBias * reflectedSideNormal;
             continue;
         }
+
+        // The guide crossed this interface by transmission. Match tracePath by
+        // consuming the authored glass filter exactly once on an entering face.
+        // Never consume it for exits or TIR reflection.
+        if (crossedGlassEntry) {
+            transmissionFilter *= payload.albedo;
+        }
+
         direction = normalize(nextDirection);
         currentIor = targetIor;
         float3 interfaceSideNormal = dot(interfaceGeometricNormal, direction) >= 0.0
@@ -1508,6 +1856,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // but the camera still sits inside the separately captured secondary-only head. Reflections and the
     // first scattering event switch permanently to full secondary visibility.
     uint cameraVisibilityMask = CULL_PRIMARY;
+    // Local lighting is always evaluated first. At depth 1, roulette gates only the depth-2 continuation.
     int rrStart = 1;
     bool pbr = (pc.flags & 2u) != 0u; // GGX BRDF + material guides, else Lambertian fallback
     // Start submerged if the camera is in water so the first segment gets the right medium orientation
@@ -1536,6 +1885,17 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
     // diffuse-sampled continuation rays — those are already covered by the sun NEE, so the tiny disc
     // would be a double-counted firefly. Reset true on every specular/water bounce, false on a diffuse one.
     bool showCelestial = true;
+    // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
+    // candidate count is non-zero. Off => emitters are gathered only on path hits (legacy behaviour).
+#if !CAUSTICA_OFFLINE
+    bool risOn = pc.risCandidates > 0u && pc.lightCount > 0u && pc.lightBufAddr != 0;
+    // Independent light-proposal RNG. Screen-space coherent selection is intentionally deferred until
+    // there is a real presampled RIS tile buffer; direct sharing made tile-shaped lighting noise visible.
+    uint proposalSeed = (sampler.blueIndex & 0xffffu) * 1973u + (sampler.blueIndex >> 16u) * 9277u + 26699u
+            ^ pc.frameIndex * 2654435761u ^ sampler.sampleIndex * 2246822519u;
+    proposalSeed = sampleHash(proposalSeed);
+    uint risSeed = sampler.state ^ 0x9e3779b9u;
+#endif
     int maxPathSegments = maxBounces + maxMirrorDepth + MAX_OPTICAL_INTERFACE_DEPTH + 1;
     for (int segment = 0; segment < maxPathSegments; segment++) {
         beginBounce(sampler, uint(segment));
@@ -1554,9 +1914,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #if CAUSTICA_SHARC_UPDATE
         // Sparse cache updates are transport samples, not camera visibility: exclude particles and the
         // first-person-only primary mask from their first segment as well.
-        traceRadiance(CULL_SECONDARY, ro, 0.0, rd, 10000.0);
+        traceRadiance(CULL_SECONDARY, ro, RAY_TMIN, rd, 10000.0);
 #else
-        traceRadiance(cameraVisibilityMask, ro, 0.0, rd, 10000.0);
+        traceRadiance(cameraVisibilityMask, ro, RAY_TMIN, rd, 10000.0);
 #endif
 
 #if CAUSTICA_NRD
@@ -1723,11 +2083,18 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 // normal or, after the optical walk, with the transmitted lakebed material.
                 gv_normal = interfaceNormal;
                 gv_rough = solidIce ? ICE_GUIDE_ROUGH : GLASS_GUIDE_ROUGH;
+                // The primary dielectric reflection remains neutral.
                 gv_specAlb = float3(F, F, F);
+                // The interface itself has no diffuse lobe. The deterministic optical
+                // walk replaces this with the transmitted destination.
                 // A dielectric interface has no diffuse reflectance. Its tint attenuates radiance in the
                 // transport path below; it must not masquerade as the transmitted surface's DLSS-RR
                 // diffuse albedo. A successful optical walk replaces this zero with the destination albedo.
                 gv_albedo = float3(0.0, 0.0, 0.0);
+                gv_opticalGuideTransmissionFilter =
+                        entering && dot(transmittedDir, transmittedDir) > 0.0
+                        ? glassTint
+                        : float3(1.0, 1.0, 1.0);
                 gv_hitCamRel = hitPos - pc.camOffset;
                 gv_motionHitCamRel = gv_hitCamRel;
                 gv_motionUseRefracted = false;
@@ -1867,6 +2234,27 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #endif
                 }
             }
+
+            // RIS direct lighting from block emitters (lava, glowstone, torches, ...) — same reservoir
+            // sampler as terrain/entities, but two-sided: a billboard has no back face, so light
+            // striking either side of the quad should still land (matches the sun/moon NEE above).
+#if !CAUSTICA_OFFLINE
+            if (risOn) {
+                float3 v = -rd;
+                Reservoir r = risInitial(hitPos, n, geometricNormal, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0, false,
+                        true, 0.0, risSeed, proposalSeed);
+                float3 risVis;
+                float3 risContrib = throughput * shadeReservoir(r, hitPos, n, geometricNormal, v, rd, albedo,
+                        float3(0.0, 0.0, 0.0), 1.0, false, true, 0.0, risVis);
+                if (max(risVis.r, max(risVis.g, risVis.b)) > 0.0) {
+                    L += risContrib;
+#if CAUSTICA_NRD
+                    addNrdContribution(risContrib, nrdPrimaryLobe,
+                            nrdDiffuseRadiance, nrdSpecularRadiance);
+#endif
+                }
+            }
+#endif // !CAUSTICA_OFFLINE
 
             if (scatteringDepth >= maxBounces) {
                 break;
@@ -2130,6 +2518,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             cameraVisibilityMask = CULL_SECONDARY;
             throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0);
             rd = reflect(rd, n);
+            if (dot(geometricNormal, rd) <= 0.0) {
+                break;
+            }
             // `p` is the true hit point. Respawning there with a zero trace TMin lets an exact mirror
             // immediately hit its own triangle again; the resulting mirror-depth contours appear as
             // concentric rings head-on and parallel bands at grazing angles. Offset along the geometric
@@ -2150,19 +2541,6 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             }
             continue;
         }
-
-        // Standard path roulette owns the complete opaque vertex at indirect depths. Terminated paths
-        // skip emissive evaluation, NEE/visibility and continuation construction; survivors carry the
-        // exact reciprocal probability, so every current-vertex and future contribution stays unbiased.
-#if !CAUSTICA_SHARC_UPDATE && !CAUSTICA_SHARC_QUERY
-        if (scatteringDepth >= rrStart) {
-            float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
-            if (rndf(sampler) > q) {
-                break;
-            }
-            throughput /= q;
-        }
-#endif
 
         // All emissive materials retain the legacy base radiance. Only BaseTorchBlock-family primitives
         // receive the player-controlled boost; their authored _s map remains the normalized texel mask.
@@ -2203,12 +2581,25 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             if (payloadTorchEmitter()) {
                 emissiveRadiance *= EMISSIVE_MAX_MULTIPLIER * clamp(pc.torchIntensity, 0.0, 1.0);
             }
-            L += throughput * albedo * emission * emissiveRadiance;
-#if CAUSTICA_NRD
-            float3 contribution = throughput * albedo * emission * emissiveRadiance;
-            addNrdContribution(contribution, scatteringDepth == 0 ? 0 : nrdPrimaryLobe,
-                    nrdDiffuseRadiance, nrdSpecularRadiance);
+            // RIS emitter NEE: the direct-hit emission term is gated only for emitters RIS actually samples
+            // (payload emitter-in-list bit) — and then only off diffuse continuation rays (showCelestial
+            // false), which the previous vertex's RIS already accounted for; the primary ray and
+            // specular/dielectric bounces (showCelestial true) still add it, since no emitter NEE happened
+            // along those. Emitters NOT in the light buffer (sparse/sub-threshold footprints, entities) are
+            // never NEE-sampled, so they always gather — bit-identical to the no-NEE path, no energy lost.
+#if !CAUSTICA_OFFLINE
+            bool gateEmitter = risOn && payloadEmitterInList();
+#else
+            bool gateEmitter = false;
 #endif
+            if (!gateEmitter || showCelestial) {
+                L += throughput * albedo * emission * emissiveRadiance;
+#if CAUSTICA_NRD
+                float3 contribution = throughput * albedo * emission * emissiveRadiance;
+                addNrdContribution(contribution, scatteringDepth == 0 ? 0 : nrdPrimaryLobe,
+                        nrdDiffuseRadiance, nrdSpecularRadiance);
+#endif
+            }
         }
 #endif
 
@@ -2217,13 +2608,22 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
         // extent (pc.lightDir.w half-angle) so the shadow ray samples the light's quad — soft penumbrae
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
-        bool celestialNeeEligible = scatteringDepth <= int(pc.celestialMaxBounces);
+#if CAUSTICA_OFFLINE
+        bool celestialNeeEligible = true;
+#else
+        bool celestialNeeEligible =
+                scatteringDepth <= int(pc.celestialMaxBounces);
+#endif
         float3 lightDir = pc.lightDir.w > 0.0
                 ? sampleCelestialDisk(pc.lightDir.xyz, pc.lightDir.w, sampler) : pc.lightDir.xyz;
         float3 directRadiance = pc.lightRadiance.xyz;
         float signedNdl = dot(n, lightDir);
-        float ndl = celestialNeeEligible ? max(0.0, signedNdl) : 0.0;
-        float backNdl = celestialNeeEligible && sss > 0.0 && scatteringDepth <= MAX_SSS_BOUNCE
+        float geometricNdl = dot(geometricNormal, lightDir);
+
+        float ndl = celestialNeeEligible && geometricNdl > 0.0
+                ? max(0.0, signedNdl) : 0.0;
+        float backNdl = celestialNeeEligible && geometricNdl < 0.0
+                && sss > 0.0 && scatteringDepth <= MAX_SSS_BOUNCE
                 ? max(0.0, -signedNdl) : 0.0;
         // Front lighting and thin-surface backlighting are mutually exclusive for one sampled direction.
         // Trace their identical geometric-normal visibility ray once and reuse its water-crossing data.
@@ -2302,6 +2702,34 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #endif
             }
         }
+
+        // RIS direct lighting from block emitters (single-frame only, no temporal reservoir reuse).
+        // Front lobe + SSS backlighting are resampled together and share ONE shadow ray — a light can
+        // only be in front of n or behind it, never both, so combining them into one target function is
+        // exact, not an approximation. The SSS term is gated off past MAX_SSS_BOUNCE by passing sss=0
+        // there (falls back to plain front-only RIS).
+#if !CAUSTICA_OFFLINE
+        if (risOn) {
+            float activeSss = scatteringDepth <= MAX_SSS_BOUNCE ? sss : 0.0;
+            Reservoir r = risInitial(hitPos, n, geometricNormal, v, rd, diffAlb, F0, rough, pbr, false,
+                    activeSss, risSeed, proposalSeed);
+            float3 risVis;
+            float3 risContrib = shadeReservoir(r, hitPos, n, geometricNormal, v, rd, diffAlb, F0, rough, pbr, false,
+                    activeSss, risVis);
+            if (max(risVis.r, max(risVis.g, risVis.b)) > 0.0) {
+#if CAUSTICA_SHARC_UPDATE || CAUSTICA_SHARC_QUERY
+                liveDirectLighting += risContrib;
+#else
+                float3 risContribution = throughput * risContrib;
+                L += risContribution;
+#if CAUSTICA_NRD
+                addNrdContribution(risContribution, nrdPrimaryLobe,
+                        nrdDiffuseRadiance, nrdSpecularRadiance);
+#endif
+#endif
+            }
+        }
+#endif // !CAUSTICA_OFFLINE
 
 #if CAUSTICA_SHARC_QUERY
 #if CAUSTICA_SHARC_LIVE_SECONDARY_DIRECT
@@ -2393,6 +2821,20 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             break;
         }
 
+        // Standard non-SHaRC roulette runs only after this vertex's emission and direct lighting are complete.
+        // It may terminate the next continuation ray, but it must never discard radiance already discovered
+        // at the current surface. Survivors carry 1/q only into future transport, preserving the unbiased
+        // estimator without turning first-bounce NEE into rare high-energy outliers.
+#if !CAUSTICA_SHARC_UPDATE && !CAUSTICA_SHARC_QUERY
+        if (scatteringDepth >= rrStart) {
+            float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
+            if (rndf(sampler) > q) {
+                break;
+            }
+            throughput /= q;
+        }
+#endif
+
         // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
         // relative reflectance. With PBR off, use the cosine-weighted Lambertian fallback.
 #if CAUSTICA_SHARC_UPDATE
@@ -2431,7 +2873,7 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
                 float3 h = sampleGGXVNDF(n, v, rough, sampler);
                 float3 l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
                 float ndl2 = dot(n, l);
-                if (ndl2 <= 0.0) {
+                if (ndl2 <= 0.0 || dot(geometricNormal, l) <= 0.0) {
                     break; // microfacet reflects below the surface: terminate this path
                 }
                 // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
@@ -2466,6 +2908,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
 #endif
                 float diffusePdf;
                 float3 l = sampleEon(n, v, perceptualRough, sampler, diffusePdf);
+                if (dot(geometricNormal, l) <= 0.0) {
+                    break;
+                }
                 float3 diffuse = evaluateEonDiffuse(l, v, n, perceptualRough, diffAlb)
                         * ggxDiffuseTransmission(n, v, l, rough, F0);
                 diffuse += evaluateGgxMultiscatter(n, v, l, rough, F0);
@@ -2505,6 +2950,9 @@ float3 tracePath(float3 ro, float3 rd, float primaryConeSpread,
             throughput *= diffAlb;
             showCelestial = false; // diffuse bounce: hide the disc (covered by NEE)
             rd = cosineDir(n, sampler);
+            if (dot(geometricNormal, rd) <= 0.0) {
+                break;
+            }
             ro = offsetRayOrigin(hitPos, geometricNormal, rd);
 #if CAUSTICA_NRD
             if (nrdDiffuseDirectionHitDistance.w == 0.0 && !nrdDiffuseHitPending) {
@@ -2606,27 +3054,99 @@ void main() {
     float2 uv = (float2(pix) + 0.5) / size;
     float2 ndc = uv * 2.0 - 1.0;
 #if CAUSTICA_OFFLINE
+ #if CAUSTICA_OFFLINE_PILOT
+    uint2 tile = DispatchRaysIndex().xy;
+    uint2 tileOrigin = tile << 3u;
+    uint imageWidth;
+    uint imageHeight;
+    groundTruthAccum.GetDimensions(imageWidth, imageHeight);
+    int2 fullSize = int2(imageWidth, imageHeight);
+    uint validWidth = min(8u, imageWidth - tileOrigin.x);
+    uint validHeight = min(8u, imageHeight - tileOrigin.y);
+    uint tilePixels = max(validWidth * validHeight, 1u);
+    float3 pilotA = float3(0.0);
+    float3 pilotB = float3(0.0);
+    float2 fullImageSize = float2(fullSize);
+    for (uint pilotLane = 0u; pilotLane < 2u; pilotLane++) {
+        uint offset = (pc.frameIndex + tile.x * 17u + tile.y * 29u) % tilePixels;
+        int2 probePix = int2(tileOrigin)
+                + int2(int(offset % validWidth), int(offset / validWidth));
+        float2 sampleUv = (float2(probePix) + 0.5) / fullImageSize;
+        uint pixelHash = sampleHash(uint(probePix.x) ^ sampleHash(uint(probePix.y) + 0x9e3779b9u));
+        PathSampler sampler;
+        sampler.pixelHash = sampleHash(pixelHash ^ (0x13198a2eu + pilotLane * 0x2dc966b0u));
+        sampler.sampleIndex = pc.frameIndex * 2u + pilotLane;
+        sampler.bounceHash = 0u;
+        sampler.dimension = 0u;
+        beginBounce(sampler, 0xfffffffeu);
+        float2 pixelJitter = float2(rndf(sampler) - 0.5, rndf(sampler) - 0.5);
+        float2 sampleNdc = (sampleUv + pixelJitter / fullImageSize) * 2.0 - 1.0;
+        float4 nearH = mul(pc.invViewProj, float4(sampleNdc.x, sampleNdc.y, 1.0, 1.0));
+        float4 farH = mul(pc.invViewProj, float4(sampleNdc.x, sampleNdc.y, 0.0, 1.0));
+        float3 nearP = nearH.xyz / nearH.w;
+        float3 farP = farH.xyz / farH.w;
+        float3 origin = nearP + pc.camOffset;
+        float3 direction = normalize(farP - nearP);
+        float3 sampleRadiance = tracePath(origin, direction,
+                primaryRayConeSpread(sampleNdc, fullImageSize, direction), false, false, false, sampler);
+        if (pilotLane == 0u) pilotA = sampleRadiance;
+        else pilotB = sampleRadiance;
+    }
+    float3 scale = max(abs(pilotA) + abs(pilotB), float3(0.02));
+    float3 relativeDelta = (pilotA - pilotB) / scale;
+    float3 pairVariance = 0.5 * relativeDelta * relativeDelta;
+    float4 pilotState = offlinePilotRead[int2(tile)];
+    float pilotCount = pilotState.a + 1.0;
+    float3 pilotMean = pilotState.rgb + (pairVariance - pilotState.rgb) / pilotCount;
+    offlinePilotWrite[int2(tile)] = float4(pilotMean, pilotCount);
+    return;
+ #else
     bool offlineCalibrating = (pc.flags & FRAME_FLAG_OFFLINE_CALIBRATING) != 0u;
+#if CAUSTICA_OFFLINE_INDIRECT
+    uint linearIndex = DispatchRaysIndex().x;
+    if (linearIndex == 0u) {
+        return;
+    }
+    struct OfflineTileWork {
+        uint tileIndex;
+        uint pathCount;
+    };
+    ConstPtr<OfflineTileWork> offlineWork = ConstPtr<OfflineTileWork>(pcAddr.offlineWorkAddress);
+    OfflineTileWork workItem = offlineWork[(linearIndex - 1u) >> 6u];
+    uint lane = (linearIndex - 1u) & 63u;
+    uint2 indirectTile = uint2(workItem.tileIndex % pcAddr.offlineTileWidth,
+            workItem.tileIndex / pcAddr.offlineTileWidth);
+    pix = int2((indirectTile.x << 3u) + (lane & 7u),
+            (indirectTile.y << 3u) + (lane >> 3u));
+    size = float2(pcAddr.offlineImageWidth, pcAddr.offlineImageHeight);
+    if (pix.x >= int(pcAddr.offlineImageWidth) || pix.y >= int(pcAddr.offlineImageHeight)) {
+        return;
+    }
+#endif
+    uv = (float2(pix) + 0.5) / size;
     float4 offlineState = groundTruthAccum[pix];
-    uint completedSamples = uint(max(offlineState.a, 0.0) + 0.5);
+    float3 previousMean = offlineState.rgb;
+    uint completedSamples = offlineSampleCount[pix];
     uint spp = max(pc.spp, 1u);
     int2 pilotTile = pix >> 3;
     float4 pilotState = offlinePilotRead[pilotTile];
+#if CAUSTICA_OFFLINE_INDIRECT
+    uint pathCount = workItem.pathCount;
+#else
     uint pathCount = spp;
-    if (!offlineCalibrating && pilotState.a >= 4.0) {
-        float relativeNoise = sqrt(max(pilotState.r, max(pilotState.g, pilotState.b)));
-        float predictedError = relativeNoise / sqrt(float(completedSamples + 1u));
-        pathCount = min(spp, max(1u, uint(predictedError * 100.0 + 0.999)));
-    }
-    float3 runningMean = offlineState.rgb;
-    uint runningCount = completedSamples;
-    bool pilotLeader = !offlineCalibrating && (pix.x & 7) == 0 && (pix.y & 7) == 0;
-    uint totalPathCount = pathCount + (pilotLeader ? 2u : 0u);
+#endif
+    bool pilotLeader = false;
+    uint totalPathCount = pathCount;
     uint pixelHash = sampleHash(uint(pix.x) ^ sampleHash(uint(pix.y) + 0x9e3779b9u));
     float3 pilotA = float3(0.0);
     float3 pilotB = float3(0.0);
+    float3 batchSum = float3(0.0);
+    uint newCount = completedSamples + pathCount;
+    if (newCount < completedSamples) {
+        return;
+    }
     for (uint s = 0u; s < totalPathCount; s++) {
-        bool pilotSample = s >= pathCount;
+        bool pilotSample = false;
         uint pilotLane = s - pathCount;
         PathSampler sampler;
         float2 sampleUv = uv;
@@ -2656,25 +3176,23 @@ void main() {
         float3 direction = normalize(farP - nearP);
         float3 sampleRadiance = tracePath(origin, direction,
                 primaryRayConeSpread(sampleNdc, size, direction), false, false, false, sampler);
-        if (pilotSample) {
-            if (pilotLane == 0u) pilotA = sampleRadiance;
-            else pilotB = sampleRadiance;
-        } else {
-            runningCount++;
-            runningMean += (sampleRadiance - runningMean) / float(runningCount);
+        if (!pilotSample) {
+            if (any(isnan(sampleRadiance)) || any(isinf(sampleRadiance))) {
+                return;
+            }
+            batchSum += sampleRadiance;
         }
     }
-    groundTruthAccum[pix] = float4(runningMean, float(runningCount));
-    if (pilotLeader) {
-        float3 scale = max(abs(pilotA) + abs(pilotB), float3(0.02));
-        float3 relativeDelta = (pilotA - pilotB) / scale;
-        float3 pairVariance = 0.5 * relativeDelta * relativeDelta;
-        float pilotCount = pilotState.a + 1.0;
-        float3 pilotMean = pilotState.rgb + (pairVariance - pilotState.rgb) / pilotCount;
-        offlinePilotWrite[pilotTile] = float4(pilotMean, pilotCount);
+    float3 runningMean = previousMean
+            + (batchSum - previousMean * float(pathCount)) / float(max(newCount, 1u));
+    if (any(isnan(runningMean)) || any(isinf(runningMean))) {
+        return;
     }
+    groundTruthAccum[pix] = float4(runningMean, 1.0);
+    offlineSampleCount[pix] = newCount;
     outImage[pix] = float4(runningMean, 1.0);
     return;
+ #endif
 #else
     uint spp = max(pc.spp, 1u);
 #if CAUSTICA_SHARC_QUERY && CAUSTICA_SHARC_DIAGNOSTICS
@@ -2721,6 +3239,7 @@ void main() {
     gv_opticalGuideIor = 1.0;
     gv_opticalGuideBias = RAY_ORIGIN_BIAS;
     gv_opticalGuideFailure = OPTICAL_GUIDE_FAILURE_NONE;
+    gv_opticalGuideTransmissionFilter = float3(1.0, 1.0, 1.0);
     gv_animatedGuide = 0.0;
     gv_primarySky = false;
     gv_diffuseRayDirectionHitDistance = float4(0.0, 0.0, 0.0, 0.0);
@@ -2851,21 +3370,26 @@ void main() {
         float3 destinationNormal;
         float destinationRoughness;
         float3 destinationDiffuseAlbedo;
+        float3 destinationTransmissionFilter;
         bool encounteredAnimatedWater;
         float guideConeWidth = max(length(gv_hitCamRel) * rayConeSpread, RAY_CONE_MIN_WIDTH);
         opticalGuideHit(gv_hitCamRel + pc.camOffset, gv_opticalGuideDir, gv_normal, gv_geometricNormal,
                 gv_opticalGuideIor,
+                gv_opticalGuideTransmissionFilter,
                 gv_opticalGuideBias, guideConeWidth, rayConeSpread, pc.waterParams.w,
                 destinationHitCamRel, destinationMotionPrev, destinationValid,
                 destinationNormal, destinationRoughness,
-                destinationDiffuseAlbedo, encounteredAnimatedWater, gv_opticalGuideFailure);
+                destinationDiffuseAlbedo, destinationTransmissionFilter, encounteredAnimatedWater,
+                gv_opticalGuideFailure);
         // The guide walk records animated-water traversal for diagnostics only. It is not a reason to
         // replace unrelated destination history with the current sample.
         if (destinationValid) {
             gv_motionHitCamRel = destinationHitCamRel;
             gv_motionObjDisp = destinationMotionPrev;
             gv_motionUseRefracted = true;
-            gv_albedo = destinationDiffuseAlbedo;
+            // DLSSD receives the effective diffuse reflectance visible through every
+            // entered glass interface crossed by the deterministic optical guide.
+            gv_albedo = destinationDiffuseAlbedo * destinationTransmissionFilter;
             // Standard is refraction-priority, so every ordinary guide describes this same destination.
             gv_hitCamRel = destinationHitCamRel;
             gv_normal = destinationNormal;

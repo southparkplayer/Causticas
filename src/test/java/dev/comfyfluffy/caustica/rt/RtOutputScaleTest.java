@@ -38,19 +38,20 @@ final class RtOutputScaleTest {
     }
 
     @Test
-    void qualityShortcutsSetAbsoluteInputFromTheOutputRatio() {
-        assertEquals(67, RtResolutionScale.shortcutInputPercent(100, 2));
-        assertEquals(133, RtResolutionScale.shortcutInputPercent(200, 2));
-        assertEquals(50, RtResolutionScale.shortcutInputPercent(50, 5));
+    void inputScaleIsRelativeToOutputResolution() {
+        assertEquals(697, RtResolutionScale.inputDimension(2160, 31));
+        assertEquals(540, RtResolutionScale.inputDimension(2160, 40));
+        assertEquals(1394, RtResolutionScale.inputDimension(4320, 31));
+        assertEquals(1080, RtResolutionScale.inputDimension(4320, 40));
     }
 
     @Test
-    void exposesCanonicalDlssPresetPercentages() {
-        assertEquals(33, RtResolutionScale.presetPercent(3));
-        assertEquals(50, RtResolutionScale.presetPercent(0));
-        assertEquals(59, RtResolutionScale.presetPercent(1));
-        assertEquals(67, RtResolutionScale.presetPercent(2));
-        assertEquals(100, RtResolutionScale.presetPercent(5));
+    void exposesCanonicalDlssPresetTenths() {
+        assertEquals(30, RtResolutionScale.presetRatioTenths(3));
+        assertEquals(20, RtResolutionScale.presetRatioTenths(0));
+        assertEquals(17, RtResolutionScale.presetRatioTenths(1));
+        assertEquals(15, RtResolutionScale.presetRatioTenths(2));
+        assertEquals(10, RtResolutionScale.presetRatioTenths(5));
     }
 
     @Test
@@ -60,8 +61,5 @@ final class RtOutputScaleTest {
         assertEquals(1.7, RtResolutionScale.presetUpscaleRatio(1));
         assertEquals(1.5, RtResolutionScale.presetUpscaleRatio(2));
         assertEquals(1.0, RtResolutionScale.presetUpscaleRatio(5));
-        assertEquals(1280, RtResolutionScale.presetInputDimension(3840, 3));
-        assertEquals(1920, RtResolutionScale.presetInputDimension(3840, 0));
-        assertEquals(2560, RtResolutionScale.presetInputDimension(3840, 2));
     }
 }

@@ -2,11 +2,17 @@ package dev.comfyfluffy.caustica.rt;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
 
-/** Shared preset and percentage rules for realtime reconstruction sizing. */
+/** Shared preset and input ratio rules for realtime reconstruction sizing. */
 public final class RtResolutionScale {
     public static final int CUSTOM_QUALITY = -1;
+    public static final int MIN_INPUT_RATIO_TENTHS = 10;
+    public static final int MAX_INPUT_RATIO_TENTHS = 40;
 
     private RtResolutionScale() {
+    }
+
+    public static int clampInputTenths(int tenths) {
+        return Math.clamp(tenths, MIN_INPUT_RATIO_TENTHS, MAX_INPUT_RATIO_TENTHS);
     }
 
     /** Display pixels per input pixel for each DLSS quality shortcut. */
@@ -20,34 +26,33 @@ public final class RtResolutionScale {
         };
     }
 
-    public static int presetPercent(int quality) {
-        return (int)Math.round(100.0 / presetUpscaleRatio(quality));
+    public static int presetRatioTenths(int quality) {
+        return (int)Math.round(presetUpscaleRatio(quality) * 10.0);
     }
 
     public static int displayedQuality() {
-        return displayedQuality(CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.configuredValue());
+        return displayedQuality(CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.configuredValue());
     }
 
-    public static int displayedQuality(int inputScalePercent) {
+    public static int displayedQuality(int inputRatioTenths) {
         int quality = CausticaConfig.Rt.DlssRr.QUALITY.configuredValue();
-        int shortcutPercent = shortcutInputPercent(
-                CausticaConfig.Rt.OutputScale.PERCENT.configuredValue(), quality);
-        return inputScalePercent == shortcutPercent
+        int presetRatioTenths = presetRatioTenths(quality);
+        return inputRatioTenths == presetRatioTenths
                 ? quality : CUSTOM_QUALITY;
     }
 
     public static void selectQuality(int quality) {
         CausticaConfig.Rt.DlssRr.QUALITY.set(quality);
-        CausticaConfig.Rt.DlssRr.INPUT_SCALE_PERCENT.set(shortcutInputPercent(
-                CausticaConfig.Rt.OutputScale.PERCENT.value(), quality));
+        CausticaConfig.Rt.DlssRr.INPUT_RATIO_TENTHS.set(presetRatioTenths(quality));
     }
 
-    public static int shortcutInputPercent(int outputPercent, int quality) {
-        return Math.clamp((int)Math.round(outputPercent / presetUpscaleRatio(quality)), 10, 200);
-    }
-
-    /** Exact preset dimension; avoids turning a 3.00x preset into 3.03x via integer-percent rounding. */
-    public static int presetInputDimension(int outputDimension, int quality) {
-        return Math.max(1, (int)Math.round(outputDimension / presetUpscaleRatio(quality)));
+    /** Exact input dimension from output dimension for ratio-tenths input scale values. */
+    public static int inputDimension(int outputDimension, int inputRatioTenths) {
+        if (outputDimension <= 0) {
+            return 1;
+        }
+        return Math.max(1, (int) (((long) outputDimension * 10L
+                + clampInputTenths(inputRatioTenths) - 1L)
+                / clampInputTenths(inputRatioTenths)));
     }
 }
